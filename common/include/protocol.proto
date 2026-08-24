@@ -1,0 +1,103 @@
+// Message types enumeration
+enum MessageType : uint8_t {
+    HELLO_REQUEST = 1,           // Client registration request
+    HELLO_RESPONSE = 2,          // Server authentication response
+    HEARTBEAT = 3,               // Heartbeat packet
+    DESKTOP_FRAME = 4,           // Desktop frame data
+    MOUSE_EVENT = 5,             // Mouse event
+    KEYBOARD_EVENT = 6,          // Keyboard event
+    CONTROL_COMMAND = 7,         // Control command from server
+    DISCONNECT = 8,              // Disconnect signal
+    ERROR_RESPONSE = 9           // Error message
+};
+
+// Hello request - client sends to server on connection
+message ClientHello {
+    string device_id = 1;        // Hardware ID (MAC+CPU serial)
+    string device_name = 2;      // User-defined device name
+    string secret_key = 3;       // Access key for authentication
+    int32 screen_width = 4;      // Primary monitor resolution
+    int32 screen_height = 5;
+    int32 os_version = 6;        // Windows version identifier
+}
+
+// Hello response - server authenticates and confirms connection
+message ServerHello {
+    bool authorized = 1;         // Authentication result
+    string server_timestamp = 2; // Connection timestamp
+    int32 session_id = 3;        // Unique session identifier
+}
+
+// Heartbeat packet
+message HeartbeatPacket {
+    uint64 timestamp = 1;        // Current timestamp in microseconds
+    int32 cpu_usage = 2;         // CPU usage percentage
+    int32 memory_usage = 3;      // Memory usage percentage
+}
+
+// Desktop frame - H.264 encoded video frame
+message DesktopFrame {
+    uint64 timestamp = 1;        // Frame capture timestamp (usec)
+    int32 width = 2;             // Frame width
+    int32 height = 3;            // Frame height
+    int32 quality = 4;           // Quality level 1-100
+    int32 frame_number = 5;      // Monotonic frame counter
+    bytes h264_data = 6;         // NALU-enclosed H.264 data
+}
+
+// Mouse event
+message MouseEvent {
+    enum Button {
+        LEFT_BUTTON = 0;
+        RIGHT_BUTTON = 1;
+        MIDDLE_BUTTON = 2;
+        X_BUTTON_1 = 3;
+        X_BUTTON_2 = 4;
+    }
+    
+    int64 timestamp = 1;         // Event timestamp (usec)
+    int32 cursor_x = 2;          // Cursor position X
+    int32 cursor_y = 3;          // Cursor position Y
+    Button button = 4;           // Which button
+    bool pressed = 5;            // True if press down, false if release
+    bool double_click = 6;       // Double click flag
+}
+
+// Keyboard event
+message KeyboardEvent {
+    enum Type {
+        KEY_PRESS = 0;
+        KEY_RELEASE = 1;
+    }
+    
+    int64 timestamp = 1;         // Event timestamp (usec)
+    Type type = 2;               // Press or release
+    int32 virtual_key = 3;       // VK code (Windows specific)
+    string scan_code = 4;        // Hex scan code (e.g., "0x1E")
+    bool extended = 5;           // Extended key flag
+}
+
+// Control command - sent from server to initiate remote control
+message ControlCommand {
+    int32 session_id = 1;        // Session identifier
+    enum CommandType {
+        START_CAPTURE = 0;       // Start desktop capture
+        STOP_CAPTURE = 1;        // Stop desktop capture
+        SET_QUALITY = 2;         // Adjust quality settings
+        GET_STATS = 3;           // Request performance stats
+    }
+    
+    CommandType command = 2;     // Command type
+    int32 fps_limit = 3;         // Frames per second limit (15-60)
+    int32 bitrate_kbps = 4;      // Target bitrate in kbps
+}
+
+// Performance statistics (for debugging and optimization)
+message PerformanceStats {
+    uint64 timestamp = 1;
+    float capture_fps = 2;       // Actual capture FPS
+    float decode_fps = 3;        // Decoder FPS
+    float display_fps = 4;       // Render FPS
+    uint64 encode_latency_ms = 5;   // Encoding latency
+    uint64 network_roundtrip_ms = 6; // Network RTT
+}

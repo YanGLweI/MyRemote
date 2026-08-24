@@ -1,0 +1,30 @@
+# Build outputs
+build/
+bin/
+*.exe
+*.dll
+*.so
+*.a
+
+# IDE files
+.vs/
+.idea/
+*.sln
+*.vcxproj.*
+CMakeCache.txt
+CMakeFiles/
+
+# Generated protocol buffer files (optional - include if needed)
+common/src/protocol.pb.h
+common/src/protocol.pb.cc
+
+# Qt MOC files
+moc_*.cpp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.txt
