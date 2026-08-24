@@ -296,11 +296,7 @@ A: Desktop Duplication 需要 Win8+, BitBlt 降级方案可兼容 Win7(性能下
 
 ## 许可证
 
-此项目采用 MIT 开源许可证（待添加完整 LICENSE 文件）。
-
-## 联系方式
-
-开发团队邮箱：dev@myremote.example.com
+此项目采用 MIT 开源许可证
 
 ---
 
