@@ -22,6 +22,7 @@ jobs:
       
     - name: Install dependencies with Chocolatey
       run: |
+        choco install boost --version 1.84.0 -y --no-progress
         choco install openssl --version 1.1.1w -y --no-progress
         choco install protoc -y --no-progress
         
