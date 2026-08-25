@@ -1,0 +1,36 @@
+name: Test Build (Debug)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug-build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check environment
+      run: |
+        echo "=== System Info ==="
+        systeminfo | Select-Object OSName, OSVersion
+        
+        echo "=== CMake Version ==="
+        cmake --version
+        
+        echo "=== Available Compilers ==="
+        Get-CimInstance Win32_Process | Where-Object {$_.Name -like "*.exe"} | Select-Object Name | Sort-Object Name -Unique | Select-Object -First 20 | Out-String
+        
+        echo "=== VS Install Locations ==="
+        Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -ErrorAction SilentlyContinue | Select-Object FullName, @{N='Name';E={$_.Name}}
+        
+        echo "=== Cl.exe ==="
+        where.exe cl.exe
+        
+        echo "=== G++ ==="
+        g++ --version 2>&1
+        
+        echo "=== CMake Generators ==="
+        cmake --help | Select-String "^\s*\*?\s+Visual Studio" -Context 0,0
+        
