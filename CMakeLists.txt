@@ -27,11 +27,20 @@ endif()
 # OpenSSL is required for encryption (used by common_lib)
 if(WIN32)
     # On Windows, try to find OpenSSL
+    message(STATUS "Looking for OpenSSL...")
+    if(DEFINED ENV{OPENSSL_ROOT_DIR})
+        message(STATUS "OPENSSL_ROOT_DIR from env: $ENV{OPENSSL_ROOT_DIR}")
+    endif()
     find_package(OpenSSL)
     if(OpenSSL_FOUND)
-        message(STATUS "OpenSSL found")
+        message(STATUS "✅ OpenSSL found")
     else()
-        message(FATAL_ERROR "OpenSSL not found! Please install via Chocolatey: choco install openssl")
+        message(FATAL_ERROR 
+            "❌ OpenSSL not found!\n"
+            "Please ensure OpenSSL is installed via Chocolatey:\n"
+            "  choco install openssl -y\n"
+            "Or set OPENSSL_ROOT_DIR environment variable."
+        )
     endif()
 endif()
 set(BUILD_SERVER_WITH_QT OFF)

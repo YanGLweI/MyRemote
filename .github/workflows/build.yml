@@ -27,7 +27,7 @@ jobs:
           $env:ChocolateyInstall = "$env:ProgramData\chocolatey"
           choco install openssl -y --no-progress
           
-          Write-Host "=== Checking OpenSSL Installation ==="
+          Write-Host "`n=== Checking OpenSSL Installation ==="
           # Chocolatey installs to various locations depending on version
           # Try multiple possible locations
           $possiblePaths = @(
@@ -35,7 +35,8 @@ jobs:
             "C:\Program Files\OpenSSL",
             "C:\OpenSSL",
             "C:\OpenSSL-Win64",
-            "C:\tools\openssl"
+            "C:\tools\openssl",
+            "C:\Chocolatey\lib\openssl"
           )
           
           $foundPath = $null
@@ -48,14 +49,25 @@ jobs:
           }
           
           if ($foundPath) {
+            # Show directory structure for debugging
+            Write-Host "`n=== Directory Structure ==="
+            Get-ChildItem $foundPath -Directory -ErrorAction SilentlyContinue | Select-Object Name, @{N='Size';E={$_.TotalLength}}
+            
+            # Look for include and lib directories
+            $includeDir = Get-ChildItem -Path $foundPath -Filter "include" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+            $libDir = Get-ChildItem -Path $foundPath -Filter "lib" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($includeDir) { Write-Host "Include dir: $($includeDir.FullName)" }
+            if ($libDir) { Write-Host "Lib dir: $($libDir.FullName)" }
+            
             # Export as environment variable for CMake
-            Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$($foundPath.Replace('\', '/'))"
-            Write-Host "Set GITHUB_ENV: OPENSSL_ROOT_DIR=$($foundPath.Replace('\', '/'))"
+            $normalizedPath = $foundPath.Replace('\', '/')
+            Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$normalizedPath"
+            Write-Host "`n✅ Set GITHUB_ENV: OPENSSL_ROOT_DIR=$normalizedPath"
           } else {
             Write-Host "❌ OpenSSL not found in any standard location"
-            Write-Host "Available directories in ProgramData:"
-            Get-ChildItem "$env:ProgramData" -Filter "*ssl*" -Directory | Select-Object Name
-            throw "Cannot find OpenSSL installation!"
+            Write-Host "`nAvailable directories in ProgramData:"
+            Get-ChildItem "$env:ProgramData" -Filter "*ssl*","*openssl*" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
+            throw "Cannot find OpenSSL installation! Please check Chocolatey packages."
           }
         } else {
           Write-Host "⚠️ Chocolatey not available on this runner, skipping..."
