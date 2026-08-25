@@ -24,14 +24,17 @@ jobs:
         $choco = Get-Command choco -ErrorAction SilentlyContinue
         if ($choco) {
           Write-Host "Chocolatey found, installing dependencies..."
-          choco install openssl --version 1.1.1w -y --no-progress
-          choco install protoc -y --no-progress
+          $env:ChocolateyInstall = "$env:ProgramData\chocolatey"
+          choco install openssl --version 1.1.1w -y --no-progress --params '/Dir:C:\OpenSSL'
+          $env:OPENSSL_ROOT_DIR = "C:/OpenSSL"
         } else {
-          Write-Host "Chocolatey not available on this runner"
+          Write-Host "Chocolatey not available on this runner, skipping..."
         }
       
     - name: Configure CMake with MinGW
       working-directory: ${{github.workspace}}
+      env:
+        OPENSSL_ROOT_DIR: "C:/OpenSSL"
       run: |
         # Show available compilers
         cmake --version
