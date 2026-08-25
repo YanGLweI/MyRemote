@@ -11,26 +11,44 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Check environment
+    - name: Install dependencies
       run: |
-        echo "=== System Info ==="
-        systeminfo | Select-Object OSName, OSVersion
+        Write-Host "=== System Info ==="
+        systeminfo | Select-Object OSName, OSVersion, OSBuildNumber
         
-        echo "=== CMake Version ==="
+        Write-Host "`n=== CMake Version ==="
         cmake --version
         
-        echo "=== Available Compilers ==="
-        Get-CimInstance Win32_Process | Where-Object {$_.Name -like "*.exe"} | Select-Object Name | Sort-Object Name -Unique | Select-Object -First 20 | Out-String
+        Write-Host "`n=== Available Compilers ==="
+        if (Test-Path "C:\ProgramData\chocolatey\tools") {
+          Get-ChildItem "C:\ProgramData\chocolatey\tools" -Filter *.exe | Select-Object Name
+        }
         
-        echo "=== VS Install Locations ==="
-        Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -ErrorAction SilentlyContinue | Select-Object FullName, @{N='Name';E={$_.Name}}
+        Write-Host "`n=== Chocolatey installed packages ==="
+        choco list --local-only | Select-String openssl
         
-        echo "=== Cl.exe ==="
-        where.exe cl.exe
+        Write-Host "`n=== Visual Studio locations ==="
+        $vsDirs = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
+        if ($vsDirs) {
+          $vsDirs | Select-Object FullName
+        } else {
+          Write-Host "No Visual Studio installation found"
+        }
         
-        echo "=== G++ ==="
-        g++ --version 2>&1
+        Write-Host "`n=== Checking cl.exe ==="
+        try {
+          & where.exe cl.exe 2>&1 | Select-Object -First 3
+        } catch {
+          Write-Host "cl.exe not found in PATH"
+        }
         
-        echo "=== CMake Generators ==="
-        cmake --help | Select-String "^\s*\*?\s+Visual Studio" -Context 0,0
+        Write-Host "`n=== Checking g++ ==="
+        try {
+          g++ --version 2>&1 | Select-Object -First 5
+        } catch {
+          Write-Host "g++ not found"
+        }
+        
+        Write-Host "`n=== ProgramFiles directories with 'ssl' or 'open' ==="
+        Get-ChildItem "$env:ProgramFiles" -Filter "*ssl*","*open*" -Directory -ErrorAction SilentlyContinue | Select-Object Name
         
