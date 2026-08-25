@@ -1,0 +1,59 @@
+name: Debug Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug-build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Install Chocolatey packages
+      run: |
+        Write-Host "=== Checking Chocolatey ==="
+        choco --version
+        
+        Write-Host "`n=== Installing OpenSSL ==="
+        choco install openssl -y --no-progress
+        
+        Write-Host "`n=== Listing ProgramData directories ==="
+        Get-ChildItem "$env:ProgramData" -Filter "*ssl*" -Directory | 
+          Select-Object FullName, @{N='Count';E={(@($_.Name).Count)}}
+          
+        Write-Host "`n=== Looking for OpenSSL include files ==="
+        $includeFiles = Get-ChildItem "C:\" -Recurse -Filter "openssl.h" -ErrorAction SilentlyContinue | 
+          Select-Object -First 5 FullName
+        
+        if ($includeFiles) {
+          $includeFiles | ForEach-Object { Write-Host $_.FullName }
+          # Set OPENSSL_ROOT_DIR to parent of include directory
+          $incPath = Split-Path (Split-Path $includeFiles[0].FullName -Parent)
+          Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$($incPath.Replace('\', '/'))"
+          Write-Host "Set OPENSSL_ROOT_DIR to: $($incPath.Replace('\', '/'))"
+        } else {
+          Write-Host "OpenSSL header not found in C:\\"
+          throw "Cannot find OpenSSL installation"
+        }
+        
+    - name: Configure CMake
+      run: |
+        cmake --version
+        
+        Write-Host "`n=== OPENSSL_ROOT_DIR value ==="
+        if ($env:OPENSSL_ROOT_DIR) {
+          Write-Host "Found: $env:OPENSSL_ROOT_DIR"
+        } else {
+          Write-Host "ERROR: OPENSSL_ROOT_DIR is not set!"
+        }
+        
+        cmake -S . -B build `
+          -G "MinGW Makefiles" `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DBUILD_CLIENT=ON `
+          -DBUILD_SERVER=OFF
+            
+    - name: Build
+      run: cmake --build build --config Release
