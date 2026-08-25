@@ -301,3 +301,4 @@ A: Desktop Duplication 需要 Win8+, BitBlt 降级方案可兼容 Win7(性能下
 ---
 
 **注意**: 本工具仅供企业内网运维、安全审计等合法用途使用。未经授权远程控制他人计算机属违法行为。
+# MyRemote Control - 单向网络反向远程控制工具
