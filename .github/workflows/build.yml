@@ -28,9 +28,9 @@ jobs:
           Write-Host "✅ Found Visual Studio directories:"
           foreach ($vs in $vsDirs) {
             Write-Host "  - $($vs.Name)"
-            # Check for VS2022 specific folders (2022 = version)
-            if ($vs.Name -eq "2022") {
-              Write-Host "✅ Visual Studio 2022 found at: $($vs.FullName)"
+            # VS directories are named by major version ("18" = VS2022, "19" = VS2022+)
+            if ($vs.Name -match "^[12][0-9]$") {
+              Write-Host "✅ Visual Studio $vs found at: $($vs.FullName)"
               $env:VSINSTALLDIR = $vs.FullName
               break
             }
