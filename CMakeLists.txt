@@ -24,6 +24,12 @@ if(BUILD_CLIENT OR BUILD_SERVER)
     endif()
 endif()
 # Qt6 is optional - only needed for server
+option(OPENSSL_REQUIRED "Require OpenSSL" OFF)
+if(OPENSSL_REQUIRED OR BUILD_SERVER)
+    find_package(OpenSSL REQUIRED)
+else()
+    find_package(OpenSSL QUIET)
+endif()
 set(BUILD_SERVER_WITH_QT OFF)
 if(BUILD_SERVER)
     find_package(Qt6 COMPONENTS Widgets Concurrent Network QUIET)
@@ -36,8 +42,16 @@ if(BUILD_SERVER)
 endif()
 
 # Protocol Buffers
-find_package(Protobuf REQUIRED)
-include_directories(${PROTOBUF_INCLUDE_DIR})
+find_package(Protobuf)
+if(Protobuf_FOUND)
+    include_directories(${PROTOBUF_INCLUDE_DIR})
+    message(STATUS "Protobuf found")
+else()
+    # Use alternative or skip protobuf generation
+    message(WARNING "Protobuf not found! Some features may be disabled.")
+    set(PROTO_SRCS "")
+    set(PROTO_HDRS "")
+endif()
 
 # Generate protocol buffer sources
 protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
@@ -62,8 +76,8 @@ add_library(common_lib STATIC
     common/src/ecdh.cpp
 )
 target_link_libraries(common_lib PUBLIC
-    ${PROTOBUF_LIBRARIES}
-    OpenSSL::Crypto
+    $<$<BOOL:${Protobuf_FOUND}>:${PROTOBUF_LIBRARIES}>
+    $<$<BOOL:${OPENSSL_REQUIRED AND OpenSSL_FOUND}>:OpenSSL::Crypto>
 )
 
 # 客户端库
@@ -79,7 +93,7 @@ if(BUILD_CLIENT)
     )
     target_link_libraries(client_lib PRIVATE
         common_lib
-        Boost::system Boost::thread Boost::chrono
+        $<$<BOOL:${Boost_FOUND}>:Boost::system Boost::thread Boost::chrono>
         ws2_32 Imm32 User32
         dxguid d3d11
     )
@@ -105,7 +119,7 @@ if(BUILD_SERVER)
         )
         target_link_libraries(server_lib PRIVATE
             common_lib
-            Boost::system Boost::thread
+            $<$<BOOL:${Boost_FOUND}>:Boost::system Boost::thread>
             Qt6::Widgets Qt6::Concurrent Qt6::Network
             ws2_32
         )
