@@ -28,16 +28,14 @@ jobs:
     - name: Configure CMake
       working-directory: ${{github.workspace}}
       run: |
+        # Use Ninja generator which is simpler and faster
         cmake -S . -B build `
-          -G "Visual Studio 17 2022" `
-          -A x64 `
-          -DBUILD_CLIENT=ON `
-          -DBUILD_SERVER=OFF `
+          -G "Ninja" `
           -DCMAKE_BUILD_TYPE=Release `
           
     - name: Build Client
       working-directory: ${{github.workspace}}/build
-      run: cmake --build . --config Release
+      run: ninja
       
     - name: Verify output
       run: |
