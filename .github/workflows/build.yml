@@ -12,7 +12,6 @@ on:
   pull_request:
     branches: [ main, master ]
   
-  # Allow manual trigger
   workflow_dispatch:
 
 jobs:
@@ -66,6 +65,7 @@ jobs:
   build-server:
     name: Build Server Control Center (Windows x64)
     runs-on: windows-latest
+    timeout-minutes: 45
     
     steps:
     - name: Checkout code
@@ -74,21 +74,28 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
-    - name: Install Qt 6.x for MSVC 2019
-      uses: jurplel/install-qt-action@v3
-      with:
-        version: '6.7.0'
-        cache: true
-        modules: 'qt5compat qtshadertools qtopenglwidgets'
-        
-    - name: Install dependencies with Chocolatey
+    - name: Install OpenSSL with Chocolatey
       run: |
         choco install openssl --version 1.1.1w -y --no-progress
+        
+    - name: Install Protocol Buffers with Chocolatey
+      run: |
         choco install protoc -y --no-progress
+        
+    - name: Download Qt manually
+      uses: jpetrucciani/download-file-from-reaction@v1
+      with:
+        url: https://download.qt.io/official_releases/qt/6.5/6.5.2/single/qt-6.5.2-msvc2019_64.exe
+        
+    - name: Extract Qt installer
+      run: |
+        # Skip GUI installation, use command line
+        Start-Process -FilePath "qt-6.5.2-msvc2019_64.exe" `
+          -ArgumentList "/silent", "--accept-licenses", "--confirm-command", "--extract", "$env:TEMP\qt", "-norestart" `
+          -Wait
         
     - name: Configure CMake
       run: |
-        $QT_PATH = Get-ChildItem -Path "$env:LOCALAPPDATA\QtProjects\Qt" -Directory | Where-Object {$_.Name -like "*6.7*"} | Select-Object -First 1
         cmake -B ${{github.workspace}}/build `
           -G "Visual Studio 17 2022" `
           -A x64 `
@@ -96,7 +103,7 @@ jobs:
           -DBUILD_SERVER=ON `
           -DCMAKE_BUILD_TYPE=Release `
           -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" `
-          -DCMAKE_PREFIX_PATH="$QT_PATH\msvc2019_64" `
+          -DCMAKE_PREFIX_PATH="$env:TEMP\qt\msvc2019_64" `
           -DProtobuf_PROTOC_EXECUTABLE="C:\Program Files\protobuf\protoc.exe"
           
     - name: Build Server
@@ -119,33 +126,3 @@ jobs:
         path: ${{github.workspace}}/build/bin/Release/control_server.exe
         retention-days: 30
         compression-level: 9
-        
-  verify-builds:
-    name: Verify All Builds
-    needs: [build-client, build-server]
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      
-    - name: List downloaded files
-      run: |
-        echo "Downloaded artifacts:"
-        find . -type f -name "*.exe" | head -20
-        
-    - name: Create summary
-      run: |
-        echo "# Build Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## Client Artifact" >> $GITHUB_STEP_SUMMARY
-        if [ -f "agent-windows-x64/agent.exe" ]; then
-          echo "✅ agent.exe exists" >> $GITHUB_STEP_SUMMARY
-          echo "Size: $(du -h agent-windows-x64/agent.exe)" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## Server Artifact" >> $GITHUB_STEP_SUMMARY
-        if [ -f "control_server-windows-x64/control_server.exe" ]; then
-          echo "✅ control_server.exe exists" >> $GITHUB_STEP_SUMMARY
-          echo "Size: $(du -h control_server-windows-x64/control_server.exe)" >> $GITHUB_STEP_SUMMARY
-        fi
