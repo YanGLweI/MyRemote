@@ -20,6 +20,19 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
+    - name: Verify Visual Studio installation
+      run: |
+        $vsInstall = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\2022" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($vsInstall) {
+          Write-Host "✅ Visual Studio found at: $($vsInstall.FullName)"
+          $env:VSINSTALLDIR = $vsInstall.FullName
+          &"$($vsInstall.FullName)\Common7\Tools\MSBuild.exe" -version
+        } else {
+          Write-Host "Available Visual Studio versions:"
+          Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
+          throw "❌ Visual Studio 2022 not found!"
+        }
+      
     - name: Install dependencies with Chocolatey
       run: |
         choco install openssl --version 1.1.1w -y --no-progress
@@ -72,7 +85,32 @@ jobs:
       run: |
         choco install openssl --version 1.1.1w -y --no-progress
         choco install protoc -y --no-progress
-        choco install qt6-652-msvc2019_64 -y --no-progress
+        # Note: Qt may be pre-installed on some runners, check if available
+        
+    - name: Check for Qt installation
+      run: |
+        # Try to find Qt in common locations
+        $qtPaths = @(
+          "C:\Qt",
+          "$env:LOCALAPPDATA\QtProjects",
+          "C:\Program Files\Qt\*"
+        )
+        
+        foreach ($path in $qtPaths) {
+          $qtFound = Get-ChildItem -Path $path -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($qtFound) {
+            Write-Host "✅ Qt found at: $($qtFound.FullName)"
+            $env:QT_DIR = $qtFound.FullName
+            break
+          }
+        }
+        
+        if (-not $env:QT_DIR) {
+          Write-Host "❌ Qt not found in standard locations"
+          Write-Host "Available directories:"
+          Get-ChildItem -Path "C:\Program Files" -Filter "*Qt*" -Directory -ErrorAction SilentlyContinue
+          throw "Qt6 not found! Cannot build server without Qt."
+        }
         
     - name: Configure CMake
       working-directory: ${{github.workspace}}
@@ -87,6 +125,12 @@ jobs:
     - name: Build Server with Qt support
       working-directory: ${{github.workspace}}/build
       run: cmake --build . --config Release
+      
+    - name: Check build output if Qt not found
+      if: failure()
+      run: |
+        Write-Host "Build failed, likely due to missing Qt."
+        Write-Host "To build server locally, install Qt from https://download.qt.io"
       
     - name: Verify output
       run: |

@@ -11,13 +11,16 @@ option(BUILD_CLIENT "Build client agent" ON)
 
 # 依赖查找
 find_package(Boost REQUIRED COMPONENTS system thread chrono)
-find_package(Qt6 COMPONENTS Widgets Concurrent Network)
-if(Qt6_FOUND)
-    set(QT_AVAILABLE TRUE)
-    message(STATUS "Qt6 found - server support enabled")
-else()
-    set(QT_AVAILABLE FALSE)
-    message(STATUS "Qt6 not found - disabling server build")
+# Qt6 is optional - only needed for server
+set(BUILD_SERVER_WITH_QT OFF)
+if(BUILD_SERVER)
+    find_package(Qt6 COMPONENTS Widgets Concurrent Network QUIET)
+    if(Qt6_FOUND)
+        set(BUILD_SERVER_WITH_QT ON)
+        message(STATUS "Qt6 found - building server with Qt GUI")
+    else()
+        message(WARNING "Qt6 not found - skipping server build (requires Qt)")
+    endif()
 endif()
 
 # Protocol Buffers
@@ -80,7 +83,7 @@ endif()
 
 # 服务端库
 if(BUILD_SERVER)
-    if(QT_AVAILABLE)
+    if(BUILD_SERVER_WITH_QT)
         add_library(server_lib STATIC
             server/src/listener.cpp
             server/src/tunnel_manager.cpp
@@ -103,7 +106,7 @@ if(BUILD_SERVER)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/"
         )
     else()
-        message(WARNING "Server build disabled: Qt6 not found")
+        message(FATAL_ERROR "Server build requested but Qt6 not found. Install Qt6 or set BUILD_SERVER=OFF")
     endif()
 endif()
 
