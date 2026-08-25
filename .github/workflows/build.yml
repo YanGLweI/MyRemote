@@ -18,19 +18,30 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Setup MSVC
-      uses: Microsoft/setup-msbuild@v2
+    - name: Install vcpkg dependencies
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: "ac0c48f631f44f5e9d1b6e18e6872c9e2ec2f60b"
+        runVcpkgInstallArgs: "openssl:x64 protobuf:x64 boost:x64"
       
     - name: Configure CMake
       working-directory: ${{github.workspace}}
       run: |
-        # Check available CMake generators
+        # Check available compilers
         cmake --version
-        Write-Host "Available generators:"
-        cmake --help | Select-String "Generators" -Context 0,10
+        g++ --version
+        Write-Host "Checking for MSVC..."
+        if (Test-Path "C:\Program Files\Microsoft Visual Studio\2022\*") {
+          Write-Host "MSVC found!"
+        } else {
+          Write-Host "MSVC not found in standard location. Available tools:"
+          Get-ChildItem "C:\Program Files" -Recurse -Filter "cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 3
+        }
         
         cmake -S . -B build `
-          -G Ninja `
+          -G "Visual Studio 17 2022" `
+          -A x64 `
+          -DCMAKE_TOOLCHAIN_FILE="${{github.workspace}}\.vcpkg\installed\scripts\buildsystems\vcpkg.cmake" `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_CLIENT=ON `
           -DBUILD_SERVER=OFF `
