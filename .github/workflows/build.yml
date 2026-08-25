@@ -25,8 +25,8 @@ jobs:
         if ($choco) {
           Write-Host "Chocolatey found, installing dependencies..."
           $env:ChocolateyInstall = "$env:ProgramData\chocolatey"
-          choco install openssl --version 1.1.1w -y --no-progress --params '/Dir:C:\OpenSSL'
-          $env:OPENSSL_ROOT_DIR = "C:/OpenSSL"
+          choco install openssl --version 3.3.2 -y --no-progress
+          $env:OPENSSL_ROOT_DIR = "C:\ProgramData\chocolatey\lib\openssl"
         } else {
           Write-Host "Chocolatey not available on this runner, skipping..."
         }
