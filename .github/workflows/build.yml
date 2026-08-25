@@ -27,13 +27,10 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
-    - name: Install OpenSSL dependencies
+    - name: Install dependencies with Chocolatey
       run: |
-        scoop install openssl1.1
-        
-    - name: Install Protocol Buffers
-      run: |
-        scoop install protobuf
+        choco install openssl --version 1.1.1w -y --no-progress
+        choco install protoc -y --no-progress
         
     - name: Configure CMake
       run: |
@@ -43,8 +40,7 @@ jobs:
           -DBUILD_CLIENT=ON `
           -DBUILD_SERVER=OFF `
           -DCMAKE_BUILD_TYPE=Release `
-          -DOPENSSL_ROOT_DIR="$env:SCOOP_PATH/programs/openssl" `
-          -DCMAKE_PREFIX_PATH="$env:ProgramFiles(x86)/OpenSSL-Win64"
+          -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" `
           
     - name: Build Client
       run: cmake --build ${{github.workspace}}/build --config Release
@@ -82,28 +78,26 @@ jobs:
       uses: jurplel/install-qt-action@v3
       with:
         version: '6.7.0'
-        cached: true
+        cache: true
         modules: 'qt5compat qtshadertools qtopenglwidgets'
         
-    - name: Install OpenSSL dependencies
+    - name: Install dependencies with Chocolatey
       run: |
-        scoop install openssl1.1
-        
-    - name: Install Protocol Buffers
-      run: |
-        scoop install protobuf
+        choco install openssl --version 1.1.1w -y --no-progress
+        choco install protoc -y --no-progress
         
     - name: Configure CMake
       run: |
+        $QT_PATH = Get-ChildItem -Path "$env:LOCALAPPDATA\QtProjects\Qt" -Directory | Where-Object {$_.Name -like "*6.7*"} | Select-Object -First 1
         cmake -B ${{github.workspace}}/build `
           -G "Visual Studio 17 2022" `
           -A x64 `
           -DBUILD_CLIENT=OFF `
           -DBUILD_SERVER=ON `
           -DCMAKE_BUILD_TYPE=Release `
-          -DOPENSSL_ROOT_DIR="$env:SCOOP_PATH/programs/openssl" `
-          -DCMAKE_PREFIX_PATH="${env:LOCALAPPDATA}\QtProjects\Qt\6.7.0\msvc2019_64" `
-          -DPOROTBUF_PROTOC_EXECUTABLE="$env:SCOOP_PATH\apps\protobuf\current\protoc.exe"
+          -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" `
+          -DCMAKE_PREFIX_PATH="$QT_PATH\msvc2019_64" `
+          -DProtobuf_PROTOC_EXECUTABLE="C:\Program Files\protobuf\protoc.exe"
           
     - name: Build Server
       run: cmake --build ${{github.workspace}}/build --config Release
