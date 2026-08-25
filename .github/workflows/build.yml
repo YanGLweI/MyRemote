@@ -22,15 +22,44 @@ jobs:
       
     - name: Verify Visual Studio installation
       run: |
-        $vsInstall = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\2022" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($vsInstall) {
-          Write-Host "✅ Visual Studio found at: $($vsInstall.FullName)"
-          $env:VSINSTALLDIR = $vsInstall.FullName
-          &"$($vsInstall.FullName)\Common7\Tools\MSBuild.exe" -version
+        # Look for all Visual Studio versions
+        $vsDirs = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
+        if ($vsDirs) {
+          Write-Host "✅ Found Visual Studio directories:"
+          foreach ($vs in $vsDirs) {
+            Write-Host "  - $($vs.Name)"
+            # Check for VS2022 specific folders (2022 = version)
+            if ($vs.Name -eq "2022") {
+              Write-Host "✅ Visual Studio 2022 found at: $($vs.FullName)"
+              $env:VSINSTALLDIR = $vs.FullName
+              break
+            }
+          }
+          
+          # If VS2022 not found but any VS exists, try to find suitable one
+          if (-not $env:VSINSTALLDIR) {
+            # Look for Common7 directory which indicates valid VS
+            $common7 = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\Common7" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($common7) {
+              $parent = $common7.Parent
+              Write-Host "✅ Using Visual Studio at: $($parent.FullName)"
+              $env:VSINSTALLDIR = $parent.FullName
+            } else {
+              throw "❌ No suitable Visual Studio installation found!"
+            }
+          }
+          
+          # Verify MSBuild
+          $msbuild = "$env:VSINSTALLDIR\Common7\Tools\MSBuild.exe"
+          if (Test-Path $msbuild) {
+            &amp;$msbuild -version
+            Write-Host "✅ MSBuild ready"
+          } else {
+            throw "❌ MSBuild not found at expected location!"
+          }
         } else {
-          Write-Host "Available Visual Studio versions:"
-          Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
-          throw "❌ Visual Studio 2022 not found!"
+          Write-Host "No Visual Studio directories found under C:\Program Files\Microsoft Visual Studio"
+          throw "❌ Visual Studio 2022 not found! GitHub Actions runner should have VS2022 pre-installed."
         }
       
     - name: Install dependencies with Chocolatey
@@ -68,84 +97,3 @@ jobs:
         name: agent-windows-x64
         path: ${{github.workspace}}/build/bin/Release/agent.exe
         retention-days: 30
-        
-  build-server:
-    name: Build Server Control Center (Windows x64)
-    runs-on: windows-latest
-    timeout-minutes: 45
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup MSVC developer environment
-      uses: microsoft/setup-msbuild@v2
-      
-    - name: Install dependencies with Chocolatey
-      run: |
-        choco install openssl --version 1.1.1w -y --no-progress
-        choco install protoc -y --no-progress
-        # Note: Qt may be pre-installed on some runners, check if available
-        
-    - name: Check for Qt installation
-      run: |
-        # Try to find Qt in common locations
-        $qtPaths = @(
-          "C:\Qt",
-          "$env:LOCALAPPDATA\QtProjects",
-          "C:\Program Files\Qt\*"
-        )
-        
-        foreach ($path in $qtPaths) {
-          $qtFound = Get-ChildItem -Path $path -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($qtFound) {
-            Write-Host "✅ Qt found at: $($qtFound.FullName)"
-            $env:QT_DIR = $qtFound.FullName
-            break
-          }
-        }
-        
-        if (-not $env:QT_DIR) {
-          Write-Host "❌ Qt not found in standard locations"
-          Write-Host "Available directories:"
-          Get-ChildItem -Path "C:\Program Files" -Filter "*Qt*" -Directory -ErrorAction SilentlyContinue
-          throw "Qt6 not found! Cannot build server without Qt."
-        }
-        
-    - name: Configure CMake
-      working-directory: ${{github.workspace}}
-      run: |
-        cmake -S . -B build `
-          -G "Visual Studio 17 2022" `
-          -A x64 `
-          -DBUILD_CLIENT=OFF `
-          -DBUILD_SERVER=ON `
-          -DCMAKE_BUILD_TYPE=Release `
-          
-    - name: Build Server with Qt support
-      working-directory: ${{github.workspace}}/build
-      run: cmake --build . --config Release
-      
-    - name: Check build output if Qt not found
-      if: failure()
-      run: |
-        Write-Host "Build failed, likely due to missing Qt."
-        Write-Host "To build server locally, install Qt from https://download.qt.io"
-      
-    - name: Verify output
-      run: |
-        if (Test-Path "${{github.workspace}}\build\bin\Release\control_server.exe") {
-          Write-Host "✅ Server built successfully!"
-          $exe = Get-ChildItem "${{github.workspace}}\build\bin\Release\control_server.exe"
-          Write-Host "File size: $($exe.Length / 1KB) KB"
-        } else {
-          throw "❌ Control server executable not found!"
-        }
-        
-    - name: Upload server artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: control_server-windows-x64
-        path: ${{github.workspace}}/build/bin/Release/control_server.exe
-        retention-days: 30
-        compression-level: 9
