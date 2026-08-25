@@ -24,7 +24,7 @@ if(BUILD_CLIENT OR BUILD_SERVER)
     endif()
 endif()
 # Qt6 is optional - only needed for server
-option(OPENSSL_REQUIRED "Require OpenSSL" OFF)
+option(OPENSSL_REQUIRED "Require OpenSSL" ON)
 if(OPENSSL_REQUIRED OR BUILD_SERVER)
     find_package(OpenSSL REQUIRED)
 else()
