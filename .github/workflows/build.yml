@@ -18,42 +18,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Setup Visual Studio Developer Environment
-      uses: microsoft/setup-msbuild@v2
-      
-    - name: Install dependencies with Chocolatey
-      run: |
-        # Install required dependencies via Chocolatey
-        choco install openssl --version 1.1.1w -y --no-progress
-        choco install protoc -y --no-progress
-        
-    - name: Setup vcpkg for Boost
-      uses: lukka/run-vcpkg@v11
-      with:
-        vcpkgGitCommitId: "3856e2c0ce2da7adb9b73a80f4fcd9f9208c75e5"
-        vcpkgDirectory: vcpkg
-      
-    - name: Configure CMake
+    - name: Configure CMake with MinGW
       working-directory: ${{github.workspace}}
       run: |
-        # Check available compilers
+        # Show available compilers
         cmake --version
         g++ --version
-        Write-Host "Checking for MSVC..."
-        if (Test-Path "C:\Program Files\Microsoft Visual Studio\2022\*") {
-          Write-Host "MSVC found!"
-        } else {
-          Write-Host "MSVC not found in standard location. Available tools:"
-          Get-ChildItem "C:\Program Files" -Recurse -Filter "cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 3
-        }
         
+        # Use MinGW Makefiles generator
         cmake -S . -B build `
-          -G "Visual Studio 17 2022" `
-          -A x64 `
-          -DCMAKE_TOOLCHAIN_FILE="${{github.workspace}}\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+          -G "MinGW Makefiles" `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_CLIENT=ON `
-          -DBUILD_SERVER=OFF `
+          -DBUILD_SERVER=OFF ``
           
     - name: Build Client
       working-directory: ${{github.workspace}}/build

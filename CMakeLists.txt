@@ -9,8 +9,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BUILD_SERVER "Build server control端" ON)
 option(BUILD_CLIENT "Build client agent" ON)
 
-# 依赖查找
-find_package(Boost REQUIRED COMPONENTS system thread chrono)
+# Boost is optional for client
+option(BOOST_REQUIRED "Require Boost" OFF)
+if(BUILD_CLIENT OR BUILD_SERVER)
+    if(BOOST_REQUIRED)
+        find_package(Boost REQUIRED COMPONENTS system thread chrono)
+    else()
+        find_package(Boost COMPONENTS system thread chrono)
+        if(Boost_FOUND)
+            message(STATUS "Boost found, using it")
+        else()
+            message(WARNING "Boost not found, some features may be disabled")
+        endif()
+    endif()
+endif()
 # Qt6 is optional - only needed for server
 set(BUILD_SERVER_WITH_QT OFF)
 if(BUILD_SERVER)
