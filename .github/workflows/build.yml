@@ -20,17 +20,6 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
-    - name: Verify MSBuild availability
-      run: |
-        $msbuild = (Get-Command msbuild -ErrorAction SilentlyContinue).Source
-        if ($msbuild) {
-          Write-Host "✅ MSBuild found at: $msbuild"
-          # Get version
-          &amp;msbuild -version
-        } else {
-          throw "❌ MSBuild not available in PATH!"
-        }
-      
     - name: Install dependencies with Chocolatey
       run: |
         choco install openssl --version 1.1.1w -y --no-progress
