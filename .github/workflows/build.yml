@@ -20,46 +20,15 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
-    - name: Verify Visual Studio installation
+    - name: Verify MSBuild availability
       run: |
-        # Look for all Visual Studio versions
-        $vsDirs = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
-        if ($vsDirs) {
-          Write-Host "✅ Found Visual Studio directories:"
-          foreach ($vs in $vsDirs) {
-            Write-Host "  - $($vs.Name)"
-            # VS directories are named by major version ("18" = VS2022, "19" = VS2022+)
-            if ($vs.Name -match "^[12][0-9]$") {
-              Write-Host "✅ Visual Studio $vs found at: $($vs.FullName)"
-              $env:VSINSTALLDIR = $vs.FullName
-              break
-            }
-          }
-          
-          # If VS2022 not found but any VS exists, try to find suitable one
-          if (-not $env:VSINSTALLDIR) {
-            # Look for Common7 directory which indicates valid VS
-            $common7 = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\Common7" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($common7) {
-              $parent = $common7.Parent
-              Write-Host "✅ Using Visual Studio at: $($parent.FullName)"
-              $env:VSINSTALLDIR = $parent.FullName
-            } else {
-              throw "❌ No suitable Visual Studio installation found!"
-            }
-          }
-          
-          # Verify MSBuild
-          $msbuild = "$env:VSINSTALLDIR\Common7\Tools\MSBuild.exe"
-          if (Test-Path $msbuild) {
-            & $msbuild -property:PlatformToolset | Select-Object -First 1
-            Write-Host "✅ MSBuild ready"
-          } else {
-            throw "❌ MSBuild not found at expected location!"
-          }
+        $msbuild = (Get-Command msbuild -ErrorAction SilentlyContinue).Source
+        if ($msbuild) {
+          Write-Host "✅ MSBuild found at: $msbuild"
+          # Get version
+          &amp;msbuild -version
         } else {
-          Write-Host "No Visual Studio directories found under C:\Program Files\Microsoft Visual Studio"
-          throw "❌ Visual Studio 2022 not found! GitHub Actions runner should have VS2022 pre-installed."
+          throw "❌ MSBuild not available in PATH!"
         }
       
     - name: Install dependencies with Chocolatey
