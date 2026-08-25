@@ -54,14 +54,17 @@ else()
 endif()
 
 # Generate protocol buffer sources
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
-    common/include/protocol.proto
-)
+if(Protobuf_FOUND)
+    protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
+        common/include/protocol.proto
+    )
+else()
+    message(WARNING "Skipping proto generation - no protoc found")
+endif()
 
 # Windows 特定库 (桌面捕获和编码)
 if(WIN32)
-    find_package(DXGUID REQUIRED)
-    # Media Foundation - 动态链接避免 DLL 依赖问题
+    # No additional Windows-specific libraries needed (already in client_lib)
 endif()
 
 # 头文件目录
