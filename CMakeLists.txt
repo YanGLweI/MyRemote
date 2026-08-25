@@ -140,6 +140,11 @@ if(BUILD_SERVER)
 endif()
 
 # Install rules
-install(TARGETS agent control_server
+install(TARGETS agent
     RUNTIME DESTINATION bin
 )
+if(BUILD_SERVER AND BUILD_SERVER_WITH_QT)
+    install(TARGETS control_server
+        RUNTIME DESTINATION bin
+    )
+endif()
