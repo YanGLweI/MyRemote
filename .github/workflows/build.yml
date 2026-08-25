@@ -25,7 +25,24 @@ jobs:
         if ($choco) {
           Write-Host "Chocolatey found, installing dependencies..."
           $env:ChocolateyInstall = "$env:ProgramData\chocolatey"
+          
+          # List available OpenSSL packages
+          Write-Host "`n=== Available OpenSSL Packages ==="
+          $sslPackages = choco search openssl --exact --no-cache | Select-String "^openssl "
+          if ($sslPackages) {
+            $sslPackages | ForEach-Object { Write-Host $_ }
+          } else {
+            Write-Host "No exact match found, listing all openssl packages..."
+            choco search openssl --no-cache | Select-Object -First 10 | ForEach-Object { Write-Host $_ }
+          }
+          
+          # Install OpenSSL with specific package structure
+          Write-Host "`n=== Installing OpenSSL ==="
           choco install openssl -y --no-progress
+          
+          # Verify installation
+          Write-Host "`n=== Verifying Installation ==="
+          choco list --local-only | Select-String openssl | ForEach-Object { Write-Host $_ }
           
           Write-Host "`n=== Searching for OpenSSL Installation ==="
           
@@ -45,47 +62,38 @@ jobs:
             Write-Host "✅ Found openssl.h at: $($opensslHeader.FullName)"
             Write-Host "✅ Set OPENSSL_ROOT_DIR=$normalizedRoot"
           } else {
-            # Fallback: try common installation paths
-            Write-Host "openssl.h not found in standard locations, trying common paths..."
-            
-            $possiblePaths = @(
-              "C:/ProgramData/chocolatey/lib/openssl",
-              "C:/Program Files/OpenSSL",
-              "C:/OpenSSL",
-              "C:/OpenSSL-Win64",
-              "C:/tools/openssl"
-            )
-            
-            foreach ($path in $possiblePaths) {
-              if (Test-Path $path) {
-                # Check if this path contains OpenSSL components
-                $hasInclude = Test-Path "$path/include"
-                $hasLib = Test-Path "$path/lib"
-                
-                if ($hasInclude -or $hasLib) {
-                  Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$path"
-                  Write-Host "✅ Found at: $path"
-                  break
-                }
-              }
+            Write-Host "❌ Could not find openssl.h file - this is unusual!"
+            Write-Host "Searching for any .h files containing 'ssl' in name..."
+            $sslHeaders = Get-ChildItem "C:\" -Recurse -Filter "*ssl*.h" -ErrorAction SilentlyContinue | Select-Object -First 3 FullName
+            if ($sslHeaders) {
+              Write-Host "Found SSL-related headers:"
+              $sslHeaders | ForEach-Object { Write-Host "  - $_" }
+            } else {
+              Write-Host "No SSL headers found at all."
             }
-            
-            if (-not $env:OPENSSL_ROOT_DIR) {
-              Write-Host "❌ OpenSSL installation not found in any standard location"
-              throw "Cannot locate OpenSSL installation. Please verify Chocolatey package was installed correctly."
-            }
+            throw "OpenSSL installation appears incomplete or corrupted."
           }
           
-          # Verify OPENSSL_ROOT_DIR is set
-          Write-Host "`nVerifying OPENSSL_ROOT_DIR:"
+          # Verify OPENSSL_ROOT_DIR is set correctly
+          Write-Host "`n=== Final Verification ==="
           if ($env:OPENSSL_ROOT_DIR) {
-            Write-Host "  Value: $env:OPENSSL_ROOT_DIR"
-            Write-Host "  Exists: $(Test-Path $env:OPENSSL_ROOT_DIR)"
+            Write-Host "✓ OPENSSL_ROOT_DIR value: $($env:OPENSSL_ROOT_DIR)"
+            Write-Host "✓ Path exists: $(Test-Path $env:OPENSSL_ROOT_DIR)"
             
-            # List subdirectories
-            Get-ChildItem $env:OPENSSL_ROOT_DIR -Directory | 
-              Select-Object Name, @{N='Count';E={$_.Files.Count + $_.Directories.Count}} | 
-              Format-Table -AutoSize
+            # Check for expected subdirectories
+            $hasInclude = Test-Path "$env:OPENSSL_ROOT_DIR/include"
+            $hasLib = Test-Path "$env:OPENSSL_ROOT_DIR/lib"
+            $hasBin = Test-Path "$env:OPENSSL_ROOT_DIR/bin"
+            
+            Write-Host "✓ Has include dir: $hasInclude"
+            Write-Host "✓ Has lib dir: $hasLib"
+            Write-Host "✓ Has bin dir: $hasBin"
+            
+            if (-not ($hasInclude -or $hasLib)) {
+              Write-Host "WARNING: Neither include nor lib directories found!"
+              Write-Host "Listing actual contents:"
+              Get-ChildItem $env:OPENSSL_ROOT_DIR | Select-Object Name, Length, Mode | Format-Table -AutoSize
+            }
           } else {
             Write-Host "ERROR: OPENSSL_ROOT_DIR is not set!"
             throw "Failed to configure OpenSSL environment variable"
