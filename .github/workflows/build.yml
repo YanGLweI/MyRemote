@@ -1,4 +1,4 @@
-name: Build MyRemote Control (Client Only)
+name: Build MyRemote (Client)
 
 on:
   push:
@@ -7,11 +7,13 @@ on:
     branches: [ main ]
   
   workflow_dispatch:
+  
+timeout-minutes: 30
 
 jobs:
   build:
     name: Build Client Agent (Windows x64)
-    runs-on: windows-2019
+    runs-on: windows-latest
     
     steps:
     - name: Checkout code
