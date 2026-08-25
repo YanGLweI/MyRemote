@@ -80,7 +80,7 @@ add_library(common_lib STATIC
 )
 target_link_libraries(common_lib PUBLIC
     $<$<BOOL:${Protobuf_FOUND}>:${PROTOBUF_LIBRARIES}>
-    $<$<BOOL:${OPENSSL_REQUIRED AND OpenSSL_FOUND}>:OpenSSL::Crypto>
+    $<$<AND:$<BOOL:${OPENSSL_REQUIRED}>,$<BOOL:${OpenSSL_FOUND}>>:OpenSSL::Crypto>
 )
 
 # 客户端库
