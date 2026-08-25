@@ -36,45 +36,64 @@ jobs:
             choco search openssl --no-cache | Select-Object -First 10 | ForEach-Object { Write-Host $_ }
           }
           
-          # Install OpenSSL with specific package structure
-          Write-Host "`n=== Installing OpenSSL ==="
-          choco install openssl -y --no-progress
+          # Try multiple approaches to get OpenSSL
+          $openSslFound = $false
           
-          # Verify installation
-          Write-Host "`n=== Verifying Installation ==="
-          choco list --local-only | Select-String openssl | ForEach-Object { Write-Host $_ }
+          # Approach 1: Try pre-installed OpenSSL in common locations first
+          Write-Host "`n=== Checking for Pre-installed OpenSSL ==="
+          $preInstalledPaths = @(
+            "C:/OpenSSL-Light",
+            "C:/msys64/ucrt64",  # MSYS2 might have it
+            "C:/mingw64"         # MinGW might have bundled it
+          )
           
-          Write-Host "`n=== Searching for OpenSSL Installation ==="
-          
-          # Method 1: Search for openssl.h to find exact installation path
-          Write-Host "Looking for openssl.h files..."
-          $opensslHeader = Get-ChildItem "C:\" -Recurse -Filter "openssl.h" -ErrorAction SilentlyContinue | 
-            Select-Object -First 1 FullName
-            
-          if ($opensslHeader) {
-            # Extract root directory from header path
-            # Path format: C:\SomePath\include\openssl\openssl.h
-            $includeDir = Split-Path $opensslHeader.FullName -Parent
-            $rootDir = Split-Path $includeDir -Parent
-            $normalizedRoot = $rootDir.Replace('\', '/')
-            
-            Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$normalizedRoot"
-            Write-Host "✅ Found openssl.h at: $($opensslHeader.FullName)"
-            Write-Host "✅ Set OPENSSL_ROOT_DIR=$normalizedRoot"
-          } else {
-            Write-Host "❌ Could not find openssl.h file - this is unusual!"
-            Write-Host "Searching for any .h files containing 'ssl' in name..."
-            $sslHeaders = Get-ChildItem "C:\" -Recurse -Filter "*ssl*.h" -ErrorAction SilentlyContinue | Select-Object -First 3 FullName
-            if ($sslHeaders) {
-              Write-Host "Found SSL-related headers:"
-              $sslHeaders | ForEach-Object { Write-Host "  - $_" }
-            } else {
-              Write-Host "No SSL headers found at all."
+          foreach ($path in $preInstalledPaths) {
+            if (Test-Path "$path/include/openssl/openssl.h") {
+              $normalized = $path.Replace('\', '/')
+              Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$normalized"
+              Write-Host "✅ Found pre-installed at: $normalized"
+              $openSslFound = $true
+              break
             }
-            throw "OpenSSL installation appears incomplete or corrupted."
           }
           
-          # Verify OPENSSL_ROOT_DIR is set correctly
+          # Approach 2: If not found, try Chocolatey
+          if (-not $openSslFound) {
+            Write-Host "`n=== Installing OpenSSL via Chocolatey ==="
+            choco install openssl -y --no-progress
+            
+            # Verify installation
+            Write-Host "`n=== Verifying Installation ==="
+            choco list --local-only | Select-String openssl | ForEach-Object { Write-Host $_ }
+          }
+          
+          # If still not found, do comprehensive search
+          if (-not $openSslFound) {
+            Write-Host "`n=== Comprehensive Search for OpenSSL ==="
+            
+            # Method 1: Search for openssl.h to find exact installation path
+            Write-Host "Looking for openssl.h files..."
+            $opensslHeader = Get-ChildItem "C:\" -Recurse -Filter "openssl.h" -ErrorAction SilentlyContinue | 
+              Select-Object -First 1 FullName
+              
+            if ($opensslHeader) {
+              # Extract root directory from header path
+              # Path format: C:\SomePath\include\openssl\openssl.h
+              $includeDir = Split-Path $opensslHeader.FullName -Parent
+              $rootDir = Split-Path $includeDir -Parent
+              $normalizedRoot = $rootDir.Replace('\', '/')
+              
+              Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$normalizedRoot"
+              Write-Host "✅ Found openssl.h at: $($opensslHeader.FullName)"
+              Write-Host "✅ Set OPENSSL_ROOT_DIR=$normalizedRoot"
+              $openSslFound = $true
+            } else {
+              Write-Host "❌ Could not find openssl.h file - this is unusual!"
+              throw "OpenSSL installation appears incomplete or corrupted."
+            }
+          }
+          
+          # Final verification
           Write-Host "`n=== Final Verification ==="
           if ($env:OPENSSL_ROOT_DIR) {
             Write-Host "✓ OPENSSL_ROOT_DIR value: $($env:OPENSSL_ROOT_DIR)"
