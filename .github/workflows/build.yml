@@ -25,10 +25,15 @@ jobs:
         if ($choco) {
           Write-Host "Chocolatey found, installing dependencies..."
           $env:ChocolateyInstall = "$env:ProgramData\chocolatey"
-          choco install openssl --version 3.3.2 -y --no-progress
-          $env:OPENSSL_ROOT_DIR = "C:\ProgramData\chocolatey\lib\openssl"
+          # Try without version to get latest available
+          choco install openssl -y --no-progress
+          Write-Host "Checking for OpenSSL installation..."
+          if (Test-Path "C:\ProgramData\chocolatey\lib\openssl") {
+            $env:OPENSSL_ROOT_DIR = "C:\ProgramData\chocolatey\lib\openssl"
+            Write-Host "OPENSSL_ROOT_DIR set to: $env:OPENSSL_ROOT_DIR"
+          }
         } else {
-          Write-Host "Chocolatey not available on this runner, skipping..."
+          Write-Host "OpenSSL not found after Chocolatey install"
         }
       
     - name: Configure CMake with MinGW
