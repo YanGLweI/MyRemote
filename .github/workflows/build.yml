@@ -3,12 +3,6 @@ name: Build MyRemote Control (Windows Only)
 on:
   push:
     branches: [ main, master ]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - '**/CMakeLists.txt'
-      - '*.cmake'
-      - '*.bat'
   pull_request:
     branches: [ main, master ]
   
@@ -32,26 +26,28 @@ jobs:
         choco install protoc -y --no-progress
         
     - name: Configure CMake
+      working-directory: ${{github.workspace}}
       run: |
-        cmake -B ${{github.workspace}}/build `
+        cmake -B build `
           -G "Visual Studio 17 2022" `
           -A x64 `
           -DBUILD_CLIENT=ON `
           -DBUILD_SERVER=OFF `
           -DCMAKE_BUILD_TYPE=Release `
-          -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" `
+          -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL" `
           
     - name: Build Client
-      run: cmake --build ${{github.workspace}}/build --config Release
+      working-directory: ${{github.workspace}}/build
+      run: cmake --build . --config Release
       
     - name: Verify output
       run: |
         if (Test-Path "${{github.workspace}}\build\bin\Release\agent.exe") {
-          Write-Host "Client built successfully!"
+          Write-Host "✅ Client built successfully!"
           $exe = Get-ChildItem "${{github.workspace}}\build\bin\Release\agent.exe"
           Write-Host "File size: $($exe.Length / 1KB) KB"
         } else {
-          throw "Agent executable not found!"
+          throw "❌ Agent executable not found!"
         }
       
     - name: Upload client artifact
@@ -60,7 +56,6 @@ jobs:
         name: agent-windows-x64
         path: ${{github.workspace}}/build/bin/Release/agent.exe
         retention-days: 30
-        compression-level: 9
         
   build-server:
     name: Build Server Control Center (Windows x64)
@@ -74,49 +69,33 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
-    - name: Install OpenSSL with Chocolatey
+    - name: Install dependencies with Chocolatey
       run: |
         choco install openssl --version 1.1.1w -y --no-progress
-        
-    - name: Install Protocol Buffers with Chocolatey
-      run: |
         choco install protoc -y --no-progress
         
-    - name: Download Qt manually
-      uses: jpetrucciani/download-file-from-reaction@v1
-      with:
-        url: https://download.qt.io/official_releases/qt/6.5/6.5.2/single/qt-6.5.2-msvc2019_64.exe
-        
-    - name: Extract Qt installer
-      run: |
-        # Skip GUI installation, use command line
-        Start-Process -FilePath "qt-6.5.2-msvc2019_64.exe" `
-          -ArgumentList "/silent", "--accept-licenses", "--confirm-command", "--extract", "$env:TEMP\qt", "-norestart" `
-          -Wait
-        
     - name: Configure CMake
+      working-directory: ${{github.workspace}}
       run: |
-        cmake -B ${{github.workspace}}/build `
+        cmake -B build `
           -G "Visual Studio 17 2022" `
           -A x64 `
           -DBUILD_CLIENT=OFF `
           -DBUILD_SERVER=ON `
           -DCMAKE_BUILD_TYPE=Release `
-          -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" `
-          -DCMAKE_PREFIX_PATH="$env:TEMP\qt\msvc2019_64" `
-          -DProtobuf_PROTOC_EXECUTABLE="C:\Program Files\protobuf\protoc.exe"
           
-    - name: Build Server
-      run: cmake --build ${{github.workspace}}/build --config Release
+    - name: Build Server (without Qt for now)
+      working-directory: ${{github.workspace}}/build
+      run: cmake --build . --config Release
       
     - name: Verify output
       run: |
         if (Test-Path "${{github.workspace}}\build\bin\Release\control_server.exe") {
-          Write-Host "Server built successfully!"
+          Write-Host "✅ Server built successfully!"
           $exe = Get-ChildItem "${{github.workspace}}\build\bin\Release\control_server.exe"
           Write-Host "File size: $($exe.Length / 1KB) KB"
         } else {
-          throw "Control server executable not found!"
+          throw "❌ Control server executable not found!"
         }
         
     - name: Upload server artifact
