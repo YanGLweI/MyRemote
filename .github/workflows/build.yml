@@ -18,30 +18,37 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Setup MSVC developer environment
-      uses: microsoft/setup-msbuild@v2
+    - name: Setup MSVC
+      uses: Microsoft/setup-msbuild@v2
       
     - name: Configure CMake
       working-directory: ${{github.workspace}}
       run: |
+        # Check available CMake generators
+        cmake --version
+        Write-Host "Available generators:"
+        cmake --help | Select-String "Generators" -Context 0,10
+        
         cmake -S . -B build `
-          -G "Visual Studio 17 2022" `
-          -A x64 `
+          -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_CLIENT=ON `
           -DBUILD_SERVER=OFF `
-          -DCMAKE_BUILD_TYPE=Release `
           
     - name: Build Client
       working-directory: ${{github.workspace}}/build
-      run: cmake --build . --config Release
+      run: cmake --build .
       
     - name: Verify output
       run: |
-        if (Test-Path "${{github.workspace}}\build\bin\Release\agent.exe") {
+        if (Test-Path "${{github.workspace}}\build\agent.exe") {
           Write-Host "✅ Client built successfully!"
-          $exe = Get-ChildItem "${{github.workspace}}\build\bin\Release\agent.exe"
+          $exe = Get-ChildItem "${{github.workspace}}\build\agent.exe"
           Write-Host "File size: $($exe.Length / 1KB) KB"
         } else {
+          # Check bin directory for alternative location
+          $buildDirs = Get-ChildItem "${{github.workspace}}\build" -Directory
+          Write-Host "Build directories: $($buildDirs.Name -join ', ')"
           throw "❌ Agent executable not found!"
         }
       
@@ -49,5 +56,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: agent-windows-x64
-        path: ${{github.workspace}}/build/bin/Release/agent.exe
+        path: ${{github.workspace}}/build/agent.exe
         retention-days: 30
