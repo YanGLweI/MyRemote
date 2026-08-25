@@ -28,18 +28,20 @@ jobs:
           # Try without version to get latest available
           choco install openssl -y --no-progress
           Write-Host "Checking for OpenSSL installation..."
-          if (Test-Path "C:\ProgramData\chocolatey\lib\openssl") {
-            $env:OPENSSL_ROOT_DIR = "C:\ProgramData\chocolatey\lib\openssl"
-            Write-Host "OPENSSL_ROOT_DIR set to: $env:OPENSSL_ROOT_DIR"
+          $installPath = "C:\ProgramData\chocolatey\lib\openssl"
+          if (Test-Path $installPath) {
+            $env:OPENSSL_ROOT_DIR = $installPath
+            Write-Host "✅ OPENSSL_ROOT_DIR set to: $env:OPENSSL_ROOT_DIR"
+          } else {
+            Write-Host "❌ OpenSSL not found after Chocolatey install"
           }
         } else {
-          Write-Host "OpenSSL not found after Chocolatey install"
+          Write-Host "⚠️ Chocolatey not available on this runner, skipping..."
         }
+      shell: pwsh
       
     - name: Configure CMake with MinGW
       working-directory: ${{github.workspace}}
-      env:
-        OPENSSL_ROOT_DIR: "C:/OpenSSL"
       run: |
         # Show available compilers
         cmake --version
