@@ -52,7 +52,7 @@ jobs:
           # Verify MSBuild
           $msbuild = "$env:VSINSTALLDIR\Common7\Tools\MSBuild.exe"
           if (Test-Path $msbuild) {
-            &amp;$msbuild -version
+            & $msbuild -property:PlatformToolset | Select-Object -First 1
             Write-Host "✅ MSBuild ready"
           } else {
             throw "❌ MSBuild not found at expected location!"
