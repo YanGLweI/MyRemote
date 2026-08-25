@@ -24,11 +24,15 @@ if(BUILD_CLIENT OR BUILD_SERVER)
     endif()
 endif()
 # Qt6 is optional - only needed for server
-option(OPENSSL_REQUIRED "Require OpenSSL" ON)
-if(OPENSSL_REQUIRED OR BUILD_SERVER)
-    find_package(OpenSSL REQUIRED)
-else()
-    find_package(OpenSSL QUIET)
+# OpenSSL is required for encryption (used by common_lib)
+if(WIN32)
+    # On Windows, try to find OpenSSL
+    find_package(OpenSSL)
+    if(OpenSSL_FOUND)
+        message(STATUS "OpenSSL found")
+    else()
+        message(FATAL_ERROR "OpenSSL not found! Please install via Chocolatey: choco install openssl")
+    endif()
 endif()
 set(BUILD_SERVER_WITH_QT OFF)
 if(BUILD_SERVER)
@@ -80,7 +84,7 @@ add_library(common_lib STATIC
 )
 target_link_libraries(common_lib PUBLIC
     $<$<BOOL:${Protobuf_FOUND}>:${PROTOBUF_LIBRARIES}>
-    $<$<AND:$<BOOL:${OPENSSL_REQUIRED}>,$<BOOL:${OpenSSL_FOUND}>>:OpenSSL::Crypto>
+    OpenSSL::Crypto
 )
 
 # 客户端库

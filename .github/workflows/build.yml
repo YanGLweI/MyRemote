@@ -25,15 +25,37 @@ jobs:
         if ($choco) {
           Write-Host "Chocolatey found, installing dependencies..."
           $env:ChocolateyInstall = "$env:ProgramData\chocolatey"
-          # Try without version to get latest available
           choco install openssl -y --no-progress
-          Write-Host "Checking for OpenSSL installation..."
-          $installPath = "C:\ProgramData\chocolatey\lib\openssl"
-          if (Test-Path $installPath) {
-            $env:OPENSSL_ROOT_DIR = $installPath
-            Write-Host "✅ OPENSSL_ROOT_DIR set to: $env:OPENSSL_ROOT_DIR"
+          
+          Write-Host "=== Checking OpenSSL Installation ==="
+          # Chocolatey installs to various locations depending on version
+          # Try multiple possible locations
+          $possiblePaths = @(
+            "C:\ProgramData\chocolatey\lib\openssl",
+            "C:\Program Files\OpenSSL",
+            "C:\OpenSSL",
+            "C:\OpenSSL-Win64",
+            "C:\tools\openssl"
+          )
+          
+          $foundPath = $null
+          foreach ($path in $possiblePaths) {
+            if (Test-Path $path) {
+              Write-Host "✅ Found at: $path"
+              $foundPath = $path
+              break
+            }
+          }
+          
+          if ($foundPath) {
+            # Export as environment variable for CMake
+            Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$($foundPath.Replace('\', '/'))"
+            Write-Host "Set GITHUB_ENV: OPENSSL_ROOT_DIR=$($foundPath.Replace('\', '/'))"
           } else {
-            Write-Host "❌ OpenSSL not found after Chocolatey install"
+            Write-Host "❌ OpenSSL not found in any standard location"
+            Write-Host "Available directories in ProgramData:"
+            Get-ChildItem "$env:ProgramData" -Filter "*ssl*" -Directory | Select-Object Name
+            throw "Cannot find OpenSSL installation!"
           }
         } else {
           Write-Host "⚠️ Chocolatey not available on this runner, skipping..."
@@ -52,7 +74,7 @@ jobs:
           -G "MinGW Makefiles" `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_CLIENT=ON `
-          -DBUILD_SERVER=OFF ``
+          -DBUILD_SERVER=OFF
           
     - name: Build Client
       working-directory: ${{github.workspace}}/build
