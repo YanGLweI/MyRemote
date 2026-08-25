@@ -1,4 +1,4 @@
-name: Build MyRemote Control
+name: Build MyRemote Control (Windows Only)
 
 on:
   push:
@@ -11,6 +11,9 @@ on:
       - '*.bat'
   pull_request:
     branches: [ main, master ]
+  
+  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   build-client:
@@ -24,17 +27,37 @@ jobs:
     - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
+    - name: Install OpenSSL dependencies
+      run: |
+        scoop install openssl1.1
+        
+    - name: Install Protocol Buffers
+      run: |
+        scoop install protobuf
+        
     - name: Configure CMake
       run: |
-        cmake -B ${{github.workspace}}/build ^
-          -G "Visual Studio 17 2022" ^
-          -A x64 ^
-          -DBUILD_CLIENT=ON ^
-          -DBUILD_SERVER=OFF ^
-          -DCMAKE_BUILD_TYPE=Release
+        cmake -B ${{github.workspace}}/build `
+          -G "Visual Studio 17 2022" `
+          -A x64 `
+          -DBUILD_CLIENT=ON `
+          -DBUILD_SERVER=OFF `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DOPENSSL_ROOT_DIR="$env:SCOOP_PATH/programs/openssl" `
+          -DCMAKE_PREFIX_PATH="$env:ProgramFiles(x86)/OpenSSL-Win64"
           
     - name: Build Client
       run: cmake --build ${{github.workspace}}/build --config Release
+      
+    - name: Verify output
+      run: |
+        if (Test-Path "${{github.workspace}}\build\bin\Release\agent.exe") {
+          Write-Host "Client built successfully!"
+          $exe = Get-ChildItem "${{github.workspace}}\build\bin\Release\agent.exe"
+          Write-Host "File size: $($exe.Length / 1KB) KB"
+        } else {
+          throw "Agent executable not found!"
+        }
       
     - name: Upload client artifact
       uses: actions/upload-artifact@v4
@@ -42,6 +65,7 @@ jobs:
         name: agent-windows-x64
         path: ${{github.workspace}}/build/bin/Release/agent.exe
         retention-days: 30
+        compression-level: 9
         
   build-server:
     name: Build Server Control Center (Windows x64)
@@ -51,147 +75,83 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Setup MSVC
+    - name: Setup MSVC developer environment
       uses: microsoft/setup-msbuild@v2
       
-    - name: Install Qt dependencies
-      # Note: Qt installation typically requires pre-built cache or manual setup
+    - name: Install Qt 6.x for MSVC 2019
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.7.0'
+        cached: true
+        modules: 'qt5compat qtshadertools qtopenglwidgets'
+        
+    - name: Install OpenSSL dependencies
       run: |
-        echo "Qt needs to be installed separately. Using system Qt if available."
+        scoop install openssl1.1
+        
+    - name: Install Protocol Buffers
+      run: |
+        scoop install protobuf
         
     - name: Configure CMake
       run: |
-        cmake -B ${{github.workspace}}/build ^
-          -G "Visual Studio 17 2022" ^
-          -A x64 ^
-          -DBUILD_CLIENT=OFF ^
-          -DBUILD_SERVER=ON ^
-          -DCMAKE_BUILD_TYPE=Release ^
-          -DCMAKE_PREFIX_PATH="C:/Program Files (x86)/Qt/6.x.x/msvc2019_64"
+        cmake -B ${{github.workspace}}/build `
+          -G "Visual Studio 17 2022" `
+          -A x64 `
+          -DBUILD_CLIENT=OFF `
+          -DBUILD_SERVER=ON `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DOPENSSL_ROOT_DIR="$env:SCOOP_PATH/programs/openssl" `
+          -DCMAKE_PREFIX_PATH="${env:LOCALAPPDATA}\QtProjects\Qt\6.7.0\msvc2019_64" `
+          -DPOROTBUF_PROTOC_EXECUTABLE="$env:SCOOP_PATH\apps\protobuf\current\protoc.exe"
           
     - name: Build Server
       run: cmake --build ${{github.workspace}}/build --config Release
       
+    - name: Verify output
+      run: |
+        if (Test-Path "${{github.workspace}}\build\bin\Release\control_server.exe") {
+          Write-Host "Server built successfully!"
+          $exe = Get-ChildItem "${{github.workspace}}\build\bin\Release\control_server.exe"
+          Write-Host "File size: $($exe.Length / 1KB) KB"
+        } else {
+          throw "Control server executable not found!"
+        }
+        
     - name: Upload server artifact
       uses: actions/upload-artifact@v4
       with:
         name: control_server-windows-x64
         path: ${{github.workspace}}/build/bin/Release/control_server.exe
         retention-days: 30
+        compression-level: 9
         
-  build-ubuntu-debian:
-    name: Build for Linux (Ubuntu/Debian)
-    runs-on: ubuntu-22.04
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          g++ \
-          cmake \
-          libboost-dev \
-          libboost-system-dev \
-          libboost-thread-dev \
-          qtbase5-dev \
-          qtx11extras5-dev \
-          libqt5opengl5-dev \
-          libqt5widgets5 \
-          protobuf-compiler \
-          libprotobuf-dev \
-          libssl-dev \
-          openssl \
-          pkg-config
-            
-    - name: Setup Qt
-      uses: jurplel/install-qt-action@v3
-      with:
-        version: '5.15.2'
-        cached: true
-        
-    - name: Configure CMake
-      run: |
-        cmake -B ${{github.workspace}}/build \
-          -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_PREFIX_PATH="$QT_INSTALL_PREFIX"
-          
-    - name: Build with Ninja
-      run: ninja -C ${{github.workspace}}/build
-      
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: myremote-linux-x64
-        path: ${{github.workspace}}/build/bin/
-        retention-days: 30
-        
-  build-clang:
-    name: Build with Clang (Cross-platform test)
-    runs-on: ubuntu-22.04
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install Clang and dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          clang-14 \
-          cmake \
-          libboost-all-dev \
-          protobuf-compiler \
-          libprotobuf-dev \
-          libssl-dev \
-          ninja-build
-          
-    - name: Configure CMake with Clang
-      run: |
-        cmake -B ${{github.workspace}}/build \
-          -G Ninja \
-          -DCMAKE_C_COMPILER=clang-14 \
-          -DCMAKE_CXX_COMPILER=clang++-14 \
-          -DCMAKE_BUILD_TYPE=Release
-          
-    - name: Build
-      run: |
-        cd ${{github.workspace}}/build
-        ninja
-      
-    - name: Upload clibin artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: myremote-clang-linux
-        path: ${{github.workspace}}/build/bin/
-        retention-days: 30
-
-  deploy-release:
-    name: Deploy release assets
-    runs-on: ubuntu-22.04
+  verify-builds:
+    name: Verify All Builds
     needs: [build-client, build-server]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       
-    - name: Create release archive
+    - name: List downloaded files
       run: |
-        mkdir release-assets
-        cp -r agent-windows-x64/*.exe release-assets/
-        ls -la release-assets/
+        echo "Downloaded artifacts:"
+        find . -type f -name "*.exe" | head -20
         
-    - name: Upload release
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: release-assets/*/*
-        tag_name: auto-build-${{ github.sha }}
-        name: Automated build ${{ github.sha }}
-        body: "Auto-generated build from workflow"
-        draft: false
-        prerelease: false
+    - name: Create summary
+      run: |
+        echo "# Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Client Artifact" >> $GITHUB_STEP_SUMMARY
+        if [ -f "agent-windows-x64/agent.exe" ]; then
+          echo "✅ agent.exe exists" >> $GITHUB_STEP_SUMMARY
+          echo "Size: $(du -h agent-windows-x64/agent.exe)" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Server Artifact" >> $GITHUB_STEP_SUMMARY
+        if [ -f "control_server-windows-x64/control_server.exe" ]; then
+          echo "✅ control_server.exe exists" >> $GITHUB_STEP_SUMMARY
+          echo "Size: $(du -h control_server-windows-x64/control_server.exe)" >> $GITHUB_STEP_SUMMARY
+        fi
