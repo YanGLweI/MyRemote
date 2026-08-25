@@ -92,7 +92,6 @@ if(BUILD_CLIENT)
         client/src/input_simulator.cpp
         client/src/heartbeat.cpp
         client/src/auto_reconnect.cpp
-        client/src/client_agent.cpp
     )
     target_link_libraries(client_lib PRIVATE
         common_lib
@@ -102,7 +101,7 @@ if(BUILD_CLIENT)
     )
     
     # Client 可执行文件
-    add_executable(agent WIN32 client/src/main.cpp)
+    add_executable(agent client/src/main.cpp)
     target_link_libraries(agent PRIVATE client_lib)
     set_target_properties(agent PROPERTIES
         OUTPUT_NAME "agent"
