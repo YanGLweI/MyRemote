@@ -82,20 +82,34 @@ jobs:
       
     - name: Verify output
       run: |
-        if (Test-Path "${{github.workspace}}\build\agent.exe") {
-          Write-Host "✅ Client built successfully!"
-          $exe = Get-ChildItem "${{github.workspace}}\build\agent.exe"
-          Write-Host "File size: $($exe.Length / 1KB) KB"
-        } else {
-          # Check bin directory for alternative location
-          $buildDirs = Get-ChildItem "${{github.workspace}}\build" -Directory
-          Write-Host "Build directories: $($buildDirs.Name -join ', ')"
-          throw "❌ Agent executable not found!"
+        $possiblePaths = @(
+          "${{github.workspace}}\build\bin\Release\agent.exe",
+          "${{github.workspace}}\build\bin\agent.exe"
+        )
+        
+        $found = $false
+        foreach ($path in $possiblePaths) {
+          if (Test-Path $path) {
+            Write-Host "✅ Client built successfully at: $path"
+            $exe = Get-ChildItem $path
+            Write-Host "File size: $($exe.Length / 1KB) KB"
+            $found = $true
+            break
+          }
+        }
+        
+        if (-not $found) {
+          # Show build directories
+          $buildDirs = Get-ChildItem "${{github.workspace}}\build" -Directory | Select-Object Name
+          $binDirs = Get-ChildItem "${{github.workspace}}\build\bin" -Directory -ErrorAction SilentlyContinue | Select-Object Name
+          Write-Host "Build root directories: $($buildDirs.Name -join ', ')"
+          Write-Host "Bin subdirectories: $($binDirs.Name -join ', ')"
+          throw "❌ Agent executable not found in any expected location!"
         }
       
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: agent-windows-x64
-        path: ${{github.workspace}}/build/agent.exe
+        path: ${{github.workspace}}/build/bin/Release/agent.exe
         retention-days: 30
