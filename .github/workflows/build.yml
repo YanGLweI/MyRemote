@@ -57,10 +57,23 @@ jobs:
             }
           }
           
-          # Approach 2: If not found, try Chocolatey portable package
+          # Approach 2: Download pre-built OpenSSL from official source
           if (-not $openSslFound) {
-            Write-Host "`n=== Installing OpenSSL Windows Package ==="
-            choco install OpenSSL.Windows -y --no-progress
+            Write-Host "`n=== Downloading Official OpenSSL Binaries ==="
+            # Download latest stable OpenSSL Windows binary
+            Invoke-WebRequest -Uri "https://github.com/alextho/win-openssl/releases/download/v1.1.1t/openssl-1.1.1t-win64.zip" \
+                              -OutFile "$env:TEMP\openssl.zip" --TimeoutSec 30
+            Expand-Archive "$env:TEMP\openssl.zip" -DestinationPath "$env:TEMP\openssl" -Force
+            
+            # Set path to extracted OpenSSL
+            $opensslRoot = "C:/OpenSSL"
+            if (Test-Path "$env:TEMP\openssl") {
+              Move-Item "$env:TEMP\openssl" "$opensslRoot" -Force
+            }
+            
+            $normalized = $opensslRoot.Replace('\', '/')
+            Add-Content $env:GITHUB_ENV "OPENSSL_ROOT_DIR=$normalized"
+            Write-Host "✅ Set OPENSSL_ROOT_DIR=$normalized"
             
             # Verify installation
             Write-Host "`n=== Verifying Installation ==="
