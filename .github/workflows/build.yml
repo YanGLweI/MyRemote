@@ -57,10 +57,10 @@ jobs:
             }
           }
           
-          # Approach 2: If not found, try Chocolatey
+          # Approach 2: If not found, try Chocolatey portable package
           if (-not $openSslFound) {
-            Write-Host "`n=== Installing OpenSSL via Chocolatey ==="
-            choco install openssl -y --no-progress
+            Write-Host "`n=== Installing OpenSSL Portable via Chocolatey ==="
+            choco install openssl.portable -y --no-progress
             
             # Verify installation
             Write-Host "`n=== Verifying Installation ==="
