@@ -1,40 +1,29 @@
 #pragma once
 
-#include "connection.hpp"
-#include <chrono>
 #include <functional>
+#include <mutex>
 
-// Auto-reconnect handler with exponential backoff
+// Executes the reconnect attempt callback on demand (supervisor loop owns
+// the backoff timing).
 class AutoReconnect {
 public:
-    using ReconnectCallback = std::function<bool()>;  // Callback to reconnect
-    
-    AutoReconnect();
-    ~AutoReconnect();
-    
-    // Set the reconnect callback (should attempt to connect)
-    void set_callback(ReconnectCallback callback);
-    
-    // Called when connection is lost - starts reconnection process
-    void on_connection_lost();
-    
-    // Cancel reconnection
-    void cancel();
-    
-    // Check if reconnection is active
-    bool is_reconnecting() const { return reconnect_active_.load(std::memory_order_acquire); }
-    
+    using ReconnectCallback = std::function<bool()>;
+
+    void set_callback(ReconnectCallback callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        callback_ = std::move(callback);
+    }
+
+    bool try_once() {
+        ReconnectCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            callback = callback_;
+        }
+        return callback ? callback() : false;
+    }
+
 private:
+    std::mutex mutex_;
     ReconnectCallback callback_;
-    std::thread reconnect_thread_;
-    std::atomic<bool> reconnect_active_{false};
-    std::atomic<bool> should_stop_{false};
-    
-    // Initial delay and maximum retry delay (ms)
-    static constexpr int INITIAL_DELAY_MS = 5000;
-    static constexpr int MAX_DELAY_MS = 60000;
-    static constexpr int DELAY_MULTIPLIER = 2;
-    
-    void reconnect_loop();
-    std::chrono::milliseconds next_delay(int attempt);
 };

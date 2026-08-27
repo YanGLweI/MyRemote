@@ -1,71 +1,65 @@
 #pragma once
 
-#include <vector>
-#include <cstdint>
+#include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
+#include <wrl/client.h>
 
-// Configuration for desktop capture and encoding
+#include <cstdint>
+#include <mutex>
+#include <vector>
+
+// Capture/encoding quality parameters.
 struct EncoderConfig {
-    int fps = 30;           // Target frames per second (15-60)
-    int bitrate_kbps = 2048; // Target bitrate in kbps
-    int quality_level = 70;  // Quality level 1-100
-    int width = 1920;        // Capture width (default Full HD)
-    int height = 1080;       // Capture height
-    
-    // Encode preset: ULTRA_LOW_LATENCY, LOW_LATENCY, REALTIME, QUALITY
-    const wchar_t* preset = L"RealTime";
+    int fps = 30;
+    int bitrate_kbps = 2048;
+    int quality_level = 70;
+    int width = 1920;
+    int height = 1080;
 };
 
-// Frame metadata
 struct CapturedFrame {
-    uint64_t timestamp_us;     // Capture timestamp in microseconds
-    int width;
-    int height;
-    std::vector<uint8_t> h264_data;  // Encoded H.264 data
-    bool is_keyframe;          // Whether this is an I-frame
+    uint64_t timestamp_us = 0;
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> raw_bgra;   // BGRA pixels (pre-encode)
+    std::vector<uint8_t> h264_data;  // encoded output (post-encode)
+    bool is_keyframe = false;
 };
 
-// Desktop capturer using Desktop Duplication API (DXGI 1.2+)
+// Desktop capture via Desktop Duplication API (DXGI 1.2+),
+// with automatic BitBlt fallback for unsupported environments.
 class DesktopCapturer {
 public:
-    DesktopCapturer();
+    DesktopCapturer() = default;
     ~DesktopCapturer();
-    
-    // Initialize DXGI device and duplication interface
+
+    DesktopCapturer(const DesktopCapturer&) = delete;
+    DesktopCapturer& operator=(const DesktopCapturer&) = delete;
+
     bool initialize(int monitor_index = 0);
-    
-    // Set capture configuration
     void configure(const EncoderConfig& config);
-    
-    // Capture one frame and encode to H.264
-    // Returns true if successful, false if error or frame too similar
-    bool capture_frame(CapturedFrame& frame);
-    
-    // Check if hardware encoding is available
-    static bool is_hw_encoding_available();
-    
+
+    // Returns true when a new frame was captured; false when unchanged.
+    bool capture_frame(CapturedFrame& frame, DWORD wait_ms = 100);
+
+    bool using_bitblt_fallback() const { return use_bitblt_; }
+
 private:
-    Microsoft::WRL::ComPtr<ID3D11Device> d3d_device_;
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext> immediate_ctx_;
-    Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device_;
-    Microsoft::WRL::ComPtr<IDXGIOutput1> output_;
-    Microsoft::WRL::ComPtr<IDirectXGIOutputDuplication> duplication_;
-    
-    EncoderConfig config_;
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> previous_frame_;
-    
-    // Initialize DirectX 11 device
-    bool init_d3d_device();
-    
-    // Get primary display output
-    bool init_output(int monitor_index);
-    
-    // Create resource for duplicate frame
-    void create_duplicate_resources();
-    
-    // Fallback to BitBlt if DXGI fails (Win7 compatibility)
+    bool init_d3d();
+    bool init_duplication(int monitor_index);
+    bool ensure_staging_texture(int width, int height);
+    bool capture_from_duplication(CapturedFrame& frame, DWORD wait_ms);
     bool capture_with_bitblt(CapturedFrame& frame);
+
+    Microsoft::WRL::ComPtr<ID3D11Device> device_;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
+    Microsoft::WRL::ComPtr<IDXGIOutputDuplication> duplication_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_;
+
+    EncoderConfig config_;
+    std::mutex mutex_;
+    bool use_bitblt_ = false;
+    int staging_width_ = 0;
+    int staging_height_ = 0;
 };

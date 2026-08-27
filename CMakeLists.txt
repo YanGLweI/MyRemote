@@ -5,112 +5,104 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# 全局编译选项
+# 静态 CRT，配合 OpenSSL 静态链接，客户端可产出单文件
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 option(BUILD_SERVER "Build server control端" ON)
 option(BUILD_CLIENT "Build client agent" ON)
 
-# 依赖查找
-find_package(Boost REQUIRED COMPONENTS system thread chrono)
-# Qt6 is optional - only needed for server
-set(BUILD_SERVER_WITH_QT OFF)
+add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_compile_options(/utf-8)
+
+# Qt6 仅服务端需要
 if(BUILD_SERVER)
-    find_package(Qt6 COMPONENTS Widgets Concurrent Network QUIET)
-    if(Qt6_FOUND)
-        set(BUILD_SERVER_WITH_QT ON)
-        message(STATUS "Qt6 found - building server with Qt GUI")
-    else()
-        message(WARNING "Qt6 not found - skipping server build (requires Qt)")
-    endif()
+    find_package(Qt6 COMPONENTS Widgets REQUIRED)
+    set(CMAKE_AUTOMOC ON)
 endif()
 
-# Protocol Buffers
-find_package(Protobuf REQUIRED)
-include_directories(${PROTOBUF_INCLUDE_DIR})
+# OpenSSL（优先静态链接）
+set(OPENSSL_USE_STATIC_LIBS TRUE)
+find_package(OpenSSL REQUIRED)
 
-# Generate protocol buffer sources
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
-    common/include/protocol.proto
+include_directories(
+    ${CMAKE_SOURCE_DIR}/common/include
+    ${CMAKE_SOURCE_DIR}/client/include
+    ${CMAKE_SOURCE_DIR}/server/include
 )
 
-# Windows 特定库 (桌面捕获和编码)
-if(WIN32)
-    find_package(DXGUID REQUIRED)
-    # Media Foundation - 动态链接避免 DLL 依赖问题
-endif()
-
-# 头文件目录
-include_directories(${CMAKE_SOURCE_DIR}/common/include)
-include_directories(${CMAKE_SOURCE_DIR}/client/include)
-include_directories(${CMAKE_SOURCE_DIR}/server/include)
-
-# Common library (protocol, encryption, etc.)
+# 公共库：协议帧编解码、加密、配置
 add_library(common_lib STATIC
-    ${PROTO_SRCS}
-    common/src/aes_gcm.cpp
-    common/src/ecdh.cpp
+    common/src/frame_codec.cpp
+    common/src/messages.cpp
+    common/src/log.cpp
+    common/src/crypto.cpp
+    common/src/config.cpp
 )
 target_link_libraries(common_lib PUBLIC
-    ${PROTOBUF_LIBRARIES}
     OpenSSL::Crypto
+    ws2_32
 )
 
-# 客户端库
+set(WINDOWS_SYS_LIBS ws2_32 user32 gdi32)
+
+# 客户端（被控端）
 if(BUILD_CLIENT)
-    add_library(client_lib STATIC
+    add_executable(agent WIN32
+        client/src/main.cpp
         client/src/connection.cpp
         client/src/desktop_capture.cpp
         client/src/video_encoder.cpp
         client/src/input_simulator.cpp
         client/src/heartbeat.cpp
-        client/src/auto_reconnect.cpp
-        client/src/client_agent.cpp
+        client/src/device_id.cpp
     )
-    target_link_libraries(client_lib PRIVATE
+    target_link_libraries(agent PRIVATE
         common_lib
-        Boost::system Boost::thread Boost::chrono
-        ws2_32 Imm32 User32
-        dxguid d3d11
+        ${WINDOWS_SYS_LIBS}
+        iphlpapi
+        d3d11 dxgi dwmapi
+        mfplat mfreadwrite mfuuid runtimeobject
     )
-    
-    # Client 可执行文件
-    add_executable(agent WIN32 client/src/main.cpp)
-    target_link_libraries(agent PRIVATE client_lib)
     set_target_properties(agent PROPERTIES
-        OUTPUT_NAME "agent"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
 endif()
 
-# 服务端库
+# 服务端（控制端）
 if(BUILD_SERVER)
-    if(BUILD_SERVER_WITH_QT)
-        add_library(server_lib STATIC
-            server/src/listener.cpp
-            server/src/tunnel_manager.cpp
-            server/src/display_renderer.cpp
-            server/src/device_list.cpp
-            server/src/remote_controller.cpp
-        )
-        target_link_libraries(server_lib PRIVATE
-            common_lib
-            Boost::system Boost::thread
-            Qt6::Widgets Qt6::Concurrent Qt6::Network
-            ws2_32
-        )
-        
-        # Server 可执行文件
-        add_executable(control_server WIN32 server/src/main.cpp)
-        target_link_libraries(control_server PRIVATE server_lib)
-        set_target_properties(control_server PROPERTIES
-            OUTPUT_NAME "control_server"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/"
-        )
-    else()
-        message(FATAL_ERROR "Server build requested but Qt6 not found. Install Qt6 or set BUILD_SERVER=OFF")
-    endif()
+    add_executable(control_server WIN32
+        server/src/main.cpp
+        server/src/listener.cpp
+        server/src/tunnel_manager.cpp
+        server/src/display_renderer.cpp
+        server/src/device_list.cpp
+        server/src/remote_controller.cpp
+        server/src/h264_decoder.cpp
+        # Q_OBJECT headers must be listed so AUTOMOC generates their moc files
+        server/include/tunnel_manager.hpp
+        server/include/device_list.hpp
+        server/include/display_renderer.hpp
+        server/include/remote_controller.hpp
+    )
+    target_link_libraries(control_server PRIVATE
+        common_lib
+        Qt6::Widgets
+        ${WINDOWS_SYS_LIBS}
+        mfplat mfreadwrite mfuuid runtimeobject
+        d3d11 dxgi
+    )
+    set_target_properties(control_server PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
 endif()
 
-# Install rules
-install(TARGETS agent control_server
-    RUNTIME DESTINATION bin
-)
+set(INSTALL_TARGETS "")
+if(BUILD_CLIENT)
+    list(APPEND INSTALL_TARGETS agent)
+endif()
+if(BUILD_SERVER)
+    list(APPEND INSTALL_TARGETS control_server)
+endif()
+if(INSTALL_TARGETS)
+    install(TARGETS ${INSTALL_TARGETS} RUNTIME DESTINATION bin)
+endif()

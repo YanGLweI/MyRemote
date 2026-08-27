@@ -1,5 +1,7 @@
 #include "heartbeat.hpp"
 
+#include "log.hpp"
+
 HeartbeatKeeper::HeartbeatKeeper() : interval_ms_(3000) {}
 
 HeartbeatKeeper::~HeartbeatKeeper() {
@@ -8,7 +10,7 @@ HeartbeatKeeper::~HeartbeatKeeper() {
 
 void HeartbeatKeeper::start(int interval_ms, HeartbeatCallback callback) {
     if (callback_) {
-        std::cerr << "Heartbeat already running" << std::endl;
+        mlog::warn("Heartbeat already running");
         return;
     }
     
@@ -35,7 +37,7 @@ void HeartbeatKeeper::heartbeat_loop() {
         if (callback_) {
             bool success = callback_();
             if (!success) {
-                std::cerr << "Heartbeat send failed" << std::endl;
+                mlog::warn("Heartbeat send failed");
             }
         }
         

@@ -1,51 +1,39 @@
 #pragma once
 
-#include <string>
-#include <unordered_map>
-#include <functional>
 #include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
 
-// Server-side listener module for accepting client connections
+#include <atomic>
+#include <functional>
+#include <string>
+#include <thread>
+
+// Passive TCP listener. The server only ever accepts connections that
+// clients initiate; it never connects outward (one-way network rule).
 class Listener {
 public:
-    Listener();
+    using ClientConnectedCallback = std::function<void(SOCKET)>;
+
+    Listener() = default;
     ~Listener();
-    
-    // Start listening on specified port (blocking)
-    bool start(int port);
-    
-    // Stop listening and close all connections
+
+    Listener(const Listener&) = delete;
+    Listener& operator=(const Listener&) = delete;
+
+    bool start(const std::string& bind_address, int port);
     void stop();
-    
-    // Check if server is running
-    bool is_running() const { return running_.load(std::memory_order_acquire); }
-    
-    // Callback type for client connection events
-    using ClientConnectedCallback = std::function<void(SOCKET socket)>;
-    using ClientDisconnectedCallback = std::function<void(SOCKET socket)>;
-    
-    // Set callbacks
-    void set_connected_callback(ClientConnectedCallback callback);
-    void set_disconnected_callback(ClientDisconnectedCallback callback);
-    
+    bool is_running() const { return running_.load(); }
+
+    void set_connected_callback(ClientConnectedCallback callback) {
+        connected_callback_ = std::move(callback);
+    }
+
 private:
-    SOCKET listen_socket_;
+    void accept_loop();
+    static void ensure_winsock();
+
+    SOCKET listen_socket_ = INVALID_SOCKET;
     std::atomic<bool> running_{false};
     std::atomic<bool> should_stop_{false};
-    
-    ClientConnectedCallback connected_callback_;
-    ClientDisconnectedCallback disconnected_callback_;
-    
     std::thread accept_thread_;
-    
-    // Initialize WinSock
-    static bool init_winsock();
-    
-    // Main accept loop
-    void accept_loop();
-    
-    // Handle a new client connection
-    void handle_client(SOCKET client_socket);
+    ClientConnectedCallback connected_callback_;
 };

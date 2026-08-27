@@ -1,5 +1,8 @@
 #include "input_simulator.hpp"
 
+using namespace mouse;
+using namespace keyboard;
+
 InputSimulator::InputSimulator() {}
 
 InputSimulator::~InputSimulator() {}

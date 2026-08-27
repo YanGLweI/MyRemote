@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cstdint>
+
 // Mouse button enumeration matching protocol definition
 namespace mouse {
     enum Button {
@@ -49,6 +51,9 @@ public:
     void simulate_keyboard(const keyboard::Event& event);
     
 private:
+    int32_t cursor_x_prev_ = -1;
+    int32_t cursor_y_prev_ = -1;
+
     // Convert virtual key to scancode
     static uint32_t vk_to_scancode(int32_t vk);
 };

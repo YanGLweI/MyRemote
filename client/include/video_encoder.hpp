@@ -1,39 +1,31 @@
 #pragma once
 
-#include "desktop_capture.hpp"
-#include <mfapi.h>
-#include <mfreadwrite.h>
-#include <mfidl.h>
-#include <mediaformateutils.h>
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "mfuuid.lib")
-#pragma comment(lib, "mfreadwrite.lib")
+#include <cstdint>
 
-// Media Foundation encoder wrapper for H.264
+#include "desktop_capture.hpp"
+
+// H.264 encoder backed by Media Foundation (implemented in M4).
 class VideoEncoder {
 public:
-    VideoEncoder();
+    VideoEncoder() = default;
     ~VideoEncoder();
-    
-    // Initialize encoder with configuration
+
+    VideoEncoder(const VideoEncoder&) = delete;
+    VideoEncoder& operator=(const VideoEncoder&) = delete;
+
     bool initialize(const EncoderConfig& config);
-    
-    // Encode a frame (RGB32 texture to H.264)
-    bool encode_frame(const uint8_t* rgba_data, int width, int height, 
-                     CapturedFrame& encoded_frame);
-    
-    // Force keyframe generation
+    void shutdown();
+
+    // Encode one BGRA frame; on success fills frame->h264_data.
+    bool encode_frame(const uint8_t* bgra_data, int width, int height,
+                      CapturedFrame* frame_out);
+
     void force_keyframe();
-    
+
+    bool is_initialized() const { return initialized_; }
+
 private:
-    IMFSinkWriter* sink_writer_ = nullptr;
-    DWORD stream_index_ = 0;
     EncoderConfig config_;
     bool initialized_ = false;
-    
-    // Initialize Media Foundation
-    static bool init_mf();
-    
-    // Set up H.264 encoding session
-    bool setup_h264_encoder();
+    bool keyframe_requested_ = false;
 };

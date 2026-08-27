@@ -1,298 +1,288 @@
-// Client Agent - Windows Service for Remote Control
-// This is the passive endpoint that connects to server
+// MyRemote Agent (被控端)
+// Runs silently in the background; actively connects out to the server.
+// The client never listens or accepts connections (one-way network rule).
 
 #include <windows.h>
-#include <iostream>
-#include <memory>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
-#include <fstream>
-#include "connection.hpp"
-#include "heartbeat.hpp"
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <thread>
+
 #include "auto_reconnect.hpp"
+#include "config.hpp"
+#include "connection.hpp"
 #include "desktop_capture.hpp"
-#include "video_encoder.hpp"
+#include "device_id.hpp"
+#include "heartbeat.hpp"
 #include "input_simulator.hpp"
-#include "../common/include/config.hpp"
-#include "../common/include/aes_gcm.hpp"
-#include "../common/include/ecdh.hpp"
+#include "log.hpp"
+#include "messages.hpp"
+#include "video_encoder.hpp"
 
-static SERVICE_STATUS g_service_status;
-static SERVICE_STATUS_HANDLE g_service_handle;
-static std::unique_ptr<Connection> client_connection;
-static std::unique_ptr<HeartbeatKeeper> heartbeat_keeper_;
-static std::string CONFIG_SERVER_IP = "192.168.1.100";
-static int CONFIG_SERVER_PORT = 7500;
-static std::string CONFIG_SECRET_KEY = "default_secret_key_12345";
+namespace {
 
-void ServiceMain(int argc, char* argv[]) {
-    // Load configuration from file if available
-    try {
-        auto config = config::load_client_config("config.json");
-        CONFIG_SERVER_IP = config.server_ip;
-        CONFIG_SERVER_PORT = config.server_port;
-        CONFIG_SECRET_KEY = config.secret_key;
-        
-        std::cout << "Configuration loaded:" << std::endl;
-        std::cout << "  Server IP: " << CONFIG_SERVER_IP << std::endl;
-        std::cout << "  Server Port: " << CONFIG_SERVER_PORT << std::endl;
-        std::cout << "  Device Name: " << config.device_name << std::endl;
-    } catch (...) {
-        std::cout << "Using default configuration" << std::endl;
-    }
-    
-    // Initialize encryption keys (ECDH key exchange)
-    ECDHExchange local_keys;
-    try {
-        local_keys.generate_keys();
-        auto public_key = local_keys.get_public_key();
-        std::cout << "Generated ECDH public key (first 32 bytes): ";
-        for (int i = 0; i < 32 && i < static_cast<int>(public_key.size()); ++i) {
-            printf("%02x", public_key[i]);
-        }
-        std::cout << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to generate ECDH keys: " << e.what() << std::endl;
-        return;
-    }
-    
-    // Create connection manager
-    client_connection = std::make_unique<Connection>();
-    
-    // Set up receive callback for encrypted messages
-    client_connection->set_receive_callback([&](const std::vector<uint8_t>& data) {
-        try {
-            // TODO: Decrypt incoming data using AESGCM
-            // For MVP, just log the reception
-            std::cout << "Received " << data.size() << " bytes from server" << std::endl;
-            
-            // Process control commands here
-            // Currently placeholder for Protocol Buffers parsing
-        } catch (const std::exception& e) {
-            std::cerr << "Error handling received message: " << e.what() << std::endl;
-        }
-    });
-    
-    // Auto-reconnect handler with exponential backoff
-    AutoReconnect reconnect_handler;
-    reconnect_handler.set_callback([&]() {
-        std::cout << "Attempting reconnection to " << CONFIG_SERVER_IP << ":" 
-                  << CONFIG_SERVER_PORT << std::endl;
-        
-        bool connected = client_connection->connect(CONFIG_SERVER_IP, CONFIG_SERVER_PORT);
-        
-        if (connected) {
-            std::cout << "Connected! Sending registration..." << std::endl;
-            
-            // TODO: Send ClientHello message with device info
-            // Use Protocol Buffers encoding
-            
-            // Start sending captured frames once authenticated
-            capturer.initialize(0);
-            
-            std::cout << "Ready to send desktop stream" << std::endl;
-        }
-        
-        return connected;
-    });
-    
-    // Initialize desktop capture
-    auto capturer = std::make_unique<DesktopCapturer>();
-    if (!capturer->initialize(0)) {
-        MessageBoxA(nullptr, "Failed to initialize desktop capture", "Error", MB_ICONERROR);
-        return;
-    }
-    
-    // Configure capture settings based on quality mode
-    EncoderConfig config;
-    config.fps = 30;
-    config.bitrate_kbps = 2048;
-    config.width = GetSystemMetrics(SM_CXSCREEN);
-    config.height = GetSystemMetrics(SM_CYSCREEN);
-    config.preset = L"RealTime";
-    config.quality_level = 70;
-    
-    capturer->configure(config);
-    
-    // Initialize video encoder
-    auto encoder = std::make_unique<VideoEncoder>();
-    if (!encoder->initialize(config)) {
-        std::cerr << "Warning: Video encoder initialization failed" << std::endl;
-        std::cerr << "Falling back to software encoding or raw capture" << std::endl;
-    }
-    
-    // Input simulator for remote control
-    auto input_simulator = std::make_unique<InputSimulator>();
-    
-    // Heartbeat keeper to maintain connection
-    heartbeat_keeper_ = std::make_unique<HeartbeatKeeper>();
-    heartbeat_keeper_->start(3000, [&]() {
-        // Send heartbeat packet to keep connection alive
-        std::vector<uint8_t> heartbeat_data{0x03};  // Message type HEARTBEAT
-        bool success = client_connection->send(heartbeat_data);
-        
-        if (!success) {
-            std::cerr << "Heartbeat send failed" << std::endl;
-        }
-        
-        return success;
-    });
-    
-    // Main service loop
-    g_service_status.dwCurrentState = SERVICE_RUNNING;
-    g_service_status.dwCheckPoint = 0;
-    SetServiceStatus(g_service_handle, &g_service_status);
-    
-    std::cout << "MyRemote Agent service started" << std::endl;
-    
-    int frame_count = 0;
-    time_t last_frame_time = time(nullptr);
-    
-    // Keep running while accepting connections
-    while (g_service_status.dwCurrentState == SERVICE_RUNNING) {
-        Sleep(100);
-        
-        // Check connection status and attempt reconnection if needed
-        if (!client_connection->is_connected()) {
-            std::cerr << "Disconnected from server! Initiating reconnect..." << std::endl;
-            reconnect_handler.on_connection_lost();
-            
-            // Give reconnection time to establish
-            Sleep(3000);
-            
-            // If now connected, we can start capturing again
-            if (client_connection->is_connected()) {
-                std::cout << "Connection restored, resuming capture" << std::endl;
-            }
-        }
-        
-        // Capture frames at target FPS rate
-        CapturedFrame captured_frame;
-        if (capturer->capture_frame(captured_frame)) {
-            frame_count++;
-            
-            // Log frame every second
-            time_t current_time = time(nullptr);
-            if (current_time > last_frame_time + 1) {
-                std::cout << "Captured frames so far: " << frame_count 
-                          << " (" << frame_count / (current_time - last_frame_time) 
-                          << " fps)" << std::endl;
-                last_frame_time = current_time;
-            }
-            
-            // Encode to H.264 if encoder is initialized
-            if (encoder && encoder->initialized_) {
-                if (encoder->encode_frame(
-                    captured_frame.raw_bgra.data(),
-                    captured_frame.width,
-                    captured_frame.height,
-                    captured_frame)) {
-                    
-                    std::cout << "Encoded frame " << captured_frame.frame_number 
-                              << ": " << captured_frame.h264_data.size() << " bytes" << std::endl;
-                    
-                    // TODO: Send encoded frame via connection
-                    // client_connection->send(captured_frame.h264_data);
-                }
+struct AgentState {
+    std::atomic<bool> running{true};
+    std::atomic<bool> registered{false};
+    std::atomic<bool> streaming{false};
+    std::atomic<int> register_result{-1};  // -1 pending, 0 ok, 1 rejected, 2 full
+    std::atomic<int> target_fps{30};
+    std::atomic<int> target_bitrate_kbps{2048};
+    std::atomic<uint32_t> frame_seq{0};
+};
+
+AgentState g_state;
+std::unique_ptr<Connection> g_connection;
+std::unique_ptr<DesktopCapturer> g_capturer;
+std::unique_ptr<VideoEncoder> g_encoder;
+std::unique_ptr<HeartbeatKeeper> g_heartbeat;
+InputSimulator g_input;
+
+std::string exe_dir() {
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string s(path);
+    size_t pos = s.find_last_of("\\/");
+    return pos == std::string::npos ? "." : s.substr(0, pos);
+}
+
+void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
+    switch (type) {
+        case proto::MessageType::RegisterAck: {
+            proto::RegisterStatus status = proto::RegisterStatus::Rejected;
+            if (proto::parse_register_ack_payload(payload, status)) {
+                g_state.register_result.store(static_cast<int>(status));
             } else {
-                // Fallback: send raw data (for testing/debugging)
-                std::cout << "Sending raw frame (no encoder): " 
-                          << captured_frame.raw_bgra.size() << " bytes" << std::endl;
-                
-                // For MVP, just mark this as processed
+                g_state.register_result.store(1);
             }
-        } else {
-            // Frame too similar to previous one - skip
-            Sleep(33);  // Approximate delay for 30fps
+            break;
         }
-    }
-    
-    std::cout << "Service stopping, cleaning up..." << std::endl;
-}
-
-void WINAPI ServiceCtrlHandler(DWORD dwControl) {
-    switch (dwControl) {
-        case SERVICE_CONTROL_STOP:
-        case SERVICE_CONTROL_SHUTDOWN:
-            g_service_status.dwWin32ExitCode = NO_ERROR;
-            g_service_status.dwCurrentState = SERVICE_STOPPED;
+        case proto::MessageType::StartStream: {
+            uint8_t fps = 30;
+            uint16_t bitrate = 2048;
+            if (proto::parse_start_stream_payload(payload, fps, bitrate)) {
+                g_state.target_fps.store(fps);
+                g_state.target_bitrate_kbps.store(bitrate);
+            }
+            g_state.streaming.store(true);
+            mlog::info("Stream started by server (fps=" +
+                      std::to_string(g_state.target_fps.load()) + ")");
             break;
-            
-        case SERVICE_CONTROL_PAUSE:
-            g_service_status.dwCurrentState = SERVICE_PAUSE_PENDING;
+        }
+        case proto::MessageType::StopStream:
+            g_state.streaming.store(false);
+            mlog::info("Stream stopped by server");
             break;
-            
-        case SERVICE_CONTROL_INTERROGATE:
+        case proto::MessageType::RequestKeyframe:
+            g_encoder->force_keyframe();
             break;
-            
+        case proto::MessageType::InputEvent:
+            // TODO(M5): parse and inject mouse/keyboard events
+            mlog::info("Input event received (" + std::to_string(payload.size()) + " bytes)");
+            break;
+        case proto::MessageType::AuthChallenge:
+            // TODO(M7): secondary password response
+            mlog::warn("Auth challenge received (not yet supported)");
+            break;
         default:
+            mlog::warn("Unknown message type: " +
+                      std::to_string(static_cast<int>(type)));
             break;
     }
-    
-    SetServiceStatus(g_service_handle, &g_service_status);
 }
 
-int main(int argc, char* argv[]) {
-    // Parse command line arguments for optional overrides
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-        
-        if (arg == "--ip" && i + 1 < argc) {
-            CONFIG_SERVER_IP = argv[++i];
-        } else if (arg == "--port" && i + 1 < argc) {
-            try {
-                CONFIG_SERVER_PORT = std::stoi(argv[++i]);
-            } catch (...) {
-                std::cerr << "Invalid port number: " << argv[i] << std::endl;
+bool send_register(const config::ClientConfig& cfg, const std::string& dev_id) {
+    std::string name = cfg.device_name.empty() ? device::default_device_name()
+                                               : cfg.device_name;
+    int width = GetSystemMetrics(SM_CXSCREEN);
+    int height = GetSystemMetrics(SM_CYSCREEN);
+    auto payload = proto::make_register_payload(
+        dev_id, name, static_cast<uint16_t>(width), static_cast<uint16_t>(height));
+    return g_connection->send(proto::MessageType::Register, payload);
+}
+
+// Connect, register and wait for the server ack. Returns true when accepted.
+bool establish_session(const config::ClientConfig& cfg, const std::string& dev_id) {
+    if (!g_connection->connect(cfg.server_ip, cfg.server_port)) {
+        return false;
+    }
+
+    g_state.register_result.store(-1);
+    if (!send_register(cfg, dev_id)) {
+        g_connection->disconnect();
+        return false;
+    }
+
+    // Wait up to 5s for RegisterAck.
+    for (int i = 0; i < 50; ++i) {
+        if (!g_connection->is_connected()) {
+            return false;
+        }
+        int result = g_state.register_result.load();
+        if (result >= 0) {
+            if (result == static_cast<int>(proto::RegisterStatus::Ok)) {
+                g_state.registered.store(true);
+                mlog::info("Registered with server (device_id=" + dev_id + ")");
+                return true;
             }
-        } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: agent.exe [--ip SERVER_IP] [--port PORT]\n"
-                      << "Server IP defaults to 192.168.1.100\n"
-                      << "Port defaults to 7500\n";
-            return 0;
+            mlog::error("Server rejected registration (status=" +
+                       std::to_string(result) + ")");
+            g_connection->disconnect();
+            return false;
+        }
+        Sleep(100);
+    }
+
+    mlog::error("Registration ack timeout");
+    g_connection->disconnect();
+    return false;
+}
+
+void stream_loop() {
+    CapturedFrame frame;
+    while (g_state.running.load()) {
+        if (!g_state.streaming.load() || !g_connection->is_connected()) {
+            Sleep(100);
+            continue;
+        }
+
+        int fps = g_state.target_fps.load();
+        if (fps <= 0) fps = 30;
+
+        if (g_capturer->capture_frame(frame, 1000 / fps)) {
+            bool encoded = g_encoder->is_initialized() &&
+                           g_encoder->encode_frame(frame.raw_bgra.data(), frame.width,
+                                                   frame.height, &frame);
+            if (encoded && !frame.h264_data.empty()) {
+                uint32_t seq = g_state.frame_seq.fetch_add(1) + 1;
+                auto payload = proto::make_video_frame_payload(
+                    seq, frame.timestamp_us, frame.is_keyframe,
+                    frame.h264_data.data(), frame.h264_data.size());
+                g_connection->send(proto::MessageType::VideoFrame, payload);
+            }
         }
     }
-    
-    // Register service with Windows Service Control Manager
-    g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_service_status.dwControlsAccepted = 
-        SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PAUSE_CONTINUE | SERVICE_ACCEPT_SHUTDOWN;
-    g_service_status.dwWin32ExitCode = NO_ERROR;
-    g_service_status.dwCheckPoint = 0;
-    
-    SERVICE_TABLE_ENTRYA service_table[] = {
-        {"MyRemoteAgent", (LPSERVICE_CONTROL_HANDLER)ServiceMain},
-        {nullptr, nullptr}
+}
+
+}  // namespace
+
+namespace {
+
+struct Args {
+    bool console = false;
+    std::string ip_override;
+    int port_override = 0;
+    std::string config_path;
+};
+
+Args parse_command_line() {
+    Args args;
+    std::string cmd = GetCommandLineA();
+    auto has_flag = [&cmd](const std::string& flag) {
+        return cmd.find(flag) != std::string::npos;
     };
-    
-    if (!StartServiceCtrlDispatcher(service_table)) {
-        DWORD error = GetLastError();
-        fprintf(stderr, "StartServiceCtrlDispatcher failed (%lu)\n", error);
-        
-        // For debugging without service host, run standalone
-        if (error == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-            fprintf(stderr, "\nRunning in standalone mode (not a service)\n");
-            fprintf(stderr, "\nArguments:\n");
-            fprintf(stderr, "  --ip SERVER_IP  Override server IP address\n");
-            fprintf(stderr, "  --port PORT     Override server port\n");
-            fprintf(stderr, "  --help          Show this help message\n");
-            fprintf(stderr, "\nNote: In standalone mode, press Ctrl+C to exit.\n\n");
-            
-            // Run directly without service wrapper
-            SERVICE_STATUS temp_status{};
-            temp_status.dwCurrentState = SERVICE_RUNNING;
-            
-            // Simulate manual interrupt handling
-            std::signal(SIGINT, [](int) {
-                temp_status.dwCurrentState = SERVICE_STOPPED;
-            });
-            
-            ServiceMain(argc, argv);
-            
-            return 0;
-        }
-        
+    auto get_value = [&cmd](const std::string& flag) -> std::string {
+        size_t pos = cmd.find(flag);
+        if (pos == std::string::npos) return {};
+        pos = cmd.find_first_not_of(" \t", pos + flag.size());
+        if (pos == std::string::npos) return {};
+        size_t end = cmd.find_first_of(" \t", pos);
+        return cmd.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+    };
+
+    args.console = has_flag("--console");
+    args.ip_override = get_value("--ip");
+    std::string port = get_value("--port");
+    if (!port.empty()) {
+        args.port_override = std::atoi(port.c_str());
+    }
+    args.config_path = get_value("--config");
+    return args;
+}
+
+}  // namespace
+
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    Args args = parse_command_line();
+
+    if (args.console) {
+        AllocConsole();
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+    }
+
+    std::string dir = exe_dir();
+    mlog::init(dir + "/" + "agent.log");
+    mlog::info("MyRemote agent starting");
+
+    std::string config_path = args.config_path.empty() ? dir + "\config.json"
+                                                       : args.config_path;
+    config::ClientConfig cfg = config::ClientConfig::load(config_path);
+    if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
+    if (args.port_override > 0) cfg.server_port = args.port_override;
+
+    std::string dev_id = device::make_device_id();
+    mlog::info("Device id: " + dev_id + ", target server: " + cfg.server_ip + ":" +
+              std::to_string(cfg.server_port));
+
+    g_capturer = std::make_unique<DesktopCapturer>();
+    if (!g_capturer->initialize(0)) {
+        mlog::error("Desktop capture initialization failed");
         return 1;
     }
-    
+    EncoderConfig enc_cfg;
+    enc_cfg.fps = 30;
+    enc_cfg.width = GetSystemMetrics(SM_CXSCREEN);
+    enc_cfg.height = GetSystemMetrics(SM_CYSCREEN);
+    g_capturer->configure(enc_cfg);
+
+    g_encoder = std::make_unique<VideoEncoder>();
+    g_encoder->initialize(enc_cfg);
+
+    g_connection = std::make_unique<Connection>();
+    g_connection->set_message_callback(on_message);
+
+    g_heartbeat = std::make_unique<HeartbeatKeeper>();
+    g_heartbeat->start(1000, []() {
+        if (!g_state.registered.load() || !g_connection->is_connected()) {
+            return true;  // nothing to do yet
+        }
+        return g_connection->send(proto::MessageType::Heartbeat,
+                                  proto::make_heartbeat_payload());
+    });
+
+    std::thread stream_thread(stream_loop);
+
+    // Supervisor: connect + register with exponential backoff.
+    AutoReconnect reconnect;
+    reconnect.set_callback([&]() {
+        return establish_session(cfg, dev_id);
+    });
+
+    int backoff_ms = 1000;
+    while (g_state.running.load()) {
+        if (!g_connection->is_connected() || !g_state.registered.load()) {
+            g_state.streaming.store(false);
+            g_state.registered.store(false);
+            if (reconnect.try_once()) {
+                backoff_ms = 1000;
+            } else {
+                Sleep(backoff_ms);
+                backoff_ms = std::min(backoff_ms * 2, 30000);
+            }
+        } else {
+            Sleep(500);
+        }
+    }
+
+    g_state.running.store(false);
+    if (stream_thread.joinable()) stream_thread.join();
+    g_heartbeat.reset();
+    g_connection.reset();
+    mlog::info("MyRemote agent stopped");
     return 0;
 }

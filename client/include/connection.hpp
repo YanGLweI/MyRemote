@@ -1,49 +1,49 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <cstdint>
-#include <thread>
-#include <atomic>
-#include <functional>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
 
-// Client connection manager - active outbound connection only
-// This is the ONLY network path from client to server
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "frame_codec.hpp"
+#include "messages.hpp"
+
+// Client-side outbound TCP connection to the server.
+// This is the ONLY network path in the client; the client never listens.
 class Connection {
 public:
+    using MessageCallback =
+        std::function<void(proto::MessageType, std::vector<uint8_t>)>;
+
     Connection();
     ~Connection();
-    
-    // Connect to server at specified IP and port
-    bool connect(const std::string& server_ip, int port);
-    
-    // Disconnect immediately
+
+    Connection(const Connection&) = delete;
+    Connection& operator=(const Connection&) = delete;
+
+    bool connect(const std::string& server_ip, int port, int timeout_sec = 10);
     void disconnect();
-    
-    // Check if connected
-    bool is_connected() const { return connected_.load(std::memory_order_acquire); }
-    
-    // Send encrypted data buffer (blocks until complete)
-    bool send(const std::vector<uint8_t>& data);
-    
-    // Set callback for received data
-    using ReceiveCallback = std::function<void(const std::vector<uint8_t>&)>;
-    void set_receive_callback(ReceiveCallback callback);
-    
+    bool is_connected() const { return connected_.load(); }
+
+    bool send(proto::MessageType type, const std::vector<uint8_t>& payload = {});
+
+    void set_message_callback(MessageCallback callback) {
+        message_callback_ = std::move(callback);
+    }
+
 private:
-    SOCKET socket_;
+    void receive_loop();
+    static void ensure_winsock();
+
+    SOCKET socket_ = INVALID_SOCKET;
     std::thread recv_thread_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> should_stop_{false};
-    
-    ReceiveCallback receive_callback_;
-    
-    // Initialize winsock
-    static bool init_winsock();
-    
-    // Receive thread entry point
-    void receive_loop();
+    std::mutex send_mutex_;
+    MessageCallback message_callback_;
 };

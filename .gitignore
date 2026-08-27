@@ -14,10 +14,6 @@ bin/
 CMakeCache.txt
 CMakeFiles/
 
-# Generated protocol buffer files (optional - include if needed)
-common/src/protocol.pb.h
-common/src/protocol.pb.cc
-
 # Qt MOC files
 moc_*.cpp
 
@@ -27,4 +23,3 @@ Thumbs.db
 
 # Logs
 *.log
-*.txt

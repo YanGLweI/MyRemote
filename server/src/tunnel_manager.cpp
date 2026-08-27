@@ -1,16 +1,30 @@
 #include "tunnel_manager.hpp"
-#include <iostream>
+
+#include <ws2tcpip.h>
+
 #include <chrono>
 
-TunnelManager::TunnelManager() {
+#include "log.hpp"
+
+namespace {
+constexpr long long kHeartbeatTimeoutMs = 3000;
+constexpr long long kRegisterDeadlineMs = 10000;
+constexpr int kRecvTimeoutMs = 500;
+
+long long steady_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+}  // namespace
+
+TunnelManager::TunnelManager(std::string secret_key, int max_connections,
+                             QObject* parent)
+    : QObject(parent),
+      secret_key_(std::move(secret_key)),
+      max_connections_(max_connections) {
     listener_.set_connected_callback([this](SOCKET socket) {
-        std::cout << "New client connected: " << socket << std::endl;
-        this->on_client_connected(socket);
-    });
-    
-    listener_.set_disconnected_callback([this](SOCKET socket) {
-        std::cout << "Client disconnected: " << socket << std::endl;
-        this->on_client_disconnected(socket);
+        on_new_connection(socket);
     });
 }
 
@@ -18,165 +32,318 @@ TunnelManager::~TunnelManager() {
     stop();
 }
 
-bool TunnelManager::start(int port) {
-    if (running_.load(std::memory_order_acquire)) {
+long long TunnelManager::now_ms() {
+    return steady_now_ms();
+}
+
+bool TunnelManager::start(const std::string& bind_address, int port) {
+    if (running_.load()) {
         return true;
     }
-    
-    running_.store(true, std::memory_order_release);
-    
-    // Start listening on specified port
-    if (!listener_.start(port)) {
-        std::cerr << "Failed to start listener" << std::endl;
-        running_.store(false, std::memory_order_release);
+    if (!listener_.start(bind_address, port)) {
         return false;
     }
-    
-    std::cout << "TunnelManager started, listening on port " << port << std::endl;
+    running_.store(true);
+    reaper_thread_ = std::thread(&TunnelManager::reaper_loop, this);
     return true;
 }
 
 void TunnelManager::stop() {
-    if (!running_.exchange(false, std::memory_order_release)) {
+    if (!running_.exchange(false)) {
         return;
     }
-    
+
     listener_.stop();
-    
-    // Close all client connections
+
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
-        for (auto& [socket, session] : client_pool_) {
-            if (session && session->socket != INVALID_SOCKET) {
+        for (auto& [id, session] : sessions_) {
+            session->alive.store(false);
+            if (session->socket != INVALID_SOCKET) {
                 closesocket(session->socket);
-                session->active = false;
+                session->socket = INVALID_SOCKET;
             }
         }
-        client_pool_.clear();
-        device_id_to_socket_.clear();
+        sessions_.clear();
     }
-    
-    client_count_ = 0;
-    std::cout << "TunnelManager stopped" << std::endl;
-}
 
-bool TunnelManager::is_running() const {
-    return running_.load(std::memory_order_acquire);
-}
-
-SOCKET TunnelManager::register_client(SOCKET socket, const std::string& device_id) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    
-    auto session = std::make_shared<ClientSession>();
-    session->socket = socket;
-    session->device_id = device_id;
-    session->device_name = device_id.empty() ? "Unknown Device" : device_id.substr(7);  // Remove prefix
-    session->screen_width = GetSystemMetrics(SM_CXSCREEN);
-    session->screen_height = GetSystemMetrics(SM_CYSCREEN);
-    session->active = true;
-    session->connect_time = std::time(nullptr);
-    
-    client_pool_[socket] = session;
-    if (!device_id.empty()) {
-        device_id_to_socket_[device_id] = socket;
+    if (reaper_thread_.joinable()) {
+        reaper_thread_.join();
     }
-    
-    int count = ++client_count_;
-    
-    std::cout << "Registered client: " << device_id << ", total: " << count << std::endl;
-    
-    return socket;
+    mlog::info("TunnelManager stopped");
 }
 
-void TunnelManager::unregister_client(SOCKET socket) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    
-    auto it = client_pool_.find(socket);
-    if (it == client_pool_.end()) {
+void TunnelManager::on_new_connection(SOCKET socket) {
+    sockaddr_in addr{};
+    int len = sizeof(addr);
+    std::string peer_ip = "?";
+    if (getpeername(socket, reinterpret_cast<sockaddr*>(&addr), &len) == 0) {
+        char buf[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &addr.sin_addr, buf, sizeof(buf));
+        peer_ip = buf;
+    }
+
+    DWORD timeout = kRecvTimeoutMs;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+
+    std::thread(&TunnelManager::session_loop, this, socket, peer_ip).detach();
+}
+
+void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
+    proto::FrameDecoder decoder;
+    std::vector<uint8_t> read_buffer(65536);
+    std::shared_ptr<ClientSession> session;
+    long long register_deadline = steady_now_ms() + kRegisterDeadlineMs;
+
+    // Phase 1: wait for the Register message.
+    while (steady_now_ms() < register_deadline) {
+        int received = recv(socket, reinterpret_cast<char*>(read_buffer.data()),
+                            static_cast<int>(read_buffer.size()), 0);
+        if (received > 0) {
+            if (!decoder.feed(read_buffer.data(), static_cast<size_t>(received))) {
+                break;
+            }
+            if (!decoder.has_frame()) {
+                continue;
+            }
+            auto frame = decoder.pop_frame();
+            if (frame.type != proto::MessageType::Register) {
+                mlog::warn("Expected Register first, got type " +
+                          std::to_string(static_cast<int>(frame.type)));
+                break;
+            }
+            proto::RegisterInfo info;
+            if (!proto::parse_register_payload(frame.payload, info)) {
+                mlog::warn("Malformed Register payload from " + peer_ip);
+                break;
+            }
+            session = std::make_shared<ClientSession>();
+            session->socket = socket;
+            session->peer_ip = peer_ip;
+            session->connect_time = std::time(nullptr);
+            session->last_heartbeat_ms.store(steady_now_ms());
+            if (!register_session(session, info)) {
+                session.reset();
+                break;
+            }
+            break;
+        } else if (received == 0) {
+            break;
+        } else {
+            int err = WSAGetLastError();
+            if (err != WSAETIMEDOUT && err != WSAEWOULDBLOCK) {
+                break;
+            }
+        }
+    }
+
+    if (!session) {
+        closesocket(socket);
         return;
     }
-    
-    auto session = it->second;
-    std::string device_id = session->device_id;
-    
-    // Mark as inactive before closing socket
-    session->active = false;
-    
-    if (socket != INVALID_SOCKET) {
-        closesocket(socket);
-    }
-    
-    client_pool_.erase(it);
-    
-    auto device_it = device_id_to_socket_.find(device_id);
-    if (device_it != device_id_to_socket_.end()) {
-        device_id_to_socket_.erase(device_it);
-    }
-    
-    int count = --client_count_;
-    std::cout << "Unregistered client: " << device_id << ", remaining: " << count << std::endl;
-}
 
-std::shared_ptr<ClientSession> TunnelManager::get_client_by_device_id(const std::string& device_id) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    
-    auto it = device_id_to_socket_.find(device_id);
-    if (it != device_id_to_socket_.end()) {
-        SOCKET sock = it->second;
-        auto session_it = client_pool_.find(sock);
-        if (session_it != client_pool_.end()) {
-            return session_it->second;
+    // Phase 2: steady-state message pump.
+    while (session->alive.load()) {
+        int received = recv(socket, reinterpret_cast<char*>(read_buffer.data()),
+                            static_cast<int>(read_buffer.size()), 0);
+        if (received > 0) {
+            if (!decoder.feed(read_buffer.data(), static_cast<size_t>(received))) {
+                mlog::warn("Protocol violation from device " + session->device_id);
+                break;
+            }
+            while (decoder.has_frame()) {
+                auto frame = decoder.pop_frame();
+                switch (frame.type) {
+                    case proto::MessageType::Heartbeat:
+                        session->last_heartbeat_ms.store(steady_now_ms());
+                        break;
+                    case proto::MessageType::VideoFrame:
+                        emit video_frame_received(
+                            QString::fromStdString(session->device_id),
+                            QByteArray(reinterpret_cast<const char*>(
+                                           frame.payload.data()),
+                                       static_cast<int>(frame.payload.size())));
+                        break;
+                    default:
+                        mlog::warn("Unhandled message type " +
+                                  std::to_string(static_cast<int>(frame.type)) +
+                                  " from device " + session->device_id);
+                        break;
+                }
+            }
+        } else if (received == 0) {
+            mlog::info("Device " + session->device_id + " closed the connection");
+            break;
+        } else {
+            int err = WSAGetLastError();
+            if (err != WSAETIMEDOUT && err != WSAEWOULDBLOCK) {
+                if (session->alive.load()) {
+                    mlog::warn("recv() error for device " + session->device_id +
+                              ": " + std::to_string(err));
+                }
+                break;
+            }
         }
     }
-    
-    return nullptr;
+
+    remove_session(session);
+    if (session->socket != INVALID_SOCKET) {
+        closesocket(session->socket);
+        session->socket = INVALID_SOCKET;
+    }
 }
 
-std::vector<std::shared_ptr<ClientSession>> TunnelManager::get_all_clients() {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    std::vector<std::shared_ptr<ClientSession>> result;
-    
-    for (const auto& [sock, session] : client_pool_) {
-        if (session && session->active) {
-            result.push_back(session);
+bool TunnelManager::register_session(const std::shared_ptr<ClientSession>& session,
+                                     const proto::RegisterInfo& info) {
+    proto::RegisterStatus status = proto::RegisterStatus::Ok;
+
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        if (static_cast<int>(sessions_.size()) >= max_connections_) {
+            status = proto::RegisterStatus::ServerFull;
         }
     }
-    
+
+    // Send the ack before installing the session so a rejected peer
+    // still receives a reason.
+    std::vector<uint8_t> ack = proto::make_register_ack_payload(status);
+    std::vector<uint8_t> wire = proto::encode_frame(proto::MessageType::RegisterAck, ack);
+    ::send(session->socket, reinterpret_cast<const char*>(wire.data()),
+           static_cast<int>(wire.size()), 0);
+
+    if (status != proto::RegisterStatus::Ok) {
+        mlog::warn("Rejected registration for device " + info.device_id +
+                  " (status=" + std::to_string(static_cast<int>(status)) + ")");
+        return false;
+    }
+
+    session->device_id = info.device_id;
+    session->device_name =
+        info.device_name.empty() ? info.device_id : info.device_name;
+    session->screen_width = info.screen_width;
+    session->screen_height = info.screen_height;
+
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto existing = sessions_.find(info.device_id);
+        if (existing != sessions_.end()) {
+            // Same device re-registering (reconnect): retire the old tunnel.
+            auto old = existing->second;
+            old->alive.store(false);
+            if (old->socket != INVALID_SOCKET) {
+                closesocket(old->socket);
+                old->socket = INVALID_SOCKET;
+            }
+            sessions_.erase(existing);
+        }
+        sessions_[info.device_id] = session;
+    }
+
+    session->registered.store(true);
+    mlog::info("Device registered: " + info.device_id + " (" + session->device_name +
+              ") from " + session->peer_ip + ", " +
+              std::to_string(session->screen_width) + "x" +
+              std::to_string(session->screen_height));
+
+    emit device_registered(QString::fromStdString(info.device_id),
+                           QString::fromStdString(session->device_name),
+                           info.screen_width, info.screen_height);
+    return true;
+}
+
+void TunnelManager::remove_session(const std::shared_ptr<ClientSession>& session) {
+    if (!session->registered.exchange(false)) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = sessions_.find(session->device_id);
+        if (it != sessions_.end() && it->second == session) {
+            sessions_.erase(it);
+        }
+    }
+    mlog::info("Device unregistered: " + session->device_id);
+    emit device_unregistered(QString::fromStdString(session->device_id));
+}
+
+bool TunnelManager::send_to_device(const std::string& device_id,
+                                   proto::MessageType type,
+                                   const std::vector<uint8_t>& payload) {
+    std::shared_ptr<ClientSession> session;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = sessions_.find(device_id);
+        if (it == sessions_.end()) {
+            return false;
+        }
+        session = it->second;
+    }
+    if (!session->registered.load() || session->socket == INVALID_SOCKET) {
+        return false;
+    }
+
+    std::vector<uint8_t> wire = proto::encode_frame(type, payload);
+    std::lock_guard<std::mutex> lock(session->send_mutex);
+    size_t total = 0;
+    while (total < wire.size()) {
+        int sent = ::send(session->socket,
+                          reinterpret_cast<const char*>(wire.data() + total),
+                          static_cast<int>(wire.size() - total), 0);
+        if (sent <= 0) {
+            mlog::error("send_to_device(" + device_id + ") failed: " +
+                       std::to_string(WSAGetLastError()));
+            return false;
+        }
+        total += static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+std::vector<TunnelManager::DeviceInfo> TunnelManager::online_devices() const {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    std::vector<DeviceInfo> result;
+    result.reserve(sessions_.size());
+    for (const auto& [id, session] : sessions_) {
+        if (!session->registered.load()) {
+            continue;
+        }
+        DeviceInfo info;
+        info.device_id = session->device_id;
+        info.device_name = session->device_name;
+        info.peer_ip = session->peer_ip;
+        info.screen_width = session->screen_width;
+        info.screen_height = session->screen_height;
+        info.connect_time = session->connect_time;
+        result.push_back(std::move(info));
+    }
     return result;
 }
 
-bool TunnelManager::send_to_client(SOCKET socket, const std::vector<uint8_t>& data) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    
-    auto it = client_pool_.find(socket);
-    if (it == client_pool_.end() || !it->second->active) {
-        return false;
-    }
-    
-    size_t total_sent = 0;
-    while (total_sent < data.size()) {
-        int sent = send(socket, 
-                       reinterpret_cast<const char*>(data.data() + total_sent),
-                       static_cast<int>(data.size() - total_sent),
-                       0);
-        
-        if (sent == SOCKET_ERROR) {
-            int error = WSAGetLastError();
-            if (error == WSAEWOULDBLOCK || error == WSAETIMEDOUT) {
-                Sleep(10);
-                continue;
+void TunnelManager::reaper_loop() {
+    while (running_.load()) {
+        Sleep(1000);
+        long long now = steady_now_ms();
+
+        std::vector<std::shared_ptr<ClientSession>> expired;
+        {
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            for (const auto& [id, session] : sessions_) {
+                if (session->registered.load() &&
+                    now - session->last_heartbeat_ms.load() > kHeartbeatTimeoutMs) {
+                    expired.push_back(session);
+                }
             }
-            
-            std::cerr << "Send failed to socket " << socket << ": " << error << std::endl;
-            return false;
         }
-        
-        if (sent == 0) {
-            return false;
+        for (auto& session : expired) {
+            mlog::warn("Device " + session->device_id +
+                      " missed heartbeats, marking offline");
+            session->alive.store(false);
+            SOCKET sock = session->socket;
+            session->socket = INVALID_SOCKET;
+            if (sock != INVALID_SOCKET) {
+                closesocket(sock);
+            }
         }
-        
-        total_sent += sent;
     }
-    
-    return true;
 }
