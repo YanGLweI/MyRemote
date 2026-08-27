@@ -123,7 +123,18 @@ bool Connection::send(proto::MessageType type, const std::vector<uint8_t>& paylo
         return false;
     }
 
-    std::vector<uint8_t> frame = proto::encode_frame(type, payload);
+    proto::MessageType wire_type = type;
+    std::vector<uint8_t> wire_payload = payload;
+    if (aes_ && type != proto::MessageType::Heartbeat) {
+        std::vector<uint8_t> inner;
+        inner.reserve(1 + payload.size());
+        inner.push_back(static_cast<uint8_t>(type));
+        inner.insert(inner.end(), payload.begin(), payload.end());
+        wire_payload = aes_->encrypt(inner);
+        wire_type = proto::MessageType::Encrypted;
+    }
+
+    std::vector<uint8_t> frame = proto::encode_frame(wire_type, wire_payload);
 
     std::lock_guard<std::mutex> lock(send_mutex_);
     size_t total = 0;
@@ -158,8 +169,27 @@ void Connection::receive_loop() {
             }
             while (decoder.has_frame()) {
                 auto frame = decoder.pop_frame();
+                proto::MessageType type = frame.type;
+                std::vector<uint8_t> payload = std::move(frame.payload);
+                if (type == proto::MessageType::Encrypted) {
+                    if (!aes_) {
+                        mlog::error("Encrypted frame received but no key configured");
+                        break;
+                    }
+                    try {
+                        auto plain = aes_->decrypt(payload);
+                        if (plain.empty()) {
+                            throw crypto::CryptoError("empty plaintext");
+                        }
+                        type = static_cast<proto::MessageType>(plain[0]);
+                        payload.assign(plain.begin() + 1, plain.end());
+                    } catch (const crypto::CryptoError&) {
+                        mlog::warn("Decryption failed (wrong key or tampering), closing");
+                        break;
+                    }
+                }
                 if (message_callback_) {
-                    message_callback_(frame.type, std::move(frame.payload));
+                    message_callback_(type, std::move(payload));
                 }
             }
         } else if (received == 0) {

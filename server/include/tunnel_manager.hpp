@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "crypto.hpp"
 #include "frame_codec.hpp"
 #include "listener.hpp"
 #include "messages.hpp"
@@ -81,4 +82,5 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread reaper_thread_;
+    crypto::AesGcm aes_;
 };

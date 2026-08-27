@@ -15,6 +15,7 @@
 #include "auto_reconnect.hpp"
 #include "config.hpp"
 #include "connection.hpp"
+#include "crypto.hpp"
 #include "desktop_capture.hpp"
 #include "device_id.hpp"
 #include "heartbeat.hpp"
@@ -219,7 +220,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     mlog::init(dir + "/" + "agent.log");
     mlog::info("MyRemote agent starting");
 
-    std::string config_path = args.config_path.empty() ? dir + "\config.json"
+    std::string config_path = args.config_path.empty() ? dir + "/config.json"
                                                        : args.config_path;
     config::ClientConfig cfg = config::ClientConfig::load(config_path);
     if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
@@ -245,6 +246,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     g_connection = std::make_unique<Connection>();
     g_connection->set_message_callback(on_message);
+    g_connection->set_encryption_key(crypto::derive_key(cfg.secret_key));
 
     g_heartbeat = std::make_unique<HeartbeatKeeper>();
     g_heartbeat->start(1000, []() {

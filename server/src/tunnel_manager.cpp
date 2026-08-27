@@ -22,7 +22,8 @@ TunnelManager::TunnelManager(std::string secret_key, int max_connections,
                              QObject* parent)
     : QObject(parent),
       secret_key_(std::move(secret_key)),
-      max_connections_(max_connections) {
+      max_connections_(max_connections),
+      aes_(crypto::derive_key(secret_key_)) {
     listener_.set_connected_callback([this](SOCKET socket) {
         on_new_connection(socket);
     });
@@ -108,13 +109,28 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                 continue;
             }
             auto frame = decoder.pop_frame();
-            if (frame.type != proto::MessageType::Register) {
-                mlog::warn("Expected Register first, got type " +
-                          std::to_string(static_cast<int>(frame.type)));
+            if (frame.type != proto::MessageType::Encrypted) {
+                mlog::warn("Unencrypted Register attempt from " + peer_ip +
+                           " (type " + std::to_string(static_cast<int>(frame.type)) +
+                           "), rejecting");
+                break;
+            }
+            std::vector<uint8_t> plain;
+            try {
+                plain = aes_.decrypt(frame.payload);
+            } catch (const crypto::CryptoError&) {
+                mlog::warn("Register decryption failed from " + peer_ip +
+                           " (wrong connection key), rejecting");
+                break;
+            }
+            if (plain.empty() ||
+                plain[0] != static_cast<uint8_t>(proto::MessageType::Register)) {
+                mlog::warn("First encrypted message is not Register from " + peer_ip);
                 break;
             }
             proto::RegisterInfo info;
-            if (!proto::parse_register_payload(frame.payload, info)) {
+            std::vector<uint8_t> register_payload(plain.begin() + 1, plain.end());
+            if (!proto::parse_register_payload(register_payload, info)) {
                 mlog::warn("Malformed Register payload from " + peer_ip);
                 break;
             }
@@ -154,10 +170,32 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
             }
             while (decoder.has_frame()) {
                 auto frame = decoder.pop_frame();
+                if (frame.type == proto::MessageType::Heartbeat) {
+                    session->last_heartbeat_ms.store(steady_now_ms());
+                    continue;
+                }
+                if (frame.type != proto::MessageType::Encrypted) {
+                    mlog::warn("Unexpected plaintext frame from device " +
+                               session->device_id);
+                    continue;
+                }
+                std::vector<uint8_t> plain;
+                try {
+                    plain = aes_.decrypt(frame.payload);
+                } catch (const crypto::CryptoError&) {
+                    mlog::warn("Decryption failed for device " + session->device_id +
+                               ", closing tunnel");
+                    session->alive.store(false);
+                    break;
+                }
+                if (plain.empty()) {
+                    continue;
+                }
+                proto::FrameDecoder::Frame inner;
+                inner.type = static_cast<proto::MessageType>(plain[0]);
+                inner.payload.assign(plain.begin() + 1, plain.end());
+                frame = std::move(inner);
                 switch (frame.type) {
-                    case proto::MessageType::Heartbeat:
-                        session->last_heartbeat_ms.store(steady_now_ms());
-                        break;
                     case proto::MessageType::VideoFrame:
                         emit video_frame_received(
                             QString::fromStdString(session->device_id),
@@ -205,10 +243,13 @@ bool TunnelManager::register_session(const std::shared_ptr<ClientSession>& sessi
         }
     }
 
-    // Send the ack before installing the session so a rejected peer
-    // still receives a reason.
+    // Send the ack (encrypted) before installing the session.
     std::vector<uint8_t> ack = proto::make_register_ack_payload(status);
-    std::vector<uint8_t> wire = proto::encode_frame(proto::MessageType::RegisterAck, ack);
+    std::vector<uint8_t> inner;
+    inner.push_back(static_cast<uint8_t>(proto::MessageType::RegisterAck));
+    inner.insert(inner.end(), ack.begin(), ack.end());
+    std::vector<uint8_t> wire =
+        proto::encode_frame(proto::MessageType::Encrypted, aes_.encrypt(inner));
     ::send(session->socket, reinterpret_cast<const char*>(wire.data()),
            static_cast<int>(wire.size()), 0);
 
@@ -283,7 +324,12 @@ bool TunnelManager::send_to_device(const std::string& device_id,
         return false;
     }
 
-    std::vector<uint8_t> wire = proto::encode_frame(type, payload);
+    std::vector<uint8_t> inner;
+    inner.reserve(1 + payload.size());
+    inner.push_back(static_cast<uint8_t>(type));
+    inner.insert(inner.end(), payload.begin(), payload.end());
+    std::vector<uint8_t> wire =
+        proto::encode_frame(proto::MessageType::Encrypted, aes_.encrypt(inner));
     std::lock_guard<std::mutex> lock(session->send_mutex);
     size_t total = 0;
     while (total < wire.size()) {

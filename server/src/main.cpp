@@ -153,7 +153,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     mlog::info("Control center starting");
 
     config::ServerConfig cfg =
-        config::ServerConfig::load(dir + "\server_config.json");
+        config::ServerConfig::load(dir + "/server_config.json");
 
     MainWindow window(cfg);
     window.show();

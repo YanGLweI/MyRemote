@@ -20,6 +20,7 @@ enum class MessageType : uint8_t {
     RequestKeyframe = 0x08,  // S→C force I-frame
     AuthChallenge   = 0x09,  // S→C secondary password challenge
     AuthResponse    = 0x0A,  // C→S secondary password response
+    Encrypted       = 0x10,  // envelope: AES-GCM over [inner type][payload]
 };
 
 enum class RegisterStatus : uint8_t {

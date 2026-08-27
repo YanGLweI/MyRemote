@@ -5,11 +5,13 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "crypto.hpp"
 #include "frame_codec.hpp"
 #include "messages.hpp"
 
@@ -36,6 +38,9 @@ public:
         message_callback_ = std::move(callback);
     }
 
+    // Enable AES-128-GCM envelope for all messages except Heartbeat.
+    void set_encryption_key(const crypto::Key& key) { aes_.emplace(key); }
+
 private:
     void receive_loop();
     static void ensure_winsock();
@@ -46,4 +51,5 @@ private:
     std::atomic<bool> should_stop_{false};
     std::mutex send_mutex_;
     MessageCallback message_callback_;
+    std::optional<crypto::AesGcm> aes_;
 };
