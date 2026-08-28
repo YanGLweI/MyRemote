@@ -1,11 +1,38 @@
 #include "config.hpp"
 
+#include <windows.h>
+
 #include <fstream>
 #include <sstream>
 
 namespace config {
 
 namespace {
+
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) {
+        return {};
+    }
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                  static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                        &w[0], len);
+    return w;
+}
+
 
 // Minimal JSON reader for flat objects: {"key": "string", "num": 123}
 // Comments and nesting are unsupported; unknown keys are ignored.
@@ -108,6 +135,23 @@ ClientConfig ClientConfig::load(const std::string& path) {
     json.get_string("device_name", cfg.device_name);
     json.get_string("control_password", cfg.control_password);
     return cfg;
+}
+
+bool ClientConfig::save(const ClientConfig& cfg, const std::string& path) {
+    std::ofstream file(utf8_to_wide(path), std::ios::trunc);
+    if (!file.good()) {
+        return false;
+    }
+    file << "{\n"
+         << "    \"server_ip\": \"" << json_escape(cfg.server_ip) << "\",\n"
+         << "    \"server_port\": " << cfg.server_port << ",\n"
+         << "    \"secret_key\": \"" << json_escape(cfg.secret_key) << "\",\n"
+         << "    \"device_name\": \"" << json_escape(cfg.device_name) << "\",\n"
+         << "    \"control_password\": \"" << json_escape(cfg.control_password)
+         << "\"\n"
+         << "}\n";
+    file.flush();
+    return file.good();
 }
 
 ServerConfig ServerConfig::load(const std::string& path) {

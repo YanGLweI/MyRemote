@@ -62,7 +62,7 @@ cmake --build build --config Release
 ## 使用
 
 1. 服务端：将 `deploy/server_config.json` 放到 `control_server.exe` 同目录（可省略，使用默认端口 7500 / 默认密钥），运行。
-2. 客户端：将 `deploy/config.json`（server_ip/secret_key 等）放到 `agent.exe` 同目录，运行。开机自启：`agent.exe --install-autostart`（卸载 `--uninstall-autostart`）。调试窗口：`agent.exe --console`。
+2. 客户端：把 `agent.exe` 拷到目标电脑，双击运行 `agent.exe --config-ui` 打开图形配置界面，填写服务器地址/端口/连接密钥，可点“测试连接并注册”验证，保存后直接运行 `agent.exe` 即可（也可手动放一份 `deploy/config.json` 在同目录）。开机自启：`agent.exe --install-autostart`（卸载 `--uninstall-autostart`）。调试窗口：`agent.exe --console`。
 3. 控制端双击在线设备 → 输入该设备的控制密码（客户端未设置则留空）→ 查看/操作远程桌面。
 
 客户端与服务端的 `secret_key` 必须一致，否则注册被拒。

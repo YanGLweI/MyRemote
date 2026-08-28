@@ -57,6 +57,7 @@ set(WINDOWS_SYS_LIBS ws2_32 user32 gdi32)
 if(BUILD_CLIENT)
     add_executable(agent WIN32
         client/src/main.cpp
+        client/src/config_gui.cpp
         client/src/connection.cpp
         client/src/desktop_capture.cpp
         client/src/video_encoder.cpp

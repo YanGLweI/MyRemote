@@ -13,6 +13,7 @@ struct ClientConfig {
     std::string control_password;  // secondary verification password (P2)
 
     static ClientConfig load(const std::string& path);
+    static bool save(const ClientConfig& cfg, const std::string& path);
 };
 
 // Server (控制端) configuration, loaded from server_config.json.

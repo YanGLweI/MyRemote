@@ -14,6 +14,7 @@
 
 #include "auto_reconnect.hpp"
 #include "config.hpp"
+#include "config_gui.hpp"
 #include "connection.hpp"
 #include "crypto.hpp"
 #include "desktop_capture.hpp"
@@ -210,6 +211,7 @@ namespace {
 
 struct Args {
     bool console = false;
+    bool config_ui = false;
     bool install_autostart = false;
     bool uninstall_autostart = false;
     std::string ip_override;
@@ -224,15 +226,27 @@ Args parse_command_line() {
         return cmd.find(flag) != std::string::npos;
     };
     auto get_value = [&cmd](const std::string& flag) -> std::string {
-        size_t pos = cmd.find(flag);
-        if (pos == std::string::npos) return {};
-        pos = cmd.find_first_not_of(" \t", pos + flag.size());
-        if (pos == std::string::npos) return {};
-        size_t end = cmd.find_first_of(" \t", pos);
-        return cmd.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        size_t pos = 0;
+        while (true) {
+            pos = cmd.find(flag, pos);
+            if (pos == std::string::npos) return {};
+            size_t after = pos + flag.size();
+            if (after >= cmd.size() || cmd[after] == ' ' || cmd[after] == '\t' ||
+                cmd[after] == '=') {
+                break;
+            }
+            pos = after;  // e.g. "--config-ui" must not match "--config"
+        }
+        size_t vpos = pos + flag.size();
+        vpos = cmd.find_first_not_of(" \t=", vpos);
+        if (vpos == std::string::npos) return {};
+        size_t end = cmd.find_first_of(" \t", vpos);
+        return cmd.substr(vpos, end == std::string::npos ? std::string::npos
+                                                          : end - vpos);
     };
 
     args.console = has_flag("--console");
+    args.config_ui = has_flag("--config-ui");
     args.install_autostart = has_flag("--install-autostart");
     args.uninstall_autostart = has_flag("--uninstall-autostart");
     args.ip_override = get_value("--ip");
@@ -277,6 +291,22 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     if (args.uninstall_autostart) {
         set_autostart(false);
         return 0;
+    }
+
+    if (args.config_ui) {
+        std::string dir = exe_dir();
+        std::string config_path = args.config_path.empty()
+                                      ? dir + "/config.json"
+                                      : args.config_path;
+        config::ClientConfig current = config::ClientConfig::load(config_path);
+        gui::ConfigUi ui;
+        ui.server_ip = current.server_ip;
+        ui.server_port = current.server_port;
+        ui.secret_key = current.secret_key;
+        ui.device_name = current.device_name;
+        ui.control_password = current.control_password;
+        ui.config_path = config_path;
+        return gui::run_config_gui(ui) ? 0 : 1;
     }
 
     if (args.console) {
