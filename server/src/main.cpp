@@ -160,7 +160,8 @@ public:
                     statusBar()->showMessage(QStringLiteral("Ready"), 0);
                 });
         connect(tunnels_.get(), &TunnelManager::video_frame_received,
-                controller_.get(), &RemoteController::on_video_frame);
+                controller_.get(), &RemoteController::on_video_frame,
+                Qt::DirectConnection);
         connect(tunnels_.get(), &TunnelManager::auth_result, controller_.get(),
                 &RemoteController::on_auth_result);
         connect(controller_.get(), &RemoteController::control_denied, this,
@@ -195,6 +196,9 @@ public:
     }
 
     ~MainWindow() override {
+        if (controller_) {
+            controller_->stop_control();
+        }
         if (tunnels_) {
             tunnels_->stop();
         }
@@ -250,10 +254,10 @@ private slots:
     }
 
 private:
+    DisplayRenderer renderer_;
     std::unique_ptr<TunnelManager> tunnels_;
     std::unique_ptr<RemoteController> controller_;
     DeviceListWidget* device_list_ = nullptr;
-    DisplayRenderer renderer_;
     QPushButton* stop_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
     QPushButton* disconnect_button_ = nullptr;

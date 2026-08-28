@@ -16,7 +16,10 @@ public:
     void set_remote_size(int width, int height);
 
 public slots:
-    void set_frame(const QImage& frame);
+    // Stores the newest frame; safe to call from the decode thread, so it must
+    // not touch QWidget. The pipeline's frame_ready signal drives repaint().
+    void set_frame(QImage frame);
+    void repaint_frame();
     void clear_frame();
 
 signals:

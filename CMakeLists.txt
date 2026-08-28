@@ -89,12 +89,14 @@ if(BUILD_SERVER)
         server/src/display_renderer.cpp
         server/src/device_list.cpp
         server/src/remote_controller.cpp
+        server/src/frame_pipeline.cpp
         server/src/h264_decoder.cpp
         # Q_OBJECT headers must be listed so AUTOMOC generates their moc files
         server/include/tunnel_manager.hpp
         server/include/device_list.hpp
         server/include/display_renderer.hpp
         server/include/remote_controller.hpp
+        server/include/frame_pipeline.hpp
     )
     target_link_libraries(control_server PRIVATE
         common_lib

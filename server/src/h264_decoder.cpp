@@ -30,7 +30,6 @@ bool H264Decoder::initialize(int width, int height) {
     decoder_ = decoder;
     initialized_ = true;
     mlog::info("OpenH264 decoder initialized");
-    mlog::info("post-loop");
     return true;
 }
 

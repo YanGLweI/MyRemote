@@ -2,11 +2,11 @@
 
 #include <QObject>
 
-#include <atomic>
-#include <optional>
+#include <cstdint>
+#include <mutex>
 #include <string>
 
-#include "h264_decoder.hpp"
+#include "frame_pipeline.hpp"
 
 class DisplayRenderer;
 class TunnelManager;
@@ -23,11 +23,9 @@ public:
     void request_control(const std::string& device_id, const std::string& password);
     void stop_control();
 
-    bool is_controlling() const { return controlled_.has_value(); }
+    bool is_controlling() const;
     void apply_quality(uint8_t fps, uint16_t bitrate_kbps);
-    std::string controlled_device() const {
-        return controlled_.value_or(std::string());
-    }
+    std::string controlled_device() const;
 
 signals:
     void control_started(QString device_id);
@@ -36,6 +34,8 @@ signals:
     void fps_updated(int net_fps, int decoded_fps);
 
 public slots:
+    // Connected directly: runs on the tunnel session thread and only hands the
+    // payload to the decode pipeline.
     void on_video_frame(QString device_id, QByteArray payload);
     void on_mouse_moved(int x, int y);
     void on_mouse_button(int button, bool pressed);
@@ -45,13 +45,14 @@ public slots:
 
 private:
     bool do_start(const std::string& device_id);
+    void set_controlled(const std::string& device_id);
+
     TunnelManager& tunnels_;
     DisplayRenderer& renderer_;
-    H264Decoder decoder_;
-    std::optional<std::string> controlled_;
+    FramePipeline pipeline_;
+    mutable std::mutex state_mutex_;
+    std::string controlled_;
     std::string pending_device_;
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
-    std::atomic<uint64_t> frames_decoded_{0};
-    std::atomic<long long> last_good_frame_ms_{0};
 };

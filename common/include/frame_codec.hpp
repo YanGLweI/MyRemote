@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <deque>
 #include <vector>
 
 #include "messages.hpp"
@@ -38,7 +39,7 @@ private:
     static constexpr uint32_t kMaxPayloadSize = 64 * 1024 * 1024;
 
     std::vector<uint8_t> buffer_;
-    std::vector<Frame> frames_;
+    std::deque<Frame> frames_;
 };
 
 }  // namespace proto

@@ -2,40 +2,47 @@
 
 #include <QTimer>
 
-#include <chrono>
-
 #include "display_renderer.hpp"
 #include "log.hpp"
 #include "messages.hpp"
 #include "tunnel_manager.hpp"
 
-namespace {
-constexpr uint8_t kDefaultFps = 30;
-constexpr uint16_t kDefaultBitrateKbps = 2048;
-
-long long now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
-}  // namespace
-
 RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& renderer,
                                    QObject* parent)
-    : QObject(parent), tunnels_(tunnels), renderer_(renderer) {
+    : QObject(parent), tunnels_(tunnels), renderer_(renderer), pipeline_(renderer) {
+    // Decoding happens on the pipeline thread; the GUI thread only gets a
+    // cheap "something new to paint" nudge.
+    connect(&pipeline_, &FramePipeline::frame_ready, this,
+            [this] { renderer_.update(); });
+
     auto* fps_timer = new QTimer(this);
     connect(fps_timer, &QTimer::timeout, this, [this]() {
         int net = static_cast<int>(tunnels_.exchange_video_frames_in());
-        int dec = static_cast<int>(frames_decoded_.exchange(0));
+        int dec = static_cast<int>(pipeline_.exchange_decoded());
         emit fps_updated(net, dec);
     });
     fps_timer->start(1000);
 }
 
+bool RemoteController::is_controlling() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return !controlled_.empty();
+}
+
+std::string RemoteController::controlled_device() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return controlled_;
+}
+
+void RemoteController::set_controlled(const std::string& device_id) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    controlled_ = device_id;
+}
+
 bool RemoteController::do_start(const std::string& device_id) {
-    if (controlled_.has_value()) {
-        mlog::warn("Already controlling " + controlled_.value() +
-                  "; stop it before switching devices");
+    if (is_controlling()) {
+        mlog::warn("Already controlling " + controlled_device() +
+                   "; stop it before switching devices");
         return false;
     }
 
@@ -48,8 +55,10 @@ bool RemoteController::do_start(const std::string& device_id) {
             break;
         }
     }
-    if (!decoder_.initialize(width, height)) {
-        mlog::error("Decoder init failed for " + device_id);
+    auto request_keyframe = [this, device_id] {
+        tunnels_.send_to_device(device_id, proto::MessageType::RequestKeyframe);
+    };
+    if (!pipeline_.start(device_id, width, height, request_keyframe)) {
         return false;
     }
     renderer_.set_remote_size(width, height);
@@ -57,87 +66,78 @@ bool RemoteController::do_start(const std::string& device_id) {
     auto payload = proto::make_start_stream_payload(fps_, bitrate_kbps_);
     if (!tunnels_.send_to_device(device_id, proto::MessageType::StartStream, payload)) {
         mlog::error("Failed to send StartStream to " + device_id);
+        pipeline_.stop();
         return false;
     }
-    tunnels_.send_to_device(device_id, proto::MessageType::RequestKeyframe);
+    request_keyframe();
 
-    controlled_ = device_id;
-    frames_decoded_.store(0);
+    set_controlled(device_id);
     tunnels_.exchange_video_frames_in();
-    last_good_frame_ms_.store(0);
     mlog::info("Control session started: " + device_id);
     emit control_started(QString::fromStdString(device_id));
     return true;
 }
 
 void RemoteController::stop_control() {
-    if (!controlled_.has_value()) {
-        return;
+    std::string device_id;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (controlled_.empty()) {
+            return;
+        }
+        device_id.swap(controlled_);
     }
-    std::string device_id = controlled_.value();
     tunnels_.send_to_device(device_id, proto::MessageType::StopStream);
-    controlled_.reset();
+    pipeline_.stop();
     renderer_.clear_frame();
     mlog::info("Control session stopped: " + device_id);
     emit control_stopped();
 }
 
 void RemoteController::on_video_frame(QString device_id, QByteArray payload) {
-    if (!controlled_.has_value() ||
-        device_id.toStdString() != controlled_.value()) {
+    if (device_id.toStdString() != controlled_device()) {
         return;  // frame from a device we are not controlling
     }
-
-    proto::VideoFrameInfo info;
-    std::vector<uint8_t> bytes(payload.begin(), payload.end());
-    if (!proto::parse_video_frame_payload(bytes, info)) {
-        mlog::warn("Malformed VideoFrame payload");
-        return;
-    }
-
-    QImage frame;
-    if (decoder_.decode(info.data, info.size, frame)) {
-        frames_decoded_.fetch_add(1);
-        last_good_frame_ms_.store(now_ms());
-        renderer_.set_frame(frame);
-    } else if (now_ms() - last_good_frame_ms_.load() > 2000) {
-        // Stalled (missing keyframe after loss): ask the client for one.
-        last_good_frame_ms_.store(now_ms());
-        tunnels_.send_to_device(controlled_.value(),
-                                proto::MessageType::RequestKeyframe);
-    }
+    pipeline_.push(std::move(payload));
 }
 
 void RemoteController::on_mouse_moved(int x, int y) {
-    if (!controlled_.has_value()) return;
-    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
+    std::string device = controlled_device();
+    if (device.empty()) return;
+    tunnels_.send_to_device(device, proto::MessageType::InputEvent,
                             proto::make_mouse_move(static_cast<uint16_t>(x),
                                                    static_cast<uint16_t>(y)));
 }
 
 void RemoteController::on_mouse_button(int button, bool pressed) {
-    if (!controlled_.has_value()) return;
-    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
-                            proto::make_mouse_button(static_cast<uint8_t>(button), pressed));
+    std::string device = controlled_device();
+    if (device.empty()) return;
+    tunnels_.send_to_device(device, proto::MessageType::InputEvent,
+                            proto::make_mouse_button(static_cast<uint8_t>(button),
+                                                     pressed));
 }
 
 void RemoteController::on_mouse_wheel(int delta) {
-    if (!controlled_.has_value()) return;
-    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
+    std::string device = controlled_device();
+    if (device.empty()) return;
+    tunnels_.send_to_device(device, proto::MessageType::InputEvent,
                             proto::make_mouse_wheel(static_cast<int16_t>(delta)));
 }
 
 void RemoteController::on_key(int vk, bool pressed, bool extended) {
-    if (!controlled_.has_value()) return;
-    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
-                            proto::make_key(static_cast<uint16_t>(vk), pressed, extended));
+    std::string device = controlled_device();
+    if (device.empty()) return;
+    tunnels_.send_to_device(device, proto::MessageType::InputEvent,
+                            proto::make_key(static_cast<uint16_t>(vk), pressed,
+                                            extended));
 }
 
 void RemoteController::apply_quality(uint8_t fps, uint16_t bitrate_kbps) {
     fps_ = fps;
     bitrate_kbps_ = bitrate_kbps;
-    if (controlled_.has_value()) {
-        tunnels_.send_to_device(controlled_.value(), proto::MessageType::StartStream,
+    std::string device = controlled_device();
+    if (!device.empty()) {
+        tunnels_.send_to_device(device, proto::MessageType::StartStream,
                                 proto::make_start_stream_payload(fps_, bitrate_kbps_));
     }
 }
@@ -148,7 +148,7 @@ bool RemoteController::start_control(const std::string& device_id) {
 
 void RemoteController::request_control(const std::string& device_id,
                                        const std::string& password) {
-    if (controlled_.has_value()) {
+    if (is_controlling()) {
         mlog::warn("Already controlling a device");
         return;
     }

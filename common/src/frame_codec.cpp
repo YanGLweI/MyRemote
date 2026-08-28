@@ -26,7 +26,7 @@ bool FrameDecoder::feed(const uint8_t* data, size_t len) {
 
 FrameDecoder::Frame FrameDecoder::pop_frame() {
     Frame frame = std::move(frames_.front());
-    frames_.erase(frames_.begin());
+    frames_.pop_front();
     return frame;
 }
 

@@ -122,11 +122,12 @@ void DisplayRenderer::set_remote_size(int width, int height) {
     remote_h_ = height;
 }
 
-void DisplayRenderer::set_frame(const QImage& frame) {
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        current_ = frame;
-    }
+void DisplayRenderer::set_frame(QImage frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    current_ = std::move(frame);
+}
+
+void DisplayRenderer::repaint_frame() {
     update();
 }
 
