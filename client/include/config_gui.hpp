@@ -1,8 +1,15 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 namespace gui {
+
+enum class SaveMode {
+    SaveOnly,      // --config-ui: write the file, no agent involved
+    SaveAndRun,    // first double-click: save, then this process runs as agent
+    SaveAndApply,  // agent already running: save + hot reload in place
+};
 
 // Values shown/edited in the configuration dialog.
 struct ConfigUi {
@@ -12,12 +19,17 @@ struct ConfigUi {
     std::string device_name;
     std::string control_password;
     std::string config_path;  // shown read-only; where Save writes to
-    bool run_after_save = false;  // double-click flow: agent loop starts after save
-    bool saved = false;       // true when the user pressed Save
+    SaveMode save_mode = SaveMode::SaveOnly;
+    bool saved = false;  // true when the user pressed Save
 };
 
-// Runs the native Win32 configuration dialog. Blocks until closed.
-// Returns true if the user saved the configuration.
+// Runs the native Win32 configuration dialog modally (blocks until closed).
+// Callable from any thread that can pump messages; returns true if saved.
 bool run_config_gui(ConfigUi& cfg);
+
+// Opens the dialog on a dedicated thread without blocking the caller.
+// on_closed receives the final state (saved flag) and runs on that thread.
+void show_config_gui_async(ConfigUi cfg,
+                           std::function<void(const ConfigUi&)> on_closed);
 
 }  // namespace gui

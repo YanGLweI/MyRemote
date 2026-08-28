@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(MyRemoteControl VERSION 1.0.0 LANGUAGES CXX)
+enable_language(RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +59,8 @@ if(BUILD_CLIENT)
     add_executable(agent WIN32
         client/src/main.cpp
         client/src/config_gui.cpp
+        client/src/tray_icon.cpp
+        client/resources/agent.rc
         client/src/connection.cpp
         client/src/desktop_capture.cpp
         client/src/video_encoder.cpp
@@ -68,7 +71,7 @@ if(BUILD_CLIENT)
     target_link_libraries(agent PRIVATE
         common_lib
         ${WINDOWS_SYS_LIBS}
-        iphlpapi
+        iphlpapi shell32
         d3d11 dxgi dwmapi
         openh264
     )

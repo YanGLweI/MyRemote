@@ -3,7 +3,6 @@
 // The client never listens or accepts connections (one-way network rule).
 
 #include <windows.h>
-#include <tlhelp32.h>
 
 #include <algorithm>
 #include <atomic>
@@ -24,6 +23,7 @@
 #include "input_simulator.hpp"
 #include "log.hpp"
 #include "messages.hpp"
+#include "tray_icon.hpp"
 #include "video_encoder.hpp"
 
 namespace {
@@ -46,6 +46,48 @@ std::unique_ptr<DesktopCapturer> g_capturer;
 std::unique_ptr<VideoEncoder> g_encoder;
 std::unique_ptr<HeartbeatKeeper> g_heartbeat;
 InputSimulator g_input;
+
+std::string g_config_path;
+HANDLE g_reload_event = nullptr;
+std::atomic<bool> g_config_dialog_open{false};
+
+std::wstring to_wide(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                        &w[0], n);
+    return w;
+}
+
+gui::ConfigUi make_ui(const config::ClientConfig& c) {
+    gui::ConfigUi ui;
+    ui.server_ip = c.server_ip;
+    ui.server_port = c.server_port;
+    ui.secret_key = c.secret_key;
+    ui.device_name = c.device_name;
+    ui.control_password = c.control_password;
+    ui.config_path = g_config_path;
+    return ui;
+}
+
+// Tray click / second-instance double-click: raise the config dialog of the
+// running agent; a save schedules a hot reload in the supervisor loop.
+void open_config_dialog() {
+    bool expected = false;
+    if (!g_config_dialog_open.compare_exchange_strong(expected, true)) {
+        return;  // dialog already open
+    }
+    gui::ConfigUi ui = make_ui(config::ClientConfig::load(g_config_path));
+    ui.save_mode = gui::SaveMode::SaveAndApply;
+    gui::show_config_gui_async(std::move(ui), [](const gui::ConfigUi& done) {
+        g_config_dialog_open.store(false);
+        if (done.saved && g_reload_event) {
+            SetEvent(g_reload_event);
+        }
+    });
+}
 
 std::string exe_dir() {
     char path[MAX_PATH] = {};
@@ -270,46 +312,6 @@ Args parse_command_line() {
 }  // namespace
 
 namespace {
-// Terminates other running copies of this exact executable so a freshly
-// configured instance can take over (config changes need a reconnect).
-void kill_other_agent_instances() {
-    wchar_t my_path[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, my_path, MAX_PATH);
-
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    PROCESSENTRY32W pe{};
-    pe.dwSize = sizeof(pe);
-    if (Process32FirstW(snap, &pe)) {
-        do {
-            if (_wcsicmp(pe.szExeFile, L"agent.exe") != 0 ||
-                pe.th32ProcessID == GetCurrentProcessId()) {
-                continue;
-            }
-            HANDLE proc = OpenProcess(
-                PROCESS_TERMINATE | SYNCHRONIZE |
-                    PROCESS_QUERY_LIMITED_INFORMATION,
-                FALSE, pe.th32ProcessID);
-            if (!proc) {
-                continue;
-            }
-            wchar_t path[MAX_PATH] = {};
-            DWORD len = MAX_PATH;
-            if (QueryFullProcessImageNameW(proc, 0, path, &len) &&
-                _wcsicmp(path, my_path) == 0) {
-                TerminateProcess(proc, 0);
-                WaitForSingleObject(proc, 2000);
-            }
-            CloseHandle(proc);
-        } while (Process32NextW(snap, &pe));
-    }
-    CloseHandle(snap);
-}
-}  // namespace
-
-namespace {
 void set_autostart(bool enable) {
     HKEY key;
     if (RegOpenKeyExA(HKEY_CURRENT_USER,
@@ -342,30 +344,32 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 0;
     }
 
-    // Double-click (no --background) opens the configuration GUI; after
-    // "save and run" this same process continues as the background agent.
-    if (args.config_ui || !args.background) {
-        std::string dir = exe_dir();
-        std::string config_path = args.config_path.empty()
-                                      ? dir + "/config.json"
-                                      : args.config_path;
-        config::ClientConfig current = config::ClientConfig::load(config_path);
-        gui::ConfigUi ui;
-        ui.server_ip = current.server_ip;
-        ui.server_port = current.server_port;
-        ui.secret_key = current.secret_key;
-        ui.device_name = current.device_name;
-        ui.control_password = current.control_password;
-        ui.config_path = config_path;
-        ui.run_after_save = !args.config_ui;
-        bool saved = gui::run_config_gui(ui);
-        if (args.config_ui) {
-            return saved ? 0 : 1;
+    // Physical-pixel metrics everywhere (capture/encoder/screen size).
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    std::string dir = exe_dir();
+    g_config_path =
+        args.config_path.empty() ? dir + "/config.json" : args.config_path;
+
+    // Exactly one agent process, acquired before any UI is shown.
+    HANDLE instance_mutex =
+        CreateMutexW(nullptr, TRUE, L"MyRemoteAgent_SingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (!args.background) {
+            HWND h = nullptr;
+            for (int i = 0; i < 20 && !h; ++i) {
+                h = FindWindowW(TrayIcon::kWndClass, nullptr);
+                if (!h) Sleep(100);
+            }
+            if (h) {
+                PostMessageW(h, TrayIcon::WM_SHOW_CONFIG, 0, 0);
+            } else {
+                MessageBoxW(nullptr,
+                            L"MyRemote Agent 已在运行（见系统托盘图标）。",
+                            L"MyRemote", MB_OK | MB_ICONINFORMATION);
+            }
         }
-        if (!saved) {
-            return 0;
-        }
-        kill_other_agent_instances();
+        return 0;
     }
 
     if (args.console) {
@@ -374,32 +378,51 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         freopen("CONOUT$", "w", stderr);
     }
 
-    std::string dir = exe_dir();
     mlog::init(dir + "/" + "agent.log");
     mlog::info("MyRemote agent starting");
 
-    std::string config_path = args.config_path.empty() ? dir + "/config.json"
-                                                       : args.config_path;
-    config::ClientConfig cfg = config::ClientConfig::load(config_path);
+    config::ClientConfig cfg = config::ClientConfig::load(g_config_path);
     if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
     if (args.port_override > 0) cfg.server_port = args.port_override;
+
+    if (args.config_ui) {
+        gui::ConfigUi ui = make_ui(cfg);
+        ui.save_mode = gui::SaveMode::SaveOnly;
+        return gui::run_config_gui(ui) ? 0 : 1;
+    }
+    if (!args.background) {
+        // First double-click on a fresh machine: configure, then run.
+        gui::ConfigUi ui = make_ui(cfg);
+        ui.save_mode = gui::SaveMode::SaveAndRun;
+        if (!gui::run_config_gui(ui)) {
+            mlog::info("Configuration cancelled, agent not started");
+            return 0;
+        }
+        cfg = config::ClientConfig::load(g_config_path);
+    }
 
     g_control_password = cfg.control_password;
     std::string dev_id = device::make_device_id();
     mlog::info("Device id: " + dev_id + ", target server: " + cfg.server_ip + ":" +
               std::to_string(cfg.server_port));
 
-    HANDLE single_instance =
-        CreateMutexW(nullptr, TRUE, L"MyRemoteAgent_SingleInstance");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        mlog::error("Another agent instance is already running, exiting");
-        return 1;
+    g_reload_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+    TrayIcon tray;
+    bool tray_ok = tray.start(open_config_dialog,
+                              [] { g_state.running.store(false); });
+    if (!tray_ok) {
+        mlog::warn("Tray icon unavailable, running headless");
     }
-    (void)single_instance;
+    tray.set_tooltip(to_wide(cfg.device_name.empty()
+                                 ? device::default_device_name()
+                                 : cfg.device_name) +
+                     L" | 连接中");
 
     g_capturer = std::make_unique<DesktopCapturer>();
     if (!g_capturer->initialize(0)) {
         mlog::error("Desktop capture initialization failed");
+        tray.stop();
         return 1;
     }
     EncoderConfig enc_cfg;
@@ -426,25 +449,54 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     std::thread stream_thread(stream_loop);
 
-    // Supervisor: connect + register with exponential backoff.
+    // Supervisor: connect + register with exponential backoff; the 200ms
+    // wake keeps reload latency low even while backing off.
     AutoReconnect reconnect;
     reconnect.set_callback([&]() {
         return establish_session(cfg, dev_id);
     });
 
     int backoff_ms = 1000;
+    DWORD next_try_tick = 0;
+    std::wstring last_tip;
     while (g_state.running.load()) {
-        if (!g_connection->is_connected() || !g_state.registered.load()) {
-            g_state.streaming.store(false);
+        if (WaitForSingleObject(g_reload_event, 200) == WAIT_OBJECT_0) {
+            mlog::info("Config saved while running; reloading");
+            g_connection->disconnect();
             g_state.registered.store(false);
-            if (reconnect.try_once()) {
-                backoff_ms = 1000;
-            } else {
-                Sleep(backoff_ms);
-                backoff_ms = std::min(backoff_ms * 2, 30000);
+            g_state.streaming.store(false);
+            cfg = config::ClientConfig::load(g_config_path);
+            if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
+            if (args.port_override > 0) cfg.server_port = args.port_override;
+            g_control_password = cfg.control_password;
+            g_connection->set_encryption_key(crypto::derive_key(cfg.secret_key));
+            backoff_ms = 1000;
+            next_try_tick = 0;
+        }
+
+        if (!g_connection->is_connected() || !g_state.registered.load()) {
+            if (static_cast<int32_t>(GetTickCount() - next_try_tick) >= 0) {
+                g_state.streaming.store(false);
+                g_state.registered.store(false);
+                if (reconnect.try_once()) {
+                    backoff_ms = 1000;
+                } else {
+                    next_try_tick = GetTickCount() + backoff_ms;
+                    backoff_ms = std::min(backoff_ms * 2, 30000);
+                }
             }
-        } else {
-            Sleep(500);
+        }
+
+        std::wstring tip = to_wide(cfg.device_name.empty()
+                                       ? device::default_device_name()
+                                       : cfg.device_name) +
+                           L" | " + to_wide(cfg.server_ip + ":" +
+                                            std::to_string(cfg.server_port)) +
+                           (g_state.registered.load() ? L" | 已注册"
+                                                      : L" | 连接/重试中");
+        if (tip != last_tip) {
+            tray.set_tooltip(tip);
+            last_tip = tip;
         }
     }
 
@@ -452,6 +504,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     if (stream_thread.joinable()) stream_thread.join();
     g_heartbeat.reset();
     g_connection.reset();
+    tray.stop();
     mlog::info("MyRemote agent stopped");
     return 0;
 }
