@@ -18,8 +18,16 @@ public:
 
     using Callback = std::function<void()>;
 
+    struct Actions {
+        Callback open_config;
+        Callback quit;
+        // Only set while the agent runs with a filtered token.
+        Callback elevate;
+        Callback install_autostart;
+    };
+
     // Creates the tray window + icon on a dedicated message-loop thread.
-    bool start(Callback on_open_config, Callback on_quit);
+    bool start(Actions actions);
     void stop();
     void set_tooltip(const std::wstring& text);
 
@@ -31,8 +39,7 @@ private:
 
     std::atomic<HWND> hwnd_{nullptr};
     NOTIFYICONDATAW nid_{};
-    Callback on_open_config_;
-    Callback on_quit_;
+    Actions actions_;
     std::thread thread_;
     HANDLE ready_event_ = nullptr;
     std::atomic<bool> stopped_{false};

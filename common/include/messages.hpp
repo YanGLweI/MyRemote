@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,12 +30,18 @@ enum class RegisterStatus : uint8_t {
     ServerFull = 2,
 };
 
+// Capability bits carried in the trailing Register flags byte.
+constexpr uint8_t kRegisterFlagElevated = 0x01;
+
 struct RegisterInfo {
     uint16_t protocol_version = 0;
     std::string device_id;
     std::string device_name;
     uint16_t screen_width = 0;
     uint16_t screen_height = 0;
+    bool elevated = false;
+    // False for agents too old to send the flags byte: elevation stays unknown.
+    bool elevation_known = false;
 };
 
 enum class InputKind : uint8_t {
@@ -72,7 +79,8 @@ struct VideoFrameInfo {
 // Payload builders / parsers (all multi-byte integers are big-endian).
 std::vector<uint8_t> make_register_payload(const std::string& device_id,
                                            const std::string& device_name,
-                                           uint16_t screen_width, uint16_t screen_height);
+                                           uint16_t screen_width, uint16_t screen_height,
+                                           std::optional<uint8_t> flags = std::nullopt);
 bool parse_register_payload(const std::vector<uint8_t>& payload, RegisterInfo& info);
 
 std::vector<uint8_t> make_register_ack_payload(RegisterStatus status);
@@ -80,9 +88,11 @@ bool parse_register_ack_payload(const std::vector<uint8_t>& payload, RegisterSta
 
 std::vector<uint8_t> make_heartbeat_payload();
 
-std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbps);
+std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbps,
+                                               uint16_t max_encode_width = 0);
 bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fps,
-                                uint16_t& bitrate_kbps);
+                                uint16_t& bitrate_kbps,
+                                uint16_t& max_encode_width);
 
 std::vector<uint8_t> make_video_frame_payload(uint32_t seq, uint64_t timestamp_us,
                                               bool is_keyframe, const uint8_t* data,

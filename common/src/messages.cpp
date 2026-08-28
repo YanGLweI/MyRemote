@@ -73,25 +73,34 @@ std::string read_fixed_string(const std::vector<uint8_t>& in, size_t& offset, si
 std::vector<uint8_t> make_register_payload(const std::string& device_id,
                                            const std::string& device_name,
                                            uint16_t screen_width,
-                                           uint16_t screen_height) {
+                                           uint16_t screen_height,
+                                           std::optional<uint8_t> flags) {
     std::vector<uint8_t> payload;
-    payload.reserve(2 + kDeviceIdFieldSize + kDeviceNameFieldSize + 4);
+    payload.reserve(2 + kDeviceIdFieldSize + kDeviceNameFieldSize + 5);
     put_u16(payload, kProtocolVersion);
     put_fixed_string(payload, device_id, kDeviceIdFieldSize);
     put_fixed_string(payload, device_name, kDeviceNameFieldSize);
     put_u16(payload, screen_width);
     put_u16(payload, screen_height);
+    if (flags) {
+        payload.push_back(*flags);
+    }
     return payload;
 }
 
 bool parse_register_payload(const std::vector<uint8_t>& payload, RegisterInfo& info) {
     size_t offset = 0;
-    return read_u16(payload, offset, info.protocol_version) &&
+    bool ok = read_u16(payload, offset, info.protocol_version) &&
            (info.device_id = read_fixed_string(payload, offset, kDeviceIdFieldSize), true) &&
            !info.device_id.empty() &&
            (info.device_name = read_fixed_string(payload, offset, kDeviceNameFieldSize), true) &&
            read_u16(payload, offset, info.screen_width) &&
            read_u16(payload, offset, info.screen_height);
+    if (!ok) return false;
+    info.elevation_known = offset < payload.size();
+    info.elevated = info.elevation_known &&
+                    (payload[offset] & kRegisterFlagElevated) != 0;
+    return true;
 }
 
 std::vector<uint8_t> make_register_ack_payload(RegisterStatus status) {
@@ -113,20 +122,26 @@ std::vector<uint8_t> make_heartbeat_payload() {
     return payload;
 }
 
-std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbps) {
+std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbps,
+                                               uint16_t max_encode_width) {
     std::vector<uint8_t> payload;
     payload.push_back(fps);
     put_u16(payload, bitrate_kbps);
+    put_u16(payload, max_encode_width);
     return payload;
 }
 
 bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fps,
-                                uint16_t& bitrate_kbps) {
+                                uint16_t& bitrate_kbps,
+                                uint16_t& max_encode_width) {
     size_t offset = 0;
     if (payload.empty()) return false;
     fps = payload[0];
     offset = 1;
-    return read_u16(payload, offset, bitrate_kbps);
+    max_encode_width = 0;
+    if (!read_u16(payload, offset, bitrate_kbps)) return false;
+    read_u16(payload, offset, max_encode_width);  // optional: 0 = device default
+    return true;
 }
 
 std::vector<uint8_t> make_video_frame_payload(uint32_t seq, uint64_t timestamp_us,

@@ -37,6 +37,18 @@ std::string exe_dir() {
     return pos == std::string::npos ? "." : s.substr(0, pos);
 }
 
+// A limited agent's SendInput is dropped by UIPI on elevated windows, which
+// looks exactly like a dead session; flag those devices up front.
+std::string device_label(const TunnelManager::DeviceInfo& info,
+                         const QString& remark) {
+    std::string name = remark.isEmpty() ? info.device_name
+                                        : remark.toStdString();
+    if (info.elevation_known && !info.elevated) {
+        name += " 〔受限〕";
+    }
+    return name;
+}
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -59,9 +71,9 @@ public:
         side_layout->setContentsMargins(0, 0, 0, 0);
         device_list_ = new DeviceListWidget();
         quality_combo_ = new QComboBox();
-        quality_combo_->addItem(QStringLiteral("Low latency (30fps/1.5M)"));
-        quality_combo_->addItem(QStringLiteral("Balanced (30fps/2M)"));
-        quality_combo_->addItem(QStringLiteral("High quality (60fps/6M)"));
+        quality_combo_->addItem(QStringLiteral("Smooth (30fps/1.5M/1280)"));
+        quality_combo_->addItem(QStringLiteral("Balanced (30fps/2M/1920)"));
+        quality_combo_->addItem(QStringLiteral("Sharp (60fps/6M/device cap)"));
         quality_combo_->setCurrentIndex(1);
         fullscreen_button_ = new QPushButton(QStringLiteral("Fullscreen"));
         remark_button_ = new QPushButton(QStringLiteral("Set Remark"));
@@ -103,9 +115,12 @@ public:
                 this, [this](int idx) {
                     static const int kFps[] = {30, 30, 60};
                     static const int kBr[] = {1500, 2048, 6000};
+                    static const int kW[] = {1280, 1920, 0};
                     if (idx >= 0 && idx < 3) {
-                        controller_->apply_quality(static_cast<uint8_t>(kFps[idx]),
-                                                   static_cast<uint16_t>(kBr[idx]));
+                        controller_->apply_quality(
+                            static_cast<uint8_t>(kFps[idx]),
+                            static_cast<uint16_t>(kBr[idx]),
+                            static_cast<uint16_t>(kW[idx]));
                     }
                 });
         connect(fullscreen_button_, &QPushButton::clicked, this, [this]() {
@@ -209,8 +224,7 @@ private slots:
         for (const auto& info : tunnels_->online_devices()) {
             if (QString::fromStdString(info.device_id) == device_id) {
                 QString remark = remarks_.value(QString::fromStdString(info.device_id)).toString();
-                std::string display = remark.isEmpty() ? info.device_name
-                                                       : remark.toStdString();
+                std::string display = device_label(info, remark);
                 device_list_->upsert_device(info.device_id, display,
                                             info.screen_width, info.screen_height,
                                             info.peer_ip, info.connect_time);
@@ -223,7 +237,7 @@ private slots:
         for (const auto& info : tunnels_->online_devices()) {
             if (QString::fromStdString(info.device_id) == device_id) {
                 QString remark = remarks_.value(device_id).toString();
-                std::string display = remark.isEmpty() ? info.device_name : remark.toStdString();
+                std::string display = device_label(info, remark);
                 device_list_->upsert_device(info.device_id, display,
                                             info.screen_width, info.screen_height,
                                             info.peer_ip, info.connect_time);

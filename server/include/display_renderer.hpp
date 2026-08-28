@@ -30,6 +30,7 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -40,9 +41,15 @@ protected:
 private:
     QPoint map_to_remote(const QPoint& widget_pos) const;
     QRect remote_rect() const;  // letterbox area within the widget
+    // The remote never sends its own pointer image, so echo where we put it.
+    void track_pointer(const QPoint& widget_pos);
+    void set_cursor_blank(bool blank);
 
     mutable std::mutex mutex_;
     QImage current_;
     int remote_w_ = 0;
     int remote_h_ = 0;
+    QPoint pointer_pos_;
+    bool pointer_visible_ = false;
+    bool cursor_blank_ = false;
 };

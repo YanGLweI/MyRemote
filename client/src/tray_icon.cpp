@@ -29,12 +29,12 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 LRESULT TrayIcon::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_SHOW_CONFIG:
-            if (on_open_config_) on_open_config_();
+            if (actions_.open_config) actions_.open_config();
             return 0;
         case WM_TRAY_CALLBACK:
             switch (LOWORD(lp)) {
                 case WM_LBUTTONDBLCLK:
-                    if (on_open_config_) on_open_config_();
+                    if (actions_.open_config) actions_.open_config();
                     break;
                 case WM_RBUTTONUP:
                 case WM_CONTEXTMENU:
@@ -106,9 +106,8 @@ void TrayIcon::Run(HANDLE ready_event) {
     hwnd_.store(nullptr);
 }
 
-bool TrayIcon::start(Callback on_open_config, Callback on_quit) {
-    on_open_config_ = std::move(on_open_config);
-    on_quit_ = std::move(on_quit);
+bool TrayIcon::start(Actions actions) {
+    actions_ = std::move(actions);
     ready_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     thread_ = std::thread(&TrayIcon::Run, this, ready_event_);
     WaitForSingleObject(ready_event_, 3000);
@@ -147,18 +146,41 @@ void TrayIcon::ShowMenu() {
     if (!h) return;
     SetForegroundWindow(h);  // lets TrackPopupMenu dismiss reliably
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, 1, L"打开配置");
+    constexpr int kCmdConfig = 1;
+    constexpr int kCmdElevate = 2;
+    constexpr int kCmdAutostart = 3;
+    constexpr int kCmdQuit = 4;
+    AppendMenuW(menu, MF_STRING, kCmdConfig, L"打开配置");
+    if (actions_.elevate) {
+        AppendMenuW(menu, MF_STRING, kCmdElevate,
+                    L"以管理员身份重启（控制提权窗口）");
+    }
+    if (actions_.install_autostart) {
+        AppendMenuW(menu, MF_STRING, kCmdAutostart,
+                    L"安装开机自启（管理员权限）");
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 2, L"退出");
+    AppendMenuW(menu, MF_STRING, kCmdQuit, L"退出");
     POINT pt;
     GetCursorPos(&pt);
     int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x,
                                pt.y, h, nullptr);
     DestroyMenu(menu);
     PostMessageW(h, WM_NULL, 0, 0);
-    if (cmd == 1 && on_open_config_) {
-        on_open_config_();
-    } else if (cmd == 2 && on_quit_) {
-        on_quit_();
+    switch (cmd) {
+        case kCmdConfig:
+            if (actions_.open_config) actions_.open_config();
+            break;
+        case kCmdElevate:
+            if (actions_.elevate) actions_.elevate();
+            break;
+        case kCmdAutostart:
+            if (actions_.install_autostart) actions_.install_autostart();
+            break;
+        case kCmdQuit:
+            if (actions_.quit) actions_.quit();
+            break;
+        default:
+            break;
     }
 }

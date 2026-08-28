@@ -24,6 +24,8 @@ struct ClientSession {
     std::string peer_ip;
     uint16_t screen_width = 0;
     uint16_t screen_height = 0;
+    bool elevated = false;
+    bool elevation_known = false;
     time_t connect_time = 0;
     std::atomic<long long> last_heartbeat_ms{0};
     std::atomic<bool> registered{false};
@@ -43,6 +45,8 @@ public:
         std::string peer_ip;
         uint16_t screen_width = 0;
         uint16_t screen_height = 0;
+        bool elevated = false;
+        bool elevation_known = false;
         time_t connect_time = 0;
     };
 

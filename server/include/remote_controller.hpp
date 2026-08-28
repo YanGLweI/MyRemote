@@ -24,7 +24,9 @@ public:
     void stop_control();
 
     bool is_controlling() const;
-    void apply_quality(uint8_t fps, uint16_t bitrate_kbps);
+    // max_encode_width: 0 keeps whatever the device itself is configured for.
+    void apply_quality(uint8_t fps, uint16_t bitrate_kbps,
+                       uint16_t max_encode_width = 0);
     std::string controlled_device() const;
 
 signals:
@@ -55,4 +57,5 @@ private:
     std::string pending_device_;
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
+    uint16_t max_encode_width_ = 0;
 };

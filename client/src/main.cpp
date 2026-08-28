@@ -114,6 +114,41 @@ std::string exe_dir() {
     return pos == std::string::npos ? "." : s.substr(0, pos);
 }
 
+// UIPI silently drops SendInput aimed at elevated windows, so an agent that
+// starts without admin rights cannot drive Task Manager, UAC prompts or admin
+// consoles on the remote desktop.
+bool process_is_elevated() {
+    BOOL elevated = FALSE;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        DWORD len = 0;
+        GetTokenInformation(token, TokenElevation, &elevated, sizeof(elevated),
+                            &len);
+        CloseHandle(token);
+    }
+    return elevated != FALSE;
+}
+
+const bool g_elevated = process_is_elevated();
+
+// Starts a second agent with admin rights and steps aside; the child passes
+// --takeover so it waits for this process to release the single-instance mutex.
+void relaunch_elevated() {
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+        return;
+    }
+    HINSTANCE result = ShellExecuteW(nullptr, L"runas", path,
+                                     L"--background --takeover", nullptr,
+                                     SW_HIDE);
+    if (reinterpret_cast<INT_PTR>(result) > 32) {
+        mlog::info("Elevated agent launched; this limited instance is exiting");
+        g_state.running.store(false);
+    } else {
+        mlog::warn("Elevated restart declined (user cancelled UAC or blocked by policy)");
+    }
+}
+
 void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
     switch (type) {
         case proto::MessageType::RegisterAck: {
@@ -128,20 +163,27 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
         case proto::MessageType::StartStream: {
             uint8_t fps = 30;
             uint16_t bitrate = 2048;
-            if (proto::parse_start_stream_payload(payload, fps, bitrate)) {
+            uint16_t width_cap = 0;
+            if (proto::parse_start_stream_payload(payload, fps, bitrate,
+                                                  width_cap)) {
+                if (width_cap == 0) {
+                    // Older control centers omit the cap: keep the configured one.
+                    width_cap = static_cast<uint16_t>(g_max_encode_width.load());
+                }
                 int old_fps = g_state.target_fps.exchange(fps);
                 int old_br = g_state.target_bitrate_kbps.exchange(bitrate);
+                int old_width = g_max_encode_width.exchange(width_cap);
                 // Reconfigure the encoder when quality parameters change so
                 // the server's quality preset takes effect immediately.
-                if (old_fps != fps || old_br != bitrate) {
-                    configure_pipeline(fps, bitrate,
-                                       g_max_encode_width.load());
+                if (old_fps != fps || old_br != bitrate || old_width != width_cap) {
+                    configure_pipeline(fps, bitrate, width_cap);
                 }
             }
             g_state.streaming.store(true);
             mlog::info("Stream started by server (fps=" +
                       std::to_string(g_state.target_fps.load()) + ", bitrate=" +
-                      std::to_string(g_state.target_bitrate_kbps.load()) + "kbps)");
+                      std::to_string(g_state.target_bitrate_kbps.load()) + "kbps, cap=" +
+                      std::to_string(g_max_encode_width.load()) + ")");
             break;
         }
         case proto::MessageType::StopStream:
@@ -154,10 +196,12 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
         case proto::MessageType::InputEvent: {
             proto::InputEvent ev;
             if (proto::parse_input_event(payload, ev)) {
-                static bool logged_input = false;
-                if (!logged_input) {
-                    logged_input = true;
-                    mlog::info("Input event received and injected (kind=" +
+                static uint8_t logged_kinds = 0;
+                uint8_t kind_bit = static_cast<uint8_t>(1 << static_cast<int>(ev.kind));
+                if (ev.kind != proto::InputKind::MouseMove &&
+                    (logged_kinds & kind_bit) == 0) {
+                    logged_kinds |= kind_bit;
+                    mlog::info("First input event injected (kind=" +
                                std::to_string(static_cast<int>(ev.kind)) + ")");
                 }
                 if (ev.kind == proto::InputKind::Key && ev.pressed) {
@@ -188,8 +232,10 @@ bool send_register(const config::ClientConfig& cfg, const std::string& dev_id) {
                                                : cfg.device_name;
     int width = GetSystemMetrics(SM_CXSCREEN);
     int height = GetSystemMetrics(SM_CYSCREEN);
+    uint8_t flags = g_elevated ? proto::kRegisterFlagElevated : 0;
     auto payload = proto::make_register_payload(
-        dev_id, name, static_cast<uint16_t>(width), static_cast<uint16_t>(height));
+        dev_id, name, static_cast<uint16_t>(width), static_cast<uint16_t>(height),
+        flags);
     return g_connection->send(proto::MessageType::Register, payload);
 }
 
@@ -333,6 +379,7 @@ struct Args {
     bool background = false;
     bool install_autostart = false;
     bool uninstall_autostart = false;
+    bool takeover = false;
     std::string ip_override;
     int port_override = 0;
     std::string config_path;
@@ -369,6 +416,7 @@ Args parse_command_line() {
     args.background = has_flag("--background");
     args.install_autostart = has_flag("--install-autostart");
     args.uninstall_autostart = has_flag("--uninstall-autostart");
+    args.takeover = has_flag("--takeover");
     args.ip_override = get_value("--ip");
     std::string port = get_value("--port");
     if (!port.empty()) {
@@ -381,36 +429,88 @@ Args parse_command_line() {
 }  // namespace
 
 namespace {
-void set_autostart(bool enable) {
+
+constexpr wchar_t kAutostartTaskName[] = L"MyRemote Agent";
+
+// Runs a console command to completion; returns its exit code (-1 on failure).
+int run_command(const std::wstring& command_line) {
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring mutable_line = command_line;
+    if (!CreateProcessW(nullptr, mutable_line.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, 15000);
+    DWORD code = static_cast<DWORD>(-1);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+}  // namespace
+
+// Logon-time autostart must run elevated: a Run-key agent starts with a
+// filtered token and can then never drive elevated windows remotely.
+bool set_autostart(bool enable) {
+    wchar_t path[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring action = enable
+                              ? L" /Create /F /SC ONLOGON /RL HIGHEST /TR \"\\\"" +
+                                    std::wstring(path) + L"\\\" --background\\\"\""
+                              : L" /Delete /F";
+    int code = run_command(L"schtasks" + action + L" /TN \"" +
+                           kAutostartTaskName + L"\"");
+
+    // Retire the legacy Run key so it cannot start a second, limited agent.
     HKEY key;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER,
-                      "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
-                      KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
+                      KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueW(key, L"MyRemoteAgent");
+        RegCloseKey(key);
+    }
+    return code == 0;
+}
+
+namespace {
+
+// A filtered token cannot register a highest-privilege logon task, so hand the
+// job to a one-shot elevated sibling when needed.
+void request_autostart_install() {
+    if (g_elevated) {
+        bool ok = set_autostart(true);
+        MessageBoxW(nullptr,
+                    ok ? L"已安装开机自启：登录时以管理员权限运行。"
+                       : L"开机自启安装失败：需要管理员权限。",
+                    L"MyRemote",
+                    MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
         return;
     }
-    if (enable) {
-        char path[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, path, MAX_PATH);
-        std::string cmd = std::string("\"") + path + "\" --background";
-        RegSetValueExA(key, "MyRemoteAgent", 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(cmd.c_str()),
-                       static_cast<DWORD>(cmd.size() + 1));
-    } else {
-        RegDeleteValueA(key, "MyRemoteAgent");
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+        return;
     }
-    RegCloseKey(key);
+    ShellExecuteW(nullptr, L"runas", path, L"--install-autostart", nullptr,
+                  SW_HIDE);
 }
+
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     Args args = parse_command_line();
-    if (args.install_autostart) {
-        set_autostart(true);
-        return 0;
-    }
-    if (args.uninstall_autostart) {
-        set_autostart(false);
-        return 0;
+    if (args.install_autostart || args.uninstall_autostart) {
+        bool enable = args.install_autostart;
+        bool ok = set_autostart(enable);
+        printf("MyRemote autostart %s: %s\n", enable ? "install" : "remove",
+               ok ? "ok" : "FAILED");
+        if (!ok && enable) {
+            printf("Hint: run \"agent.exe --install-autostart\" from an "
+                   "elevated prompt so the agent can control elevated windows.\n");
+        }
+        return ok ? 0 : 1;
     }
 
     // Physical-pixel metrics everywhere (capture/encoder/screen size).
@@ -420,10 +520,22 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     g_config_path =
         args.config_path.empty() ? dir + "/config.json" : args.config_path;
 
-    // Exactly one agent process, acquired before any UI is shown.
-    HANDLE instance_mutex =
-        CreateMutexW(nullptr, TRUE, L"MyRemoteAgent_SingleInstance");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    // Exactly one agent process, acquired before any UI is shown. A takeover
+    // instance retries because the limited agent it replaces is still exiting.
+    HANDLE instance_mutex = nullptr;
+    for (int attempt = 0; attempt < (args.takeover ? 40 : 1); ++attempt) {
+        instance_mutex = CreateMutexW(nullptr, TRUE,
+                                      L"MyRemoteAgent_SingleInstance");
+        if (instance_mutex && GetLastError() != ERROR_ALREADY_EXISTS) {
+            break;
+        }
+        if (instance_mutex) {
+            CloseHandle(instance_mutex);
+            instance_mutex = nullptr;
+        }
+        Sleep(100);
+    }
+    if (!instance_mutex) {
         if (!args.background) {
             HWND h = nullptr;
             for (int i = 0; i < 20 && !h; ++i) {
@@ -449,6 +561,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     mlog::init(dir + "/" + "agent.log");
     mlog::info("MyRemote agent starting");
+    mlog::info(g_elevated
+                   ? "Elevation: yes (can drive elevated windows)"
+                   : "Elevation: no - SendInput into elevated windows (Task "
+                     "Manager, UAC, admin consoles) is dropped by UIPI; use the "
+                     "tray menu or a scheduled task to run elevated");
 
     config::ClientConfig cfg = config::ClientConfig::load(g_config_path);
     if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
@@ -478,8 +595,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     g_reload_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
     TrayIcon tray;
-    bool tray_ok = tray.start(open_config_dialog,
-                              [] { g_state.running.store(false); });
+    TrayIcon::Actions tray_actions;
+    tray_actions.open_config = open_config_dialog;
+    tray_actions.quit = [] { g_state.running.store(false); };
+    tray_actions.install_autostart = request_autostart_install;
+    if (!g_elevated) {
+        tray_actions.elevate = relaunch_elevated;
+    }
+    bool tray_ok = tray.start(std::move(tray_actions));
     if (!tray_ok) {
         mlog::warn("Tray icon unavailable, running headless");
     }
@@ -566,7 +689,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                            L" | " + to_wide(cfg.server_ip + ":" +
                                             std::to_string(cfg.server_port)) +
                            (g_state.registered.load() ? L" | 已注册"
-                                                      : L" | 连接/重试中");
+                                                      : L" | 连接/重试中") +
+                           (g_elevated ? L"" : L" | 受限");
         if (tip != last_tip) {
             tray.set_tooltip(tip);
             last_tip = tip;

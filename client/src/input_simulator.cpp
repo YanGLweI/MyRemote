@@ -38,8 +38,9 @@ void InputSimulator::move(int x, int y) {
 
     INPUT in{};
     in.type = INPUT_MOUSE;
-    in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
-                    MOUSEEVENTF_VIRTUALDESK;
+    // No MOUSEEVENTF_VIRTUALDESK: coordinates arrive normalized to the primary
+    // screen, which is what registration advertises as the remote size.
+    in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
     in.mi.dx = static_cast<LONG>((x * 65535) / sw);
     in.mi.dy = static_cast<LONG>((y * 65535) / sh);
     SendInput(1, &in, sizeof(INPUT));

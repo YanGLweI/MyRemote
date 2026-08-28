@@ -63,7 +63,8 @@ bool RemoteController::do_start(const std::string& device_id) {
     }
     renderer_.set_remote_size(width, height);
 
-    auto payload = proto::make_start_stream_payload(fps_, bitrate_kbps_);
+    auto payload = proto::make_start_stream_payload(fps_, bitrate_kbps_,
+                                                   max_encode_width_);
     if (!tunnels_.send_to_device(device_id, proto::MessageType::StartStream, payload)) {
         mlog::error("Failed to send StartStream to " + device_id);
         pipeline_.stop();
@@ -132,13 +133,16 @@ void RemoteController::on_key(int vk, bool pressed, bool extended) {
                                             extended));
 }
 
-void RemoteController::apply_quality(uint8_t fps, uint16_t bitrate_kbps) {
+void RemoteController::apply_quality(uint8_t fps, uint16_t bitrate_kbps,
+                                     uint16_t max_encode_width) {
     fps_ = fps;
     bitrate_kbps_ = bitrate_kbps;
+    max_encode_width_ = max_encode_width;
     std::string device = controlled_device();
     if (!device.empty()) {
         tunnels_.send_to_device(device, proto::MessageType::StartStream,
-                                proto::make_start_stream_payload(fps_, bitrate_kbps_));
+                                proto::make_start_stream_payload(
+                                    fps_, bitrate_kbps_, max_encode_width_));
     }
 }
 

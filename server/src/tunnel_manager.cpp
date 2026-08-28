@@ -293,6 +293,14 @@ bool TunnelManager::register_session(const std::shared_ptr<ClientSession>& sessi
         info.device_name.empty() ? info.device_id : info.device_name;
     session->screen_width = info.screen_width;
     session->screen_height = info.screen_height;
+    session->elevated = info.elevated;
+    session->elevation_known = info.elevation_known;
+    if (info.elevation_known) {
+        mlog::info("Device " + info.device_id + " agent is " +
+                   (info.elevated ? "elevated"
+                                  : "limited: injected input cannot reach "
+                                    "elevated windows"));
+    }
 
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
@@ -389,6 +397,8 @@ std::vector<TunnelManager::DeviceInfo> TunnelManager::online_devices() const {
         info.peer_ip = session->peer_ip;
         info.screen_width = session->screen_width;
         info.screen_height = session->screen_height;
+        info.elevated = session->elevated;
+        info.elevation_known = session->elevation_known;
         info.connect_time = session->connect_time;
         result.push_back(std::move(info));
     }
