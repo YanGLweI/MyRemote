@@ -107,6 +107,12 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
                     mlog::info("Input event received and injected (kind=" +
                                std::to_string(static_cast<int>(ev.kind)) + ")");
                 }
+                if (ev.kind == proto::InputKind::Key && ev.pressed) {
+                    char hex[8];
+                    sprintf(hex, "%02X", ev.vk);
+                    mlog::info(std::string("Key injected: vk=0x") + hex +
+                               (ev.extended ? " extended" : ""));
+                }
                 g_input.handle(ev);
             }
             break;
