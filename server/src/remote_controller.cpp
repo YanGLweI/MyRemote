@@ -31,7 +31,7 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
     fps_timer->start(1000);
 }
 
-bool RemoteController::start_control(const std::string& device_id) {
+bool RemoteController::do_start(const std::string& device_id) {
     if (controlled_.has_value()) {
         mlog::warn("Already controlling " + controlled_.value() +
                   "; stop it before switching devices");
@@ -138,5 +138,32 @@ void RemoteController::apply_quality(uint8_t fps, uint16_t bitrate_kbps) {
     if (controlled_.has_value()) {
         tunnels_.send_to_device(controlled_.value(), proto::MessageType::StartStream,
                                 proto::make_start_stream_payload(fps_, bitrate_kbps_));
+    }
+}
+
+bool RemoteController::start_control(const std::string& device_id) {
+    return do_start(device_id);
+}
+
+void RemoteController::request_control(const std::string& device_id,
+                                       const std::string& password) {
+    if (controlled_.has_value()) {
+        mlog::warn("Already controlling a device");
+        return;
+    }
+    pending_device_ = device_id;
+    tunnels_.begin_auth(device_id, password);
+}
+
+void RemoteController::on_auth_result(QString device_id, bool ok) {
+    if (device_id.toStdString() != pending_device_) {
+        return;
+    }
+    pending_device_.clear();
+    if (ok) {
+        do_start(device_id.toStdString());
+    } else {
+        mlog::warn("Control authorization failed for " + device_id.toStdString());
+        emit control_denied(device_id);
     }
 }

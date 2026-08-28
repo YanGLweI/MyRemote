@@ -1,5 +1,7 @@
 #include "tunnel_manager.hpp"
 
+#include <openssl/rand.h>
+
 #include <ws2tcpip.h>
 
 #include <chrono>
@@ -203,6 +205,32 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                                            frame.payload.data()),
                                        static_cast<int>(frame.payload.size())));
                         break;
+                    case proto::MessageType::AuthResponse: {
+                        std::vector<uint8_t> salt;
+                        std::string password;
+                        bool found = false;
+                        {
+                            std::lock_guard<std::mutex> lock(auth_mutex_);
+                            auto it = pending_auth_.find(session->device_id);
+                            if (it != pending_auth_.end()) {
+                                salt = it->second.first;
+                                password = it->second.second;
+                                pending_auth_.erase(it);
+                                found = true;
+                            }
+                        }
+                        bool ok = false;
+                        if (found) {
+                            auto expected = crypto::hmac_sha256(password, salt);
+                            ok = (expected.size() == frame.payload.size() &&
+                                  CRYPTO_memcmp(expected.data(), frame.payload.data(),
+                                                expected.size()) == 0);
+                        }
+                        mlog::info("Auth check for " + session->device_id +
+                                   (ok ? " PASSED" : " FAILED"));
+                        emit auth_result(QString::fromStdString(session->device_id), ok);
+                        break;
+                    }
                     default:
                         mlog::warn("Unhandled message type " +
                                   std::to_string(static_cast<int>(frame.type)) +
@@ -390,6 +418,40 @@ void TunnelManager::reaper_loop() {
             if (sock != INVALID_SOCKET) {
                 closesocket(sock);
             }
+        }
+    }
+}
+
+void TunnelManager::begin_auth(const std::string& device_id,
+                               const std::string& password) {
+    std::vector<uint8_t> salt(16);
+    if (RAND_bytes(salt.data(), static_cast<int>(salt.size())) != 1) {
+        emit auth_result(QString::fromStdString(device_id), false);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(auth_mutex_);
+        pending_auth_[device_id] = {salt, password};
+    }
+    send_to_device(device_id, proto::MessageType::AuthChallenge, salt);
+}
+
+void TunnelManager::disconnect_device(const std::string& device_id) {
+    std::shared_ptr<ClientSession> session;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = sessions_.find(device_id);
+        if (it != sessions_.end()) {
+            session = it->second;
+        }
+    }
+    if (session) {
+        mlog::info("Operator disconnected device " + device_id);
+        session->alive.store(false);
+        SOCKET sock = session->socket;
+        session->socket = INVALID_SOCKET;
+        if (sock != INVALID_SOCKET) {
+            closesocket(sock);
         }
     }
 }

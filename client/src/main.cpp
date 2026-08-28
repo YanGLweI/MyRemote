@@ -38,6 +38,7 @@ struct AgentState {
 };
 
 AgentState g_state;
+std::string g_control_password;
 std::unique_ptr<Connection> g_connection;
 std::unique_ptr<DesktopCapturer> g_capturer;
 std::unique_ptr<VideoEncoder> g_encoder;
@@ -108,10 +109,12 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             }
             break;
         }
-        case proto::MessageType::AuthChallenge:
-            // TODO(M7): secondary password response
-            mlog::warn("Auth challenge received (not yet supported)");
+        case proto::MessageType::AuthChallenge: {
+            auto hmac = crypto::hmac_sha256(g_control_password, payload);
+            g_connection->send(proto::MessageType::AuthResponse, hmac);
+            mlog::info("Auth challenge answered (control password check)");
             break;
+        }
         default:
             mlog::warn("Unknown message type: " +
                       std::to_string(static_cast<int>(type)));
@@ -207,6 +210,8 @@ namespace {
 
 struct Args {
     bool console = false;
+    bool install_autostart = false;
+    bool uninstall_autostart = false;
     std::string ip_override;
     int port_override = 0;
     std::string config_path;
@@ -228,6 +233,8 @@ Args parse_command_line() {
     };
 
     args.console = has_flag("--console");
+    args.install_autostart = has_flag("--install-autostart");
+    args.uninstall_autostart = has_flag("--uninstall-autostart");
     args.ip_override = get_value("--ip");
     std::string port = get_value("--port");
     if (!port.empty()) {
@@ -239,8 +246,38 @@ Args parse_command_line() {
 
 }  // namespace
 
+namespace {
+void set_autostart(bool enable) {
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+                      "Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                      KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
+        return;
+    }
+    if (enable) {
+        char path[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        std::string cmd = std::string("\"") + path + "\"";
+        RegSetValueExA(key, "MyRemoteAgent", 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(cmd.c_str()),
+                       static_cast<DWORD>(cmd.size() + 1));
+    } else {
+        RegDeleteValueA(key, "MyRemoteAgent");
+    }
+    RegCloseKey(key);
+}
+}  // namespace
+
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     Args args = parse_command_line();
+    if (args.install_autostart) {
+        set_autostart(true);
+        return 0;
+    }
+    if (args.uninstall_autostart) {
+        set_autostart(false);
+        return 0;
+    }
 
     if (args.console) {
         AllocConsole();
@@ -258,6 +295,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
     if (args.port_override > 0) cfg.server_port = args.port_override;
 
+    g_control_password = cfg.control_password;
     std::string dev_id = device::make_device_id();
     mlog::info("Device id: " + dev_id + ", target server: " + cfg.server_ip + ":" +
               std::to_string(cfg.server_port));

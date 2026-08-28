@@ -9,7 +9,7 @@ DeviceListWidget::DeviceListWidget(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
 
     device_list_ = new QListWidget();
-    device_list_->setSelectionMode(QAbstractItemView::SingleSelection);
+    device_list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     connect(device_list_, &QListWidget::itemDoubleClicked, this,
             &DeviceListWidget::on_item_double_clicked);
     connect(device_list_, &QListWidget::currentItemChanged, this,
@@ -93,4 +93,12 @@ std::optional<std::string> DeviceListWidget::selected_device_id() const {
 
 void DeviceListWidget::on_item_double_clicked(QListWidgetItem* item) {
     emit remote_control_requested(item->data(Qt::UserRole).toString());
+}
+
+std::vector<std::string> DeviceListWidget::selected_device_ids() const {
+    std::vector<std::string> ids;
+    for (QListWidgetItem* item : device_list_->selectedItems()) {
+        ids.push_back(item->data(Qt::UserRole).toString().toStdString());
+    }
+    return ids;
 }

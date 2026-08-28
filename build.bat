@@ -1,21 +1,29 @@
 @echo off
-REM Build script for MyRemote Control
-REM Requires Visual Studio Developer Command Prompt
+REM Build script for MyRemote Control (Windows, MSVC).
+REM Prereqs: VS2022 (Build Tools ok), Qt6 (MSVC), vcpkg with:
+REM   vcpkg install openssl:x64-windows-static openh264:x64-windows-static
 
 cd /d %~dp0
 
-if not exist "build" mkdir build
-cd build
+set "VCPKG=C:\vcpkg"
+set "QTDIR=C:\Qt\6.7.3\msvc2019_64"
 
-echo Building MyRemote Control (Debug)...
-cmake .. -DCMAKE_BUILD_TYPE=Debug -G "Visual Studio 17 2022" -A x64 || goto :error
-cmake --build . --config Debug || goto :error
+if not exist "build" mkdir build
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+  -DCMAKE_PREFIX_PATH="%QTDIR%" ^
+  -DCMAKE_TOOLCHAIN_FILE="%VCPKG%\scripts\buildsystems\vcpkg.cmake" ^
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static || goto :error
+
+cmake --build build --config Release || goto :error
 
 echo.
-echo Building MyRemote Control (Release)...
-cmake --build . --config Release || goto :error
+echo Deploying Qt runtime for control_server...
+"%QTDIR%\bin\windeployqt.exe" --release build\bin\Release\control_server.exe
 
-cd ..
+echo.
+echo Done. Outputs:
+echo   build\bin\Release\agent.exe           (single-file agent)
+echo   build\bin\Release\control_server.exe  (needs deployed Qt DLLs)
 goto :end
 
 :error
@@ -23,5 +31,3 @@ echo Build failed!
 exit /b 1
 
 :end
-echo Build completed successfully!
-pause

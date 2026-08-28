@@ -5,6 +5,7 @@
 #include <ctime>
 #include <optional>
 #include <string>
+#include <vector>
 
 class QLabel;
 class QListWidget;
@@ -24,6 +25,7 @@ public:
     void clear_devices();
 
     std::optional<std::string> selected_device_id() const;
+    std::vector<std::string> selected_device_ids() const;
 
 signals:
     void remote_control_requested(QString device_id);

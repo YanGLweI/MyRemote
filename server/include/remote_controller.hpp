@@ -20,6 +20,7 @@ public:
                      QObject* parent = nullptr);
 
     bool start_control(const std::string& device_id);
+    void request_control(const std::string& device_id, const std::string& password);
     void stop_control();
 
     bool is_controlling() const { return controlled_.has_value(); }
@@ -31,6 +32,7 @@ public:
 signals:
     void control_started(QString device_id);
     void control_stopped();
+    void control_denied(QString device_id);
     void fps_updated(float fps);
 
 public slots:
@@ -39,12 +41,15 @@ public slots:
     void on_mouse_button(int button, bool pressed);
     void on_mouse_wheel(int delta);
     void on_key(int vk, bool pressed, bool extended);
+    void on_auth_result(QString device_id, bool ok);
 
 private:
+    bool do_start(const std::string& device_id);
     TunnelManager& tunnels_;
     DisplayRenderer& renderer_;
     H264Decoder decoder_;
     std::optional<std::string> controlled_;
+    std::string pending_device_;
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
     std::atomic<uint64_t> frames_received_{0};

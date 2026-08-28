@@ -1,6 +1,7 @@
 #include "crypto.hpp"
 
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/kdf.h>
 #include <openssl/rand.h>
 
@@ -126,6 +127,16 @@ std::vector<uint8_t> AesGcm::decrypt(const uint8_t* data, size_t len) {
     }
     plaintext.resize(written);
     return plaintext;
+}
+
+std::vector<uint8_t> hmac_sha256(const std::string& key, const uint8_t* data, size_t len) {
+    std::vector<uint8_t> out(32);
+    unsigned int out_len = 0;
+    if (!HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()), data, len,
+              out.data(), &out_len) || out_len != 32) {
+        throw CryptoError("HMAC-SHA256 failed");
+    }
+    return out;
 }
 
 }  // namespace crypto

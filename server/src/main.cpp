@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QSettings>
 #include <QLabel>
 #include <QMainWindow>
@@ -72,6 +73,8 @@ public:
         side_layout->addWidget(fullscreen_button_);
         side_layout->addWidget(remark_button_);
         side_layout->addWidget(stop_button_);
+        disconnect_button_ = new QPushButton(QStringLiteral("Disconnect Selected"));
+        side_layout->addWidget(disconnect_button_);
         side_panel->setFixedWidth(340);
         root_layout->addWidget(side_panel);
 
@@ -112,6 +115,15 @@ public:
                 showFullScreen();
             }
         });
+        connect(disconnect_button_, &QPushButton::clicked, this, [this]() {
+            for (const auto& id : device_list_->selected_device_ids()) {
+                if (controller_->is_controlling() &&
+                    controller_->controlled_device() == id) {
+                    controller_->stop_control();
+                }
+                tunnels_->disconnect_device(id);
+            }
+        });
         connect(remark_button_, &QPushButton::clicked, this, [this]() {
             auto id = device_list_->selected_device_id();
             if (!id.has_value()) return;
@@ -149,6 +161,13 @@ public:
                 });
         connect(tunnels_.get(), &TunnelManager::video_frame_received,
                 controller_.get(), &RemoteController::on_video_frame);
+        connect(tunnels_.get(), &TunnelManager::auth_result, controller_.get(),
+                &RemoteController::on_auth_result);
+        connect(controller_.get(), &RemoteController::control_denied, this,
+                [this](QString id) {
+                    QMessageBox::warning(this, QStringLiteral("MyRemote"),
+                        QStringLiteral("Wrong control password for %1").arg(id));
+                });
         connect(&renderer_, &DisplayRenderer::mouse_moved, controller_.get(),
                 &RemoteController::on_mouse_moved);
         connect(&renderer_, &DisplayRenderer::mouse_button_changed, controller_.get(),
@@ -217,10 +236,15 @@ private slots:
                 QStringLiteral("Stop the current session before switching devices."));
             return;
         }
-        if (!controller_->start_control(device_id.toStdString())) {
-            QMessageBox::warning(this, QStringLiteral("MyRemote"),
-                                 QStringLiteral("Failed to start control session."));
+        bool ok = false;
+        QString password = QInputDialog::getText(
+            this, QStringLiteral("Control authorization"),
+            QStringLiteral("Enter the device control password (leave empty if none):"),
+            QLineEdit::Password, QString(), &ok);
+        if (!ok) {
+            return;
         }
+        controller_->request_control(device_id.toStdString(), password.toStdString());
     }
 
 private:
@@ -230,6 +254,7 @@ private:
     DisplayRenderer renderer_;
     QPushButton* stop_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
+    QPushButton* disconnect_button_ = nullptr;
     QPushButton* remark_button_ = nullptr;
     QComboBox* quality_combo_ = nullptr;
     QLabel* fps_label_ = nullptr;

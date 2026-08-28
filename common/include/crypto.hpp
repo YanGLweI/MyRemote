@@ -18,6 +18,13 @@ using Key = std::array<uint8_t, 16>;
 // Derive an AES-128 key from the pre-shared connection secret (HKDF-SHA256).
 Key derive_key(const std::string& psk);
 
+// HMAC-SHA256 (32 bytes), used for the secondary control-password check.
+std::vector<uint8_t> hmac_sha256(const std::string& key, const uint8_t* data, size_t len);
+inline std::vector<uint8_t> hmac_sha256(const std::string& key,
+                                        const std::vector<uint8_t>& data) {
+    return hmac_sha256(key, data.data(), data.size());
+}
+
 // AES-128-GCM with per-message random nonce.
 // Output layout: nonce[12] | ciphertext | tag[16].
 class AesGcm {

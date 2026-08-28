@@ -1,0 +1,7 @@
+{
+  "listening_port": 7500,
+  "bind_address": "0.0.0.0",
+  "max_connections": 100,
+  "secret_key": "default_secret_key_12345",
+  "log_file": "control_server.log"
+}

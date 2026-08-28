@@ -56,6 +56,10 @@ public:
     bool send_to_device(const std::string& device_id, proto::MessageType type,
                         const std::vector<uint8_t>& payload = {});
 
+    // Secondary control-password challenge (P2).
+    void begin_auth(const std::string& device_id, const std::string& password);
+    void disconnect_device(const std::string& device_id);
+
     std::vector<DeviceInfo> online_devices() const;
 
 signals:
@@ -63,6 +67,7 @@ signals:
                            int height);
     void device_unregistered(QString device_id);
     void video_frame_received(QString device_id, QByteArray payload);
+    void auth_result(QString device_id, bool ok);
 
 private:
     void on_new_connection(SOCKET socket);
@@ -83,4 +88,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread reaper_thread_;
     crypto::AesGcm aes_;
+    std::mutex auth_mutex_;
+    std::unordered_map<std::string, std::pair<std::vector<uint8_t>, std::string>>
+        pending_auth_;
 };
