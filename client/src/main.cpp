@@ -4,6 +4,8 @@
 
 #include <windows.h>
 
+#include <tlhelp32.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -130,6 +132,44 @@ bool process_is_elevated() {
 }
 
 const bool g_elevated = process_is_elevated();
+
+// A user who right-clicks agent.exe and picks "Run as administrator" would
+// otherwise lose the single-instance race against the limited copy, so the
+// elevated copy retires same-path instances before claiming the mutex.
+bool retire_limited_instances() {
+    wchar_t self_path[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, self_path, MAX_PATH)) {
+        return false;
+    }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    bool killed = false;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    for (BOOL ok = Process32FirstW(snap, &entry); ok;
+         ok = Process32NextW(snap, &entry)) {
+        if (entry.th32ProcessID == GetCurrentProcessId()) {
+            continue;
+        }
+        HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
+                                      PROCESS_TERMINATE,
+                                  FALSE, entry.th32ProcessID);
+        if (!proc) {
+            continue;
+        }
+        wchar_t other[MAX_PATH] = {};
+        DWORD len = MAX_PATH;
+        if (QueryFullProcessImageNameW(proc, 0, other, &len) &&
+            _wcsicmp(other, self_path) == 0 && TerminateProcess(proc, 0)) {
+            killed = true;
+        }
+        CloseHandle(proc);
+    }
+    CloseHandle(snap);
+    return killed;
+}
 
 // Starts a second agent with admin rights and steps aside; the child passes
 // --takeover so it waits for this process to release the single-instance mutex.
@@ -521,9 +561,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         args.config_path.empty() ? dir + "/config.json" : args.config_path;
 
     // Exactly one agent process, acquired before any UI is shown. A takeover
-    // instance retries because the limited agent it replaces is still exiting.
+    // instance retries because the limited agent it replaces is still exiting;
+    // an elevated instance instead retires that limited agent outright.
+    bool replaced_instance = false;
     HANDLE instance_mutex = nullptr;
-    for (int attempt = 0; attempt < (args.takeover ? 40 : 1); ++attempt) {
+    const int attempts = args.takeover ? 40 : (g_elevated ? 20 : 1);
+    for (int attempt = 0; attempt < attempts; ++attempt) {
         instance_mutex = CreateMutexW(nullptr, TRUE,
                                       L"MyRemoteAgent_SingleInstance");
         if (instance_mutex && GetLastError() != ERROR_ALREADY_EXISTS) {
@@ -532,6 +575,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         if (instance_mutex) {
             CloseHandle(instance_mutex);
             instance_mutex = nullptr;
+        }
+        if (attempt == 0 && g_elevated && !args.takeover) {
+            replaced_instance = retire_limited_instances();
         }
         Sleep(100);
     }
@@ -561,6 +607,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     mlog::init(dir + "/" + "agent.log");
     mlog::info("MyRemote agent starting");
+    if (replaced_instance) {
+        mlog::info("Took over from a limited agent instance of the same path");
+    }
     mlog::info(g_elevated
                    ? "Elevation: yes (can drive elevated windows)"
                    : "Elevation: no - SendInput into elevated windows (Task "
