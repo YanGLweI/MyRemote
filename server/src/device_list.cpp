@@ -12,6 +12,11 @@ DeviceListWidget::DeviceListWidget(QWidget* parent) : QWidget(parent) {
     device_list_->setSelectionMode(QAbstractItemView::SingleSelection);
     connect(device_list_, &QListWidget::itemDoubleClicked, this,
             &DeviceListWidget::on_item_double_clicked);
+    connect(device_list_, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem* cur, QListWidgetItem*) {
+                emit selection_changed(cur ? cur->data(Qt::UserRole).toString()
+                                           : QString());
+            });
     layout->addWidget(device_list_);
 
     status_label_ = new QLabel("No devices online");

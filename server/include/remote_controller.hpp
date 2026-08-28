@@ -23,6 +23,7 @@ public:
     void stop_control();
 
     bool is_controlling() const { return controlled_.has_value(); }
+    void apply_quality(uint8_t fps, uint16_t bitrate_kbps);
     std::string controlled_device() const {
         return controlled_.value_or(std::string());
     }
@@ -44,6 +45,8 @@ private:
     DisplayRenderer& renderer_;
     H264Decoder decoder_;
     std::optional<std::string> controlled_;
+    uint8_t fps_ = 30;
+    uint16_t bitrate_kbps_ = 2048;
     std::atomic<uint64_t> frames_received_{0};
     std::atomic<long long> last_good_frame_ms_{0};
 };

@@ -27,6 +27,7 @@ public:
 
 signals:
     void remote_control_requested(QString device_id);
+    void selection_changed(QString device_id);
 
 private slots:
     void on_item_double_clicked(QListWidgetItem* item);

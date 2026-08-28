@@ -33,6 +33,7 @@ struct AgentState {
     std::atomic<int> register_result{-1};  // -1 pending, 0 ok, 1 rejected, 2 full
     std::atomic<int> target_fps{30};
     std::atomic<int> target_bitrate_kbps{2048};
+    std::mutex cfg_mutex;
     std::atomic<uint32_t> frame_seq{0};
 };
 
@@ -66,12 +67,25 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             uint8_t fps = 30;
             uint16_t bitrate = 2048;
             if (proto::parse_start_stream_payload(payload, fps, bitrate)) {
-                g_state.target_fps.store(fps);
-                g_state.target_bitrate_kbps.store(bitrate);
+                int old_fps = g_state.target_fps.exchange(fps);
+                int old_br = g_state.target_bitrate_kbps.exchange(bitrate);
+                // Reconfigure the encoder when quality parameters change so
+                // the server's quality preset takes effect immediately.
+                if (g_encoder && (old_fps != fps || old_br != bitrate)) {
+                    EncoderConfig ec;
+                    ec.fps = fps;
+                    ec.bitrate_kbps = bitrate;
+                    ec.width = GetSystemMetrics(SM_CXSCREEN);
+                    ec.height = GetSystemMetrics(SM_CYSCREEN);
+                    g_encoder->shutdown();
+                    g_encoder->initialize(ec);
+                    g_encoder->force_keyframe();
+                }
             }
             g_state.streaming.store(true);
             mlog::info("Stream started by server (fps=" +
-                      std::to_string(g_state.target_fps.load()) + ")");
+                      std::to_string(g_state.target_fps.load()) + ", bitrate=" +
+                      std::to_string(g_state.target_bitrate_kbps.load()) + "kbps)");
             break;
         }
         case proto::MessageType::StopStream:
