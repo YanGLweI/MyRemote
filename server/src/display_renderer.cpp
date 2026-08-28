@@ -1,15 +1,20 @@
 #include "display_renderer.hpp"
 
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QWheelEvent>
 
 DisplayRenderer::DisplayRenderer(QWidget* parent) : QWidget(parent) {
     setMinimumSize(320, 240);
+    setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
     setStyleSheet("background-color: #1a1a1a;");
 }
 
-bool DisplayRenderer::has_frame() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return !current_.isNull();
+void DisplayRenderer::set_remote_size(int width, int height) {
+    remote_w_ = width;
+    remote_h_ = height;
 }
 
 void DisplayRenderer::set_frame(const QImage& frame) {
@@ -28,27 +33,79 @@ void DisplayRenderer::clear_frame() {
     update();
 }
 
+QRect DisplayRenderer::remote_rect() const {
+    if (remote_w_ <= 0 || remote_h_ <= 0) {
+        return QRect();
+    }
+    QSize avail = size();
+    QSize scaled = QSize(remote_w_, remote_h_).scaled(avail, Qt::KeepAspectRatio);
+    int x = (avail.width() - scaled.width()) / 2;
+    int y = (avail.height() - scaled.height()) / 2;
+    return QRect(x, y, scaled.width(), scaled.height());
+}
+
+QPoint DisplayRenderer::map_to_remote(const QPoint& widget_pos) const {
+    QRect r = remote_rect();
+    if (r.width() <= 0 || r.height() <= 0 || remote_w_ <= 0 || remote_h_ <= 0) {
+        return QPoint(0, 0);
+    }
+    int rx = (widget_pos.x() - r.x()) * remote_w_ / r.width();
+    int ry = (widget_pos.y() - r.y()) * remote_h_ / r.height();
+    rx = rx < 0 ? 0 : (rx > remote_w_ - 1 ? remote_w_ - 1 : rx);
+    ry = ry < 0 ? 0 : (ry > remote_h_ - 1 ? remote_h_ - 1 : ry);
+    return QPoint(rx, ry);
+}
+
 void DisplayRenderer::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.fillRect(rect(), QColor(26, 26, 26));
-
     QImage frame;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         frame = current_;
     }
-
     if (frame.isNull()) {
         painter.setPen(QColor(120, 120, 120));
         painter.drawText(rect(), Qt::AlignCenter,
                          QStringLiteral("No active session\nDouble-click a device to start"));
         return;
     }
-
-    // Letterbox into the widget while keeping aspect ratio.
-    QSize scaled = frame.size().scaled(size(), Qt::KeepAspectRatio);
-    QRect target((width() - scaled.width()) / 2, (height() - scaled.height()) / 2,
-                 scaled.width(), scaled.height());
+    QRect target = remote_rect();
+    if (target.isEmpty()) {
+        target = rect();
+    }
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.drawImage(target, frame);
+}
+
+void DisplayRenderer::mouseMoveEvent(QMouseEvent* event) {
+    QPoint p = map_to_remote(event->pos());
+    emit mouse_moved(p.x(), p.y());
+}
+
+void DisplayRenderer::mousePressEvent(QMouseEvent* event) {
+    setFocus();
+    QPoint p = map_to_remote(event->pos());
+    emit mouse_moved(p.x(), p.y());
+    int button = event->button() == Qt::RightButton ? 1
+                 : event->button() == Qt::MiddleButton ? 2 : 0;
+    emit mouse_button_changed(button, true);
+}
+
+void DisplayRenderer::mouseReleaseEvent(QMouseEvent* event) {
+    int button = event->button() == Qt::RightButton ? 1
+                 : event->button() == Qt::MiddleButton ? 2 : 0;
+    emit mouse_button_changed(button, false);
+}
+
+void DisplayRenderer::wheelEvent(QWheelEvent* event) {
+    emit mouse_wheelled(event->angleDelta().y());
+}
+
+void DisplayRenderer::keyPressEvent(QKeyEvent* event) {
+    emit key_changed(event->key(), true, false);
+}
+
+void DisplayRenderer::keyReleaseEvent(QKeyEvent* event) {
+    emit key_changed(event->key(), false, false);
 }

@@ -34,6 +34,10 @@ signals:
 
 public slots:
     void on_video_frame(QString device_id, QByteArray payload);
+    void on_mouse_moved(int x, int y);
+    void on_mouse_button(int button, bool pressed);
+    void on_mouse_wheel(int delta);
+    void on_key(int vk, bool pressed, bool extended);
 
 private:
     TunnelManager& tunnels_;

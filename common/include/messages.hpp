@@ -37,6 +37,30 @@ struct RegisterInfo {
     uint16_t screen_height = 0;
 };
 
+enum class InputKind : uint8_t {
+    MouseMove = 1,   // [2B x][2B y] in remote pixels
+    MouseButton = 2, // [1B button][1B pressed]
+    MouseWheel = 3,  // [2B delta]
+    Key = 4,         // [2B vk][1B pressed][1B extended]
+};
+
+std::vector<uint8_t> make_mouse_move(uint16_t x, uint16_t y);
+std::vector<uint8_t> make_mouse_button(uint8_t button, bool pressed);
+std::vector<uint8_t> make_mouse_wheel(int16_t delta);
+std::vector<uint8_t> make_key(uint16_t vk, bool pressed, bool extended);
+
+struct InputEvent {
+    InputKind kind;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    uint8_t button = 0;
+    uint16_t vk = 0;
+    int16_t delta = 0;
+    bool pressed = false;
+    bool extended = false;
+};
+bool parse_input_event(const std::vector<uint8_t>& payload, InputEvent& out);
+
 struct VideoFrameInfo {
     uint32_t seq = 0;
     uint64_t timestamp_us = 0;

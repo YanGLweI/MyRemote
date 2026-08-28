@@ -81,10 +81,19 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
         case proto::MessageType::RequestKeyframe:
             g_encoder->force_keyframe();
             break;
-        case proto::MessageType::InputEvent:
-            // TODO(M5): parse and inject mouse/keyboard events
-            mlog::info("Input event received (" + std::to_string(payload.size()) + " bytes)");
+        case proto::MessageType::InputEvent: {
+            proto::InputEvent ev;
+            if (proto::parse_input_event(payload, ev)) {
+                static bool logged_input = false;
+                if (!logged_input) {
+                    logged_input = true;
+                    mlog::info("Input event received and injected (kind=" +
+                               std::to_string(static_cast<int>(ev.kind)) + ")");
+                }
+                g_input.handle(ev);
+            }
             break;
+        }
         case proto::MessageType::AuthChallenge:
             // TODO(M7): secondary password response
             mlog::warn("Auth challenge received (not yet supported)");

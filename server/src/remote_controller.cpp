@@ -51,6 +51,7 @@ bool RemoteController::start_control(const std::string& device_id) {
         mlog::error("Decoder init failed for " + device_id);
         return false;
     }
+    renderer_.set_remote_size(width, height);
 
     auto payload = proto::make_start_stream_payload(kDefaultFps, kDefaultBitrateKbps);
     if (!tunnels_.send_to_device(device_id, proto::MessageType::StartStream, payload)) {
@@ -104,4 +105,29 @@ void RemoteController::on_video_frame(QString device_id, QByteArray payload) {
         tunnels_.send_to_device(controlled_.value(),
                                 proto::MessageType::RequestKeyframe);
     }
+}
+
+void RemoteController::on_mouse_moved(int x, int y) {
+    if (!controlled_.has_value()) return;
+    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
+                            proto::make_mouse_move(static_cast<uint16_t>(x),
+                                                   static_cast<uint16_t>(y)));
+}
+
+void RemoteController::on_mouse_button(int button, bool pressed) {
+    if (!controlled_.has_value()) return;
+    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
+                            proto::make_mouse_button(static_cast<uint8_t>(button), pressed));
+}
+
+void RemoteController::on_mouse_wheel(int delta) {
+    if (!controlled_.has_value()) return;
+    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
+                            proto::make_mouse_wheel(static_cast<int16_t>(delta)));
+}
+
+void RemoteController::on_key(int vk, bool pressed, bool extended) {
+    if (!controlled_.has_value()) return;
+    tunnels_.send_to_device(controlled_.value(), proto::MessageType::InputEvent,
+                            proto::make_key(static_cast<uint16_t>(vk), pressed, extended));
 }

@@ -4,8 +4,8 @@
 
 #include <mutex>
 
-// Shows the remote desktop. Receives decoded QImages on the GUI thread;
-// paintEvent letterboxes the latest frame into the widget.
+// Shows the remote desktop and captures local input, mapping widget
+// coordinates to the remote resolution.
 class DisplayRenderer : public QWidget {
     Q_OBJECT
 
@@ -13,22 +13,33 @@ public:
     explicit DisplayRenderer(QWidget* parent = nullptr);
 
     QSize sizeHint() const override { return QSize(960, 540); }
-    bool has_frame() const;
+    void set_remote_size(int width, int height);
 
 public slots:
     void set_frame(const QImage& frame);
     void clear_frame();
 
 signals:
-    void fps_updated(float fps);
-    // M5: input captured over the remote desktop area (widget coordinates).
-    void mouse_event_captured(int x, int y, int button, bool pressed);
-    void key_event_captured(int vk, bool pressed);
+    void mouse_moved(int x, int y);       // remote pixel coords
+    void mouse_button_changed(int button, bool pressed);
+    void mouse_wheelled(int delta);
+    void key_changed(int vk, bool pressed, bool extended);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
 
 private:
+    QPoint map_to_remote(const QPoint& widget_pos) const;
+    QRect remote_rect() const;  // letterbox area within the widget
+
     mutable std::mutex mutex_;
     QImage current_;
+    int remote_w_ = 0;
+    int remote_h_ = 0;
 };

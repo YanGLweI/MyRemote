@@ -102,6 +102,14 @@ public:
                 });
         connect(tunnels_.get(), &TunnelManager::video_frame_received,
                 controller_.get(), &RemoteController::on_video_frame);
+        connect(&renderer_, &DisplayRenderer::mouse_moved, controller_.get(),
+                &RemoteController::on_mouse_moved);
+        connect(&renderer_, &DisplayRenderer::mouse_button_changed, controller_.get(),
+                &RemoteController::on_mouse_button);
+        connect(&renderer_, &DisplayRenderer::mouse_wheelled, controller_.get(),
+                &RemoteController::on_mouse_wheel);
+        connect(&renderer_, &DisplayRenderer::key_changed, controller_.get(),
+                &RemoteController::on_key);
         connect(controller_.get(), &RemoteController::fps_updated, this,
                 [this](float fps) {
                     if (controller_->is_controlling()) {
