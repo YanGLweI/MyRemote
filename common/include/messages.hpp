@@ -21,6 +21,8 @@ enum class MessageType : uint8_t {
     RequestKeyframe = 0x08,  // S→C force I-frame
     AuthChallenge   = 0x09,  // S→C secondary password challenge
     AuthResponse    = 0x0A,  // C→S secondary password response
+    DisplayChanged  = 0x0B,  // C→S native desktop size changed [2B w][2B h]
+    AttachConsole   = 0x0C,  // S→C reattach this session to the physical console
     Encrypted       = 0x10,  // envelope: AES-GCM over [inner type][payload]
 };
 
@@ -93,6 +95,10 @@ std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbp
 bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fps,
                                 uint16_t& bitrate_kbps,
                                 uint16_t& max_encode_width);
+
+std::vector<uint8_t> make_display_changed_payload(uint16_t width, uint16_t height);
+bool parse_display_changed_payload(const std::vector<uint8_t>& payload,
+                                   uint16_t& width, uint16_t& height);
 
 std::vector<uint8_t> make_video_frame_payload(uint32_t seq, uint64_t timestamp_us,
                                               bool is_keyframe, const uint8_t* data,

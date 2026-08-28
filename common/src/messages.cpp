@@ -144,6 +144,20 @@ bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fp
     return true;
 }
 
+std::vector<uint8_t> make_display_changed_payload(uint16_t width, uint16_t height) {
+    std::vector<uint8_t> payload;
+    put_u16(payload, width);
+    put_u16(payload, height);
+    return payload;
+}
+
+bool parse_display_changed_payload(const std::vector<uint8_t>& payload,
+                                   uint16_t& width, uint16_t& height) {
+    size_t offset = 0;
+    return read_u16(payload, offset, width) &&
+           read_u16(payload, offset, height);
+}
+
 std::vector<uint8_t> make_video_frame_payload(uint32_t seq, uint64_t timestamp_us,
                                               bool is_keyframe, const uint8_t* data,
                                               size_t len) {

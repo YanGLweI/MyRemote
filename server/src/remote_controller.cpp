@@ -15,6 +15,19 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
     connect(&pipeline_, &FramePipeline::frame_ready, this,
             [this] { renderer_.update(); });
 
+    // The agent re-reports its geometry whenever the desktop resizes; an RDP
+    // session swapped for the console changes it under a live stream, which
+    // would otherwise leave pointer coordinates mapped against the old size.
+    connect(&tunnels_, &TunnelManager::device_registered, this,
+            [this](QString device_id, QString, int width, int height) {
+                if (device_id.toStdString() != controlled_device()) return;
+                if (width <= 0 || height <= 0) return;
+                renderer_.set_remote_size(width, height);
+                renderer_.clear_frame();
+                tunnels_.send_to_device(device_id.toStdString(),
+                                        proto::MessageType::RequestKeyframe);
+            });
+
     auto* fps_timer = new QTimer(this);
     connect(fps_timer, &QTimer::timeout, this, [this]() {
         int net = static_cast<int>(tunnels_.exchange_video_frames_in());
@@ -144,6 +157,16 @@ void RemoteController::apply_quality(uint8_t fps, uint16_t bitrate_kbps,
                                 proto::make_start_stream_payload(
                                     fps_, bitrate_kbps_, max_encode_width_));
     }
+}
+
+void RemoteController::attach_console() {
+    std::string device = controlled_device();
+    if (device.empty()) {
+        mlog::warn("Attach console requested with no active session");
+        return;
+    }
+    mlog::info("Requesting console reattach for " + device);
+    tunnels_.send_to_device(device, proto::MessageType::AttachConsole);
 }
 
 bool RemoteController::start_control(const std::string& device_id) {

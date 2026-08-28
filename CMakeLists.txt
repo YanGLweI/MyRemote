@@ -52,7 +52,7 @@ target_link_libraries(common_lib PUBLIC
     ws2_32
 )
 
-set(WINDOWS_SYS_LIBS ws2_32 user32 gdi32 advapi32)
+set(WINDOWS_SYS_LIBS ws2_32 user32 gdi32 advapi32 wtsapi32)
 
 # 客户端（被控端）
 if(BUILD_CLIENT)

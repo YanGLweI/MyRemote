@@ -58,6 +58,9 @@ public:
 private:
     bool init_d3d();
     bool init_duplication(int monitor_index);
+    // Rebuild device + duplication after a session switch or GPU loss, at most
+    // once every few seconds. Returns true when duplication works again.
+    bool try_recover_dxgi();
     bool ensure_staging_texture(int width, int height);
     bool capture_from_duplication(CapturedFrame& frame, DWORD wait_ms);
     bool capture_with_bitblt(CapturedFrame& frame);
@@ -80,6 +83,7 @@ private:
     EncoderConfig config_;
     mutable std::mutex mutex_;
     bool use_bitblt_ = false;
+    ULONGLONG next_dxgi_retry_ms_ = 0;
     int staging_width_ = 0;
     int staging_height_ = 0;
     int source_width_ = 0;

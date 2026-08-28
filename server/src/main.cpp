@@ -80,10 +80,16 @@ public:
         remark_button_->setEnabled(false);
         stop_button_ = new QPushButton(QStringLiteral("Stop Control"));
         stop_button_->setEnabled(false);
+        console_button_ = new QPushButton(QStringLiteral("Attach to console"));
+        console_button_->setEnabled(false);
+        console_button_->setToolTip(QStringLiteral(
+            "Restore the picture after an RDP client closed and left this "
+            "session with no display attached (needs an elevated agent)."));
         side_layout->addWidget(device_list_, 1);
         side_layout->addWidget(quality_combo_);
         side_layout->addWidget(fullscreen_button_);
         side_layout->addWidget(remark_button_);
+        side_layout->addWidget(console_button_);
         side_layout->addWidget(stop_button_);
         disconnect_button_ = new QPushButton(QStringLiteral("Disconnect Selected"));
         side_layout->addWidget(disconnect_button_);
@@ -165,15 +171,19 @@ public:
         connect(controller_.get(), &RemoteController::control_started, this,
                 [this](QString device_id) {
                     stop_button_->setEnabled(true);
+                    console_button_->setEnabled(true);
                     statusBar()->showMessage(
                         QStringLiteral("Controlling %1").arg(device_id), 0);
                 });
         connect(controller_.get(), &RemoteController::control_stopped, this,
                 [this]() {
                     stop_button_->setEnabled(false);
+                    console_button_->setEnabled(false);
                     fps_label_->setText(QStringLiteral("FPS: --"));
                     statusBar()->showMessage(QStringLiteral("Ready"), 0);
                 });
+        connect(console_button_, &QPushButton::clicked, this,
+                [this]() { controller_->attach_console(); });
         connect(tunnels_.get(), &TunnelManager::video_frame_received,
                 controller_.get(), &RemoteController::on_video_frame,
                 Qt::DirectConnection);
@@ -273,6 +283,7 @@ private:
     std::unique_ptr<RemoteController> controller_;
     DeviceListWidget* device_list_ = nullptr;
     QPushButton* stop_button_ = nullptr;
+    QPushButton* console_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
     QPushButton* disconnect_button_ = nullptr;
     QPushButton* remark_button_ = nullptr;

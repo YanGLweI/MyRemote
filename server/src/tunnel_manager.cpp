@@ -198,6 +198,23 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                 inner.payload.assign(plain.begin() + 1, plain.end());
                 frame = std::move(inner);
                 switch (frame.type) {
+                    case proto::MessageType::DisplayChanged: {
+                        uint16_t w = 0;
+                        uint16_t h = 0;
+                        if (!proto::parse_display_changed_payload(frame.payload,
+                                                                  w, h)) {
+                            break;
+                        }
+                        session->screen_width = w;
+                        session->screen_height = h;
+                        mlog::info("Device " + session->device_id +
+                                   " desktop resized to " + std::to_string(w) +
+                                   "x" + std::to_string(h));
+                        emit device_registered(
+                            QString::fromStdString(session->device_id),
+                            QString::fromStdString(session->device_name), w, h);
+                        break;
+                    }
                     case proto::MessageType::VideoFrame:
                         video_frames_in_.fetch_add(1);
                         emit video_frame_received(

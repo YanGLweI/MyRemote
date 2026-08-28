@@ -298,8 +298,36 @@ bool DesktopCapturer::ensure_staging_texture(int width, int height) {
     return true;
 }
 
+bool DesktopCapturer::try_recover_dxgi() {
+    ULONGLONG now = GetTickCount64();
+    if (now < next_dxgi_retry_ms_) {
+        return false;
+    }
+    next_dxgi_retry_ms_ = now + 3000;
+
+    // A session switch or GPU reset invalidates the device itself, so rebuild
+    // the whole chain rather than just the duplication object.
+    duplication_.Reset();
+    staging_.Reset();
+    context_.Reset();
+    device_.Reset();
+    bool ok = init_d3d() && init_duplication(0);
+    if (ok) {
+        mlog::info(use_bitblt_ ? "Desktop Duplication recovered"
+                              : "Desktop Duplication re-initialized");
+        use_bitblt_ = false;
+    } else if (!use_bitblt_) {
+        mlog::warn("Desktop Duplication lost, using BitBlt until it returns");
+        use_bitblt_ = true;
+    }
+    return ok;
+}
+
 bool DesktopCapturer::capture_frame(CapturedFrame& frame, DWORD wait_ms) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (use_bitblt_) {
+        try_recover_dxgi();
+    }
     if (use_bitblt_ || !duplication_) {
         return capture_with_bitblt(frame);
     }
@@ -315,13 +343,9 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
         return false;  // desktop unchanged
     }
     if (FAILED(hr)) {
-        if (hr == DXGI_ERROR_ACCESS_LOST) {
-            mlog::warn("Duplication access lost, re-initializing");
-            duplication_.Reset();
-            if (init_duplication(0)) {
-                return false;
-            }
-            use_bitblt_ = true;
+        if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_DEVICE_REMOVED ||
+            hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_INVALID_CALL) {
+            try_recover_dxgi();
         } else {
             char msg[64];
             snprintf(msg, sizeof(msg), "AcquireNextFrame failed: 0x%08lX",
@@ -372,6 +396,7 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
     }
 
     duplication_->ReleaseFrame();
+    try_recover_dxgi();
     return false;
 }
 

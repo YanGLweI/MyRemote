@@ -136,39 +136,7 @@ void DisplayRenderer::clear_frame() {
         std::lock_guard<std::mutex> lock(mutex_);
         current_ = QImage();
     }
-    pointer_visible_ = false;
-    set_cursor_blank(false);
     update();
-}
-
-void DisplayRenderer::set_cursor_blank(bool blank) {
-    if (cursor_blank_ == blank) {
-        return;
-    }
-    cursor_blank_ = blank;
-    setCursor(blank ? Qt::BlankCursor : Qt::ArrowCursor);
-}
-
-void DisplayRenderer::track_pointer(const QPoint& widget_pos) {
-    QRect r = remote_rect();
-    pointer_pos_ = r.isNull() ? widget_pos
-                              : QPoint(qBound(r.left(), widget_pos.x(), r.right()),
-                                       qBound(r.top(), widget_pos.y(), r.bottom()));
-    pointer_visible_ = true;
-    bool has_frame;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        has_frame = !current_.isNull();
-    }
-    set_cursor_blank(has_frame && remote_rect().contains(widget_pos));
-    update();
-}
-
-void DisplayRenderer::leaveEvent(QEvent* event) {
-    pointer_visible_ = false;
-    set_cursor_blank(false);
-    update();
-    QWidget::leaveEvent(event);
 }
 
 QRect DisplayRenderer::remote_rect() const {
@@ -213,35 +181,15 @@ void DisplayRenderer::paintEvent(QPaintEvent*) {
         target = rect();
     }
     painter.drawImage(target, frame);
-
-    if (pointer_visible_) {
-        // Fixed-size arrow, white on a dark outline: legible on any desktop.
-        const qreal s = 1.2;
-        static const QPointF shape[] = {
-            {0, 0}, {0, 15}, {3.6, 11.6}, {6.2, 17.8}, {8.8, 16.7},
-            {6.1, 10.6}, {11.4, 10.6},
-        };
-        QPolygonF arrow;
-        arrow.reserve(static_cast<int>(sizeof(shape) / sizeof(shape[0])));
-        for (const QPointF& p : shape) {
-            arrow << pointer_pos_ + QPointF(p.x() * s, p.y() * s);
-        }
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(QPen(QColor(0, 0, 0, 200), 1));
-        painter.setBrush(QColor(255, 255, 255, 235));
-        painter.drawPolygon(arrow);
-    }
 }
 
 void DisplayRenderer::mouseMoveEvent(QMouseEvent* event) {
-    track_pointer(event->pos());
     QPoint p = map_to_remote(event->pos());
     emit mouse_moved(p.x(), p.y());
 }
 
 void DisplayRenderer::mousePressEvent(QMouseEvent* event) {
     setFocus();
-    track_pointer(event->pos());
     QPoint p = map_to_remote(event->pos());
     emit mouse_moved(p.x(), p.y());
     int button = event->button() == Qt::RightButton ? 1

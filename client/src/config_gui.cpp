@@ -539,6 +539,10 @@ bool run_config_gui(ConfigUi& cfg) {
     }
 
     ShowWindow(hwnd, SW_SHOWNORMAL);
+    // A process started with STARTUPINFO.wShowWindow=SW_HIDE ignores its first
+    // ShowWindow call, which would leave this dialog invisible forever.
+    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
     SetForegroundWindow(hwnd);
     UpdateWindow(hwnd);
 

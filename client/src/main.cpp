@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <tlhelp32.h>
+#include <wtsapi32.h>
 
 #include <algorithm>
 #include <atomic>
@@ -133,6 +134,25 @@ bool process_is_elevated() {
 
 const bool g_elevated = process_is_elevated();
 
+// Capture and injected input only reach the session this process runs in. When
+// an RDP client is closed the session is left detached with no desktop on the
+// console, which looks like a hung agent from the control side.
+void log_session_state() {
+    DWORD session_id = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    DWORD console_id = WTSGetActiveConsoleSessionId();
+    std::string msg = "Session " + std::to_string(session_id);
+    if (console_id == 0xFFFFFFFF) {
+        msg += "; no session attached to the physical console";
+    } else if (console_id != session_id) {
+        msg += "; console runs session " + std::to_string(console_id) +
+               " - this agent is not in it";
+    } else {
+        msg += " = console session";
+    }
+    mlog::info(msg);
+}
+
 // A user who right-clicks agent.exe and picks "Run as administrator" would
 // otherwise lose the single-instance race against the limited copy, so the
 // elevated copy retires same-path instances before claiming the mutex.
@@ -171,17 +191,71 @@ bool retire_limited_instances() {
     return killed;
 }
 
-// Starts a second agent with admin rights and steps aside; the child passes
-// --takeover so it waits for this process to release the single-instance mutex.
-void relaunch_elevated() {
-    wchar_t path[MAX_PATH] = {};
-    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+// Runs a console command to completion; returns its exit code (-1 on failure).
+int run_command(const std::wstring& command_line) {
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring mutable_line = command_line;
+    if (!CreateProcessW(nullptr, mutable_line.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, 15000);
+    DWORD code = static_cast<DWORD>(-1);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+// Closing an RDP client detaches the session from any display: the desktop
+// still exists but renders nowhere, so the stream is black and input lands on
+// nothing. Putting the session back on the console restores both.
+void attach_to_console() {
+    if (!g_elevated) {
+        mlog::warn("Attach-console request ignored: agent is not elevated");
         return;
     }
-    HINSTANCE result = ShellExecuteW(nullptr, L"runas", path,
-                                     L"--background --takeover", nullptr,
-                                     SW_HIDE);
-    if (reinterpret_cast<INT_PTR>(result) > 32) {
+    DWORD session_id = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    int code = run_command(L"tscon " + std::to_wstring(session_id) +
+                           L" /dest:console");
+    mlog::info("tscon " + std::to_string(session_id) +
+               " /dest:console finished with code " + std::to_string(code));
+}
+
+// Our command line without the leading executable path.
+std::wstring command_line_params() {
+    std::wstring cmd = GetCommandLineW();
+    size_t i = 0;
+    if (i < cmd.size() && cmd[i] == L'"') {
+        i = cmd.find(L'"', 1);
+        if (i == std::wstring::npos) return {};
+        ++i;
+    } else {
+        i = cmd.find(L' ');
+        if (i == std::wstring::npos) return {};
+    }
+    while (i < cmd.size() && (cmd[i] == L' ' || cmd[i] == L'\t')) ++i;
+    return cmd.substr(i);
+}
+
+// Starts a second agent with admin rights. The tray action passes --takeover so
+// the child waits for this process to release the single-instance mutex.
+bool start_elevated_agent(const std::wstring& params, int show_cmd) {
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+        return false;
+    }
+    HINSTANCE result = ShellExecuteW(nullptr, L"runas", path, params.c_str(),
+                                     nullptr, show_cmd);
+    return reinterpret_cast<INT_PTR>(result) > 32;
+}
+
+// Tray entry: hand over to an elevated copy and step aside.
+void relaunch_elevated() {
+    if (start_elevated_agent(L"--background --takeover --no-elevate", SW_HIDE)) {
         mlog::info("Elevated agent launched; this limited instance is exiting");
         g_state.running.store(false);
     } else {
@@ -260,6 +334,9 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             mlog::info("Auth challenge answered (control password check)");
             break;
         }
+        case proto::MessageType::AttachConsole:
+            attach_to_console();
+            break;
         default:
             mlog::warn("Unknown message type: " +
                       std::to_string(static_cast<int>(type)));
@@ -319,6 +396,8 @@ bool establish_session(const config::ClientConfig& cfg, const std::string& dev_i
 void stream_loop() {
     CapturedFrame frame;
     bool logged_first = false;
+    int reported_w = 0;
+    int reported_h = 0;
 
     LARGE_INTEGER freq_q;
     QueryPerformanceFrequency(&freq_q);
@@ -359,6 +438,8 @@ void stream_loop() {
     while (g_state.running.load()) {
         if (!g_state.streaming.load() || !g_connection->is_connected()) {
             logged_first = false;
+            reported_w = 0;
+            reported_h = 0;
             Sleep(100);
             continue;
         }
@@ -373,6 +454,18 @@ void stream_loop() {
             cap_us += static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) *
                                             us_per_tick);
             ++captures;
+            if (frame.source_width != reported_w || frame.source_height != reported_h) {
+                reported_w = frame.source_width;
+                reported_h = frame.source_height;
+                g_connection->send(
+                    proto::MessageType::DisplayChanged,
+                    proto::make_display_changed_payload(
+                        static_cast<uint16_t>(frame.source_width),
+                        static_cast<uint16_t>(frame.source_height)));
+                mlog::info("Reported desktop resize to server (" +
+                           std::to_string(frame.source_width) + "x" +
+                           std::to_string(frame.source_height) + ")");
+            }
             QueryPerformanceCounter(&t0);
             bool encoded = g_encoder->is_initialized() &&
                            g_encoder->encode_frame(frame);
@@ -420,6 +513,7 @@ struct Args {
     bool install_autostart = false;
     bool uninstall_autostart = false;
     bool takeover = false;
+    bool no_elevate = false;
     std::string ip_override;
     int port_override = 0;
     std::string config_path;
@@ -457,6 +551,7 @@ Args parse_command_line() {
     args.install_autostart = has_flag("--install-autostart");
     args.uninstall_autostart = has_flag("--uninstall-autostart");
     args.takeover = has_flag("--takeover");
+    args.no_elevate = has_flag("--no-elevate");
     args.ip_override = get_value("--ip");
     std::string port = get_value("--port");
     if (!port.empty()) {
@@ -471,24 +566,6 @@ Args parse_command_line() {
 namespace {
 
 constexpr wchar_t kAutostartTaskName[] = L"MyRemote Agent";
-
-// Runs a console command to completion; returns its exit code (-1 on failure).
-int run_command(const std::wstring& command_line) {
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring mutable_line = command_line;
-    if (!CreateProcessW(nullptr, mutable_line.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        return -1;
-    }
-    WaitForSingleObject(pi.hProcess, 15000);
-    DWORD code = static_cast<DWORD>(-1);
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return static_cast<int>(code);
-}
 
 }  // namespace
 
@@ -556,6 +633,22 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // Physical-pixel metrics everywhere (capture/encoder/screen size).
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    // Interactive launch: request admin up front, because a limited agent
+    // cannot drive elevated windows remotely. --background must not prompt, or
+    // unattended logon startup would hang on the consent dialog.
+    bool elevation_declined = false;
+    if (!g_elevated && !args.no_elevate && !args.background && !args.config_ui) {
+        std::wstring params = command_line_params();
+        if (!params.empty()) {
+            params += L' ';
+        }
+        params += L"--no-elevate";
+        if (start_elevated_agent(params, SW_SHOWNORMAL)) {
+            return 0;  // the elevated copy takes over from here
+        }
+        elevation_declined = true;
+    }
+
     std::string dir = exe_dir();
     g_config_path =
         args.config_path.empty() ? dir + "/config.json" : args.config_path;
@@ -607,6 +700,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     mlog::init(dir + "/" + "agent.log");
     mlog::info("MyRemote agent starting");
+    if (elevation_declined) {
+        mlog::warn("UAC prompt dismissed; continuing without admin rights");
+    }
     if (replaced_instance) {
         mlog::info("Took over from a limited agent instance of the same path");
     }
@@ -615,6 +711,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                    : "Elevation: no - SendInput into elevated windows (Task "
                      "Manager, UAC, admin consoles) is dropped by UIPI; use the "
                      "tray menu or a scheduled task to run elevated");
+    log_session_state();
 
     config::ClientConfig cfg = config::ClientConfig::load(g_config_path);
     if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;

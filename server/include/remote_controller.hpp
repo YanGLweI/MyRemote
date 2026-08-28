@@ -27,6 +27,9 @@ public:
     // max_encode_width: 0 keeps whatever the device itself is configured for.
     void apply_quality(uint8_t fps, uint16_t bitrate_kbps,
                        uint16_t max_encode_width = 0);
+    // Reattaches the controlled session to the physical console: an RDP client
+    // that disconnected leaves the desktop rendering nowhere.
+    void attach_console();
     std::string controlled_device() const;
 
 signals:
