@@ -1,8 +1,9 @@
 #include "desktop_capture.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <cstring>
+#include <thread>
 
 #include "log.hpp"
 
@@ -14,17 +15,20 @@ bool DesktopCapturer::initialize(int monitor_index) {
     if (!init_d3d()) {
         mlog::warn("D3D11 init failed, falling back to BitBlt capture");
         use_bitblt_ = true;
-        return true;
-    }
-
-    if (!init_duplication(monitor_index)) {
+    } else if (!init_duplication(monitor_index)) {
         mlog::warn("Desktop Duplication unavailable, falling back to BitBlt capture");
         use_bitblt_ = true;
-        return true;
+    } else {
+        mlog::info("Desktop capture initialized (Desktop Duplication API)");
     }
 
-    mlog::info("Desktop capture initialized (Desktop Duplication API)");
-    return true;
+    if (use_bitblt_) {
+        source_width_ = GetSystemMetrics(SM_CXSCREEN);
+        source_height_ = GetSystemMetrics(SM_CYSCREEN);
+        config_.width = source_width_;
+        config_.height = source_height_;
+    }
+    return source_width_ > 0 && source_height_ > 0;
 }
 
 bool DesktopCapturer::init_d3d() {
@@ -74,18 +78,198 @@ bool DesktopCapturer::init_duplication(int monitor_index) {
 
     DXGI_OUTDUPL_DESC desc{};
     duplication_->GetDesc(&desc);
-    config_.width = static_cast<int>(desc.ModeDesc.Width);
-    config_.height = static_cast<int>(desc.ModeDesc.Height);
+    source_width_ = static_cast<int>(desc.ModeDesc.Width);
+    source_height_ = static_cast<int>(desc.ModeDesc.Height);
+    config_.width = source_width_;
+    config_.height = source_height_;
     return true;
 }
 
 void DesktopCapturer::configure(const EncoderConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
-    // Resolution comes from the duplication/primary screen; adopt only
-    // fps/bitrate/quality from the caller.
+    // Resolution comes from the capture backend; adopt only the quality
+    // parameters and the encode cap from the caller.
     config_.fps = config.fps;
     config_.bitrate_kbps = config.bitrate_kbps;
     config_.quality_level = config.quality_level;
+    config_.max_encode_width = config.max_encode_width;
+    if (source_width_ > 0 && source_height_ > 0) {
+        apply_encode_size();
+    }
+}
+
+void DesktopCapturer::apply_encode_size() {
+    int w = source_width_;
+    int h = source_height_;
+    int cap = config_.max_encode_width;
+    if (cap > 0 && w > cap) {
+        h = static_cast<int>((static_cast<double>(h) * cap + w / 2) / w);
+        w = cap;
+    }
+    // I420 needs even dimensions.
+    w = w < 2 ? 2 : (w & ~1);
+    h = h < 2 ? 2 : (h & ~1);
+    encode_width_ = w;
+    encode_height_ = h;
+    config_.width = w;
+    config_.height = h;
+    prepare_resampling(source_width_, source_height_, w, h);
+    if (w != source_width_ || h != source_height_) {
+        mlog::info("Encode size " + std::to_string(w) + "x" + std::to_string(h) +
+                   " (desktop " + std::to_string(source_width_) + "x" +
+                   std::to_string(source_height_) + ")");
+    }
+}
+
+void DesktopCapturer::encode_size(int* width, int* height) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    *width = encode_width_;
+    *height = encode_height_;
+}
+
+// Destination pixel d covers source pixels [floor(d*s/D), floor((d+1)*s/D)),
+// always at least one tap. The reciprocal keeps the averaging division-free.
+void DesktopCapturer::prepare_resampling(int src_width, int src_height,
+                                         int dst_width, int dst_height) {
+    x0_.resize(dst_width);
+    x1_.resize(dst_width);
+    xinv_.resize(dst_width);
+    for (int d = 0; d < dst_width; ++d) {
+        int a = static_cast<int>(static_cast<int64_t>(d) * src_width / dst_width);
+        int b = static_cast<int>(static_cast<int64_t>(d + 1) * src_width / dst_width);
+        if (b <= a) b = a + 1;
+        if (b > src_width) b = src_width;
+        if (a > src_width - 1) a = src_width - 1;
+        int taps = b - a;
+        x0_[d] = a;
+        x1_[d] = b;
+        xinv_[d] = 4096 / taps;
+    }
+    y0_.resize(dst_height);
+    y1_.resize(dst_height);
+    yinv_.resize(dst_height);
+    for (int d = 0; d < dst_height; ++d) {
+        int a = static_cast<int>(static_cast<int64_t>(d) * src_height / dst_height);
+        int b = static_cast<int>(static_cast<int64_t>(d + 1) * src_height / dst_height);
+        if (b <= a) b = a + 1;
+        if (b > src_height) b = src_height;
+        if (a > src_height - 1) a = src_height - 1;
+        int taps = b - a;
+        y0_[d] = a;
+        y1_[d] = b;
+        yinv_[d] = 4096 / taps;
+    }
+}
+
+// BT.601 limited-range coefficients, matching what the control server decodes.
+namespace {
+inline uint8_t clamp8(int v) {
+    return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+}
+}  // namespace
+
+// Box-filter destination rows [dy0, dy1) of the mapped BGRA image straight into
+// the frame's I420 planes. Bounds are always even, so a chroma row pair never
+// straddles two workers and each worker owns its row scratch.
+void DesktopCapturer::convert_rows(const uint8_t* src, int src_pitch,
+                                   CapturedFrame& frame, int dy0, int dy1) const {
+    const int dw = frame.width;
+    const int dh = frame.height;
+    const int cw = dw / 2;
+    uint8_t* yp = frame.i420.data();
+    uint8_t* up = yp + static_cast<size_t>(dw) * dh;
+    uint8_t* vp = up + static_cast<size_t>(cw) * (dh / 2);
+
+    thread_local std::vector<uint8_t> row_a, row_b;
+    thread_local std::vector<const uint8_t*> rows;
+    if (row_a.size() < static_cast<size_t>(dw) * 3) {
+        row_a.resize(static_cast<size_t>(dw) * 3);
+        row_b.resize(static_cast<size_t>(dw) * 3);
+    }
+    const int32_t* c0 = x0_.data();
+    const int32_t* c1 = x1_.data();
+
+    for (int dy = dy0; dy < dy1; ++dy) {
+        const int r0 = y0_[dy];
+        const int nr = y1_[dy] - r0;
+        if (static_cast<int>(rows.size()) < nr) {
+            rows.resize(nr);
+        }
+        const uint8_t* base = src + static_cast<size_t>(r0) * src_pitch;
+        for (int k = 0; k < nr; ++k) {
+            rows[k] = base + static_cast<size_t>(k) * src_pitch;
+        }
+
+        const int xr = yinv_[dy];
+        uint8_t* rgb = (dy & 1) ? row_b.data() : row_a.data();
+        uint8_t* yrow = yp + static_cast<size_t>(dy) * dw;
+        for (int dx = 0; dx < dw; ++dx) {
+            int b = 0, g = 0, r = 0;
+            for (int k = 0; k < nr; ++k) {
+                const uint32_t* row = reinterpret_cast<const uint32_t*>(rows[k]);
+                for (int sx = c0[dx], end = c1[dx]; sx < end; ++sx) {
+                    const uint32_t p = row[sx];
+                    b += p & 255;
+                    g += (p >> 8) & 255;
+                    r += (p >> 16) & 255;
+                }
+            }
+            const int xc = xinv_[dx];
+            b = (b * xc >> 12) * xr >> 12;
+            g = (g * xc >> 12) * xr >> 12;
+            r = (r * xc >> 12) * xr >> 12;
+            uint8_t* px = rgb + static_cast<size_t>(dx) * 3;
+            px[0] = static_cast<uint8_t>(b);
+            px[1] = static_cast<uint8_t>(g);
+            px[2] = static_cast<uint8_t>(r);
+            yrow[dx] = clamp8(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+        }
+
+        if (dy & 1) {
+            const uint8_t* a = row_a.data();
+            const uint8_t* p = row_b.data();
+            uint8_t* urow = up + static_cast<size_t>(dy / 2) * cw;
+            uint8_t* vrow = vp + static_cast<size_t>(dy / 2) * cw;
+            for (int cx = 0; cx < cw; ++cx) {
+                const uint8_t* a0 = a + static_cast<size_t>(cx) * 6;
+                const uint8_t* a1 = a0 + 3;
+                const uint8_t* b0 = p + static_cast<size_t>(cx) * 6;
+                const uint8_t* b1 = b0 + 3;
+                int bb = (a0[0] + a1[0] + b0[0] + b1[0] + 2) >> 2;
+                int gg = (a0[1] + a1[1] + b0[1] + b1[1] + 2) >> 2;
+                int rr = (a0[2] + a1[2] + b0[2] + b1[2] + 2) >> 2;
+                urow[cx] = clamp8(((-38 * rr - 74 * gg + 112 * bb + 128) >> 8) + 128);
+                vrow[cx] = clamp8(((112 * rr - 94 * gg - 18 * bb + 128) >> 8) + 128);
+            }
+        }
+    }
+}
+
+void DesktopCapturer::convert_to_i420(const uint8_t* src, int src_pitch,
+                                      CapturedFrame& frame) const {
+    const int dh = frame.height;
+    static const int cpu_count =
+        std::max(1u, std::thread::hardware_concurrency());
+    int workers = std::min(4, cpu_count);
+    while (workers > 1 && dh / workers < 192) {
+        --workers;
+    }
+    if (workers <= 1) {
+        convert_rows(src, src_pitch, frame, 0, dh);
+        return;
+    }
+    const int rows_per = ((dh / workers) + 1) & ~1;
+    std::vector<std::thread> threads;
+    for (int begin = rows_per; begin < dh; begin += rows_per) {
+        const int end = std::min(begin + rows_per, dh);
+        threads.emplace_back([this, src, src_pitch, &frame, begin, end]() {
+            convert_rows(src, src_pitch, frame, begin, end);
+        });
+    }
+    convert_rows(src, src_pitch, frame, 0, std::min(rows_per, dh));
+    for (auto& t : threads) {
+        t.join();
+    }
 }
 
 bool DesktopCapturer::ensure_staging_texture(int width, int height) {
@@ -160,22 +344,26 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
             D3D11_MAPPED_SUBRESOURCE mapped{};
             hr = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
             if (SUCCEEDED(hr)) {
-                frame.width = static_cast<int>(desc.Width);
-                frame.height = static_cast<int>(desc.Height);
+                if (static_cast<int>(desc.Width) != source_width_ ||
+                    static_cast<int>(desc.Height) != source_height_) {
+                    source_width_ = static_cast<int>(desc.Width);
+                    source_height_ = static_cast<int>(desc.Height);
+                    apply_encode_size();
+                }
+                frame.source_width = source_width_;
+                frame.source_height = source_height_;
+                frame.width = encode_width_;
+                frame.height = encode_height_;
                 frame.is_keyframe = frame_info.AccumulatedFrames > 0;
                 frame.timestamp_us = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
                         .count());
 
-                const size_t row_bytes = static_cast<size_t>(desc.Width) * 4;
-                frame.raw_bgra.resize(row_bytes * desc.Height);
-                const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
-                for (UINT row = 0; row < desc.Height; ++row) {
-                    std::memcpy(frame.raw_bgra.data() + row * row_bytes,
-                                src + static_cast<size_t>(row) * mapped.RowPitch,
-                                row_bytes);
-                }
+                frame.i420.resize(static_cast<size_t>(frame.width) *
+                                  frame.height * 3 / 2);
+                convert_to_i420(static_cast<const uint8_t*>(mapped.pData),
+                                static_cast<int>(mapped.RowPitch), frame);
                 context_->Unmap(staging_.Get(), 0);
                 duplication_->ReleaseFrame();
                 return true;
@@ -188,9 +376,15 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
 }
 
 bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
-    if (config_.width <= 0 || config_.height <= 0) {
-        config_.width = GetSystemMetrics(SM_CXSCREEN);
-        config_.height = GetSystemMetrics(SM_CYSCREEN);
+    int src_w = GetSystemMetrics(SM_CXSCREEN);
+    int src_h = GetSystemMetrics(SM_CYSCREEN);
+    if (src_w <= 0 || src_h <= 0) {
+        return false;
+    }
+    if (src_w != source_width_ || src_h != source_height_) {
+        source_width_ = src_w;
+        source_height_ = src_h;
+        apply_encode_size();
     }
 
     HDC hdc_screen = GetDC(nullptr);
@@ -198,8 +392,8 @@ bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
 
     BITMAPINFOHEADER bih{};
     bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = config_.width;
-    bih.biHeight = -config_.height;  // top-down
+    bih.biWidth = src_w;
+    bih.biHeight = -src_h;  // top-down
     bih.biPlanes = 1;
     bih.biBitCount = 32;
     bih.biCompression = BI_RGB;
@@ -215,18 +409,19 @@ bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
     }
 
     HGDIOBJ old = SelectObject(hdc_mem, bitmap);
-    BitBlt(hdc_mem, 0, 0, config_.width, config_.height, hdc_screen, 0, 0, SRCCOPY);
+    BitBlt(hdc_mem, 0, 0, src_w, src_h, hdc_screen, 0, 0, SRCCOPY);
 
     frame.timestamp_us = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
-    frame.width = config_.width;
-    frame.height = config_.height;
+    frame.source_width = src_w;
+    frame.source_height = src_h;
+    frame.width = encode_width_;
+    frame.height = encode_height_;
     frame.is_keyframe = true;
-    frame.raw_bgra.assign(static_cast<uint8_t*>(pixels),
-                          static_cast<uint8_t*>(pixels) +
-                              static_cast<size_t>(config_.width) * config_.height * 4);
+    frame.i420.resize(static_cast<size_t>(frame.width) * frame.height * 3 / 2);
+    convert_to_i420(static_cast<const uint8_t*>(pixels), src_w * 4, frame);
 
     SelectObject(hdc_mem, old);
     DeleteObject(bitmap);

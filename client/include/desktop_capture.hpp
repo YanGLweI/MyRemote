@@ -16,19 +16,26 @@ struct EncoderConfig {
     int quality_level = 70;
     int width = 1920;
     int height = 1080;
+    // Long edge of the encoded picture; wider desktops are downscaled to it.
+    // 0 keeps the native resolution.
+    int max_encode_width = 1920;
 };
 
 struct CapturedFrame {
     uint64_t timestamp_us = 0;
-    int width = 0;
+    int width = 0;   // encoded size (after the optional downscale)
     int height = 0;
-    std::vector<uint8_t> raw_bgra;   // BGRA pixels (pre-encode)
+    int source_width = 0;   // native desktop size, kept for input mapping
+    int source_height = 0;
+    std::vector<uint8_t> i420;     // Y + U + V, strides width / width/2
     std::vector<uint8_t> h264_data;  // encoded output (post-encode)
     bool is_keyframe = false;
 };
 
 // Desktop capture via Desktop Duplication API (DXGI 1.2+),
 // with automatic BitBlt fallback for unsupported environments.
+// BGRA is scaled and turned into I420 while the staging texture is still
+// mapped, so no full-resolution copy is ever taken.
 class DesktopCapturer {
 public:
     DesktopCapturer() = default;
@@ -45,12 +52,25 @@ public:
 
     bool using_bitblt_fallback() const { return use_bitblt_; }
 
+    // Encode size for the current configuration (even, 0 before configure()).
+    void encode_size(int* width, int* height) const;
+
 private:
     bool init_d3d();
     bool init_duplication(int monitor_index);
     bool ensure_staging_texture(int width, int height);
     bool capture_from_duplication(CapturedFrame& frame, DWORD wait_ms);
     bool capture_with_bitblt(CapturedFrame& frame);
+    void prepare_resampling(int src_width, int src_height, int dst_width,
+                            int dst_height);
+    // Recompute encode_width_/encode_height_ from source_size + the cap.
+    void apply_encode_size();
+    // Box-filter the mapped BGRA straight into the frame's I420 buffer,
+    // splitting the destination rows over a few threads.
+    void convert_to_i420(const uint8_t* src, int src_pitch,
+                         CapturedFrame& frame) const;
+    void convert_rows(const uint8_t* src, int src_pitch, CapturedFrame& frame,
+                      int dy0, int dy1) const;
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
@@ -58,8 +78,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_;
 
     EncoderConfig config_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     bool use_bitblt_ = false;
     int staging_width_ = 0;
     int staging_height_ = 0;
+    int source_width_ = 0;
+    int source_height_ = 0;
+    int encode_width_ = 0;
+    int encode_height_ = 0;
+    // Per-destination-column/row source windows of the box filter plus
+    // 4096/tap-count reciprocals (integer averaging without division).
+    std::vector<int32_t> x0_, x1_, xinv_, y0_, y1_, yinv_;
 };

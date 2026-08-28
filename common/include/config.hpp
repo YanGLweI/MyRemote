@@ -11,6 +11,9 @@ struct ClientConfig {
     std::string secret_key = "default_secret_key_12345";
     std::string device_name;       // empty = auto-generate from hostname
     std::string control_password;  // secondary verification password (P2)
+    // Long edge of the encoded picture; wider desktops are downscaled to it
+    // while input mapping keeps using the real desktop size. 0 = native.
+    int max_encode_width = 1920;
 
     static ClientConfig load(const std::string& path);
     static bool save(const ClientConfig& cfg, const std::string& path);

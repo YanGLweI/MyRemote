@@ -3,11 +3,20 @@
 #include "wels/codec_api.h"
 #include "wels/codec_def.h"
 
+#include <algorithm>
+
 #include "log.hpp"
 
 namespace {
-constexpr int kI420 = videoFormatI420;
+// Slice parallelism is how OpenH264 spreads a frame over cores; the thread
+// count has to match it or the encoder silently stays single-threaded.
+constexpr int kSliceCount = 4;
+constexpr int kMinDimension = 32;
+
+long long bitrate_floor_bps(int width, int height, int fps) {
+    return static_cast<long long>(width) * height * fps * 5 / 100;  // ~0.05 bpp
 }
+}  // namespace
 
 VideoEncoder::~VideoEncoder() {
     shutdown();
@@ -16,6 +25,20 @@ VideoEncoder::~VideoEncoder() {
 bool VideoEncoder::initialize(const EncoderConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     config_ = config;
+    return initialize_locked();
+}
+
+bool VideoEncoder::initialize_locked() {
+    if (encoder_) {
+        WelsDestroySVCEncoder(static_cast<ISVCEncoder*>(encoder_));
+        encoder_ = nullptr;
+    }
+    initialized_ = false;
+    if (config_.width < kMinDimension || config_.height < kMinDimension) {
+        mlog::error("Encoder size too small: " + std::to_string(config_.width) + "x" +
+                    std::to_string(config_.height));
+        return false;
+    }
 
     ISVCEncoder* encoder = nullptr;
     if (WelsCreateSVCEncoder(&encoder) != 0 || !encoder) {
@@ -25,22 +48,32 @@ bool VideoEncoder::initialize(const EncoderConfig& config) {
 
     SEncParamExt params{};
     encoder->GetDefaultParams(&params);
+    int fps = config_.fps > 0 ? config_.fps : 30;
     params.iUsageType = CAMERA_VIDEO_REAL_TIME;
     params.iPicWidth = config_.width;
     params.iPicHeight = config_.height;
-    int fps = config_.fps > 0 ? config_.fps : 30;
     params.fMaxFrameRate = static_cast<float>(fps);
-    // The server's preset bitrate (e.g. 2 Mbps) is far below what a 6 MP
-    // desktop needs; RC then skips most frames and fps collapses to 1-7.
-    // Floor the target at ~0.05 bpp (capped at 8 Mbps, fine on LAN).
-    long long floor_bps =
-        static_cast<long long>(config_.width) * config_.height * fps * 5 / 100;
-    long long target = std::max<long long>(config_.bitrate_kbps * 1000LL,
-                                           floor_bps);
-    target = std::min<long long>(target, 8000000LL);
+    params.iRCMode = RC_BITRATE_MODE;
+    // The server's preset bitrate (e.g. 2 Mbps) is far below what a desktop
+    // needs; RC then starves and fps collapses. Floor the target at ~0.05 bpp
+    // (capped at 8 Mbps, fine on LAN) and never drop frames to hold it.
+    long long target = std::min<long long>(
+        8000000LL, std::max<long long>(config_.bitrate_kbps * 1000LL,
+                                       bitrate_floor_bps(config_.width,
+                                                         config_.height, fps)));
     params.iTargetBitrate = static_cast<int>(target);
     params.iMaxBitrate = static_cast<int>(target * 13 / 10);
     params.bEnableFrameSkip = false;
+
+    params.iSpatialLayerNum = 1;
+    params.iMultipleThreadIdc = kSliceCount;
+    params.sSpatialLayers[0].sSliceArgument.uiSliceMode = SM_FIXEDSLCNUM_SLICE;
+    params.sSpatialLayers[0].sSliceArgument.uiSliceNum = kSliceCount;
+    params.uiIntraPeriod = static_cast<unsigned int>(fps) * 5;
+    // Whole-frame analysis passes that buy nothing on a screen capture.
+    params.bEnableBackgroundDetection = false;
+    params.bEnableAdaptiveQuant = false;
+    params.bEnableDenoise = false;
 
     if (encoder->InitializeExt(&params) != 0) {
         mlog::error("OpenH264 InitializeExt failed");
@@ -49,13 +82,12 @@ bool VideoEncoder::initialize(const EncoderConfig& config) {
     }
 
     encoder_ = encoder;
-    y_plane_.resize(static_cast<size_t>(config_.width) * config_.height);
-    u_plane_.resize(static_cast<size_t>(config_.width / 2) *
-                    ((config_.height + 1) / 2));
-    v_plane_.resize(u_plane_.size());
     initialized_ = true;
-    mlog::info("OpenH264 encoder initialized (" + std::to_string(config_.width) +
-               "x" + std::to_string(config_.height) + ")");
+    keyframe_requested_ = false;
+    mlog::info("OpenH264 encoder initialized (" + std::to_string(config_.width) + "x" +
+               std::to_string(config_.height) + ", " + std::to_string(fps) + "fps, " +
+               std::to_string(target / 1000) + "kbps, " +
+               std::to_string(kSliceCount) + " slices)");
     return true;
 }
 
@@ -72,74 +104,41 @@ void VideoEncoder::force_keyframe() {
     keyframe_requested_ = true;
 }
 
-void VideoEncoder::bgra_to_i420(const uint8_t* bgra, int width, int height,
-                                uint8_t* y, uint8_t* u, uint8_t* v) {
-    for (int row = 0; row < height; ++row) {
-        const uint8_t* src = bgra + static_cast<size_t>(row) * width * 4;
-        uint8_t* dst = y + static_cast<size_t>(row) * width;
-        for (int col = 0; col < width; ++col) {
-            int b = src[col * 4 + 0];
-            int g = src[col * 4 + 1];
-            int r = src[col * 4 + 2];
-            int yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            dst[col] = static_cast<uint8_t>(yy < 0 ? 0 : (yy > 255 ? 255 : yy));
-        }
-    }
-    int cw = (width + 1) / 2;
-    int ch = (height + 1) / 2;
-    for (int j = 0; j < ch; ++j) {
-        for (int i = 0; i < cw; ++i) {
-            int sx = i * 2 < width ? i * 2 : width - 1;
-            int sy = j * 2 < height ? j * 2 : height - 1;
-            int b = bgra[static_cast<size_t>(sy) * width * 4 + sx * 4 + 0];
-            int g = bgra[static_cast<size_t>(sy) * width * 4 + sx * 4 + 1];
-            int r = bgra[static_cast<size_t>(sy) * width * 4 + sx * 4 + 2];
-            int uu = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-            int vv = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-            u[static_cast<size_t>(j) * cw + i] = static_cast<uint8_t>(uu < 0 ? 0 : (uu > 255 ? 255 : uu));
-            v[static_cast<size_t>(j) * cw + i] = static_cast<uint8_t>(vv < 0 ? 0 : (vv > 255 ? 255 : vv));
-        }
-    }
-}
-
-bool VideoEncoder::encode_frame(const uint8_t* bgra_data, int width, int height,
-                                CapturedFrame* frame_out) {
+bool VideoEncoder::encode_frame(CapturedFrame& frame) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_ || !frame_out) {
+    if (frame.i420.empty() || frame.width <= 0 || frame.height <= 0) {
         return false;
     }
-    if (width != config_.width || height != config_.height) {
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            mlog::warn("Capture size " + std::to_string(width) + "x" +
-                       std::to_string(height) + " != encoder size " +
-                       std::to_string(config_.width) + "x" +
-                       std::to_string(config_.height) +
-                       "; frames dropped until reconfigured");
+    if (!initialized_ || frame.width != config_.width ||
+        frame.height != config_.height) {
+        // Desktop resolution changed: follow the capturer instead of dropping
+        // every frame until the agent restarts.
+        config_.width = frame.width;
+        config_.height = frame.height;
+        if (!initialize_locked()) {
+            return false;
         }
-        return false;
     }
-
-    bgra_to_i420(bgra_data, width, height, y_plane_.data(), u_plane_.data(),
-                 v_plane_.data());
 
     if (keyframe_requested_) {
         static_cast<ISVCEncoder*>(encoder_)->ForceIntraFrame(true);
         keyframe_requested_ = false;
     }
 
+    const int w = frame.width;
+    const int h = frame.height;
+    const uint8_t* base = frame.i420.data();
     SSourcePicture pic{};
-    pic.iColorFormat = kI420;
-    pic.iPicWidth = width;
-    pic.iPicHeight = height;
-    pic.iStride[0] = width;
-    pic.iStride[1] = width / 2;
-    pic.iStride[2] = width / 2;
-    pic.pData[0] = y_plane_.data();
-    pic.pData[1] = u_plane_.data();
-    pic.pData[2] = v_plane_.data();
-    pic.uiTimeStamp = static_cast<long long>(frame_out->timestamp_us / 1000);
+    pic.iColorFormat = videoFormatI420;
+    pic.iPicWidth = w;
+    pic.iPicHeight = h;
+    pic.iStride[0] = w;
+    pic.iStride[1] = w / 2;
+    pic.iStride[2] = w / 2;
+    pic.pData[0] = const_cast<uint8_t*>(base);
+    pic.pData[1] = const_cast<uint8_t*>(base + static_cast<size_t>(w) * h);
+    pic.pData[2] = const_cast<uint8_t*>(base + static_cast<size_t>(w) * h * 5 / 4);
+    pic.uiTimeStamp = static_cast<long long>(frame.timestamp_us / 1000);
 
     SFrameBSInfo bs{};
     int rv = static_cast<ISVCEncoder*>(encoder_)->EncodeFrame(&pic, &bs);
@@ -155,18 +154,17 @@ bool VideoEncoder::encode_frame(const uint8_t* bgra_data, int width, int height,
             total += static_cast<size_t>(layer.pNalLengthInByte[n]);
         }
     }
-    frame_out->h264_data.clear();
-    frame_out->h264_data.reserve(total);
+    frame.h264_data.clear();
+    frame.h264_data.reserve(total);
     for (int l = 0; l < bs.iLayerNum; ++l) {
         const SLayerBSInfo& layer = bs.sLayerInfo[l];
         int offset = 0;
         for (int n = 0; n < layer.iNalCount; ++n) {
             int nal_len = layer.pNalLengthInByte[n];
-            frame_out->h264_data.insert(frame_out->h264_data.end(),
-                                        layer.pBsBuf + offset,
-                                        layer.pBsBuf + offset + nal_len);
+            frame.h264_data.insert(frame.h264_data.end(), layer.pBsBuf + offset,
+                                   layer.pBsBuf + offset + nal_len);
             offset += nal_len;
         }
     }
-    return !frame_out->h264_data.empty();
+    return !frame.h264_data.empty();
 }

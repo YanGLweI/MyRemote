@@ -50,6 +50,23 @@ InputSimulator g_input;
 std::string g_config_path;
 HANDLE g_reload_event = nullptr;
 std::atomic<bool> g_config_dialog_open{false};
+std::atomic<int> g_max_encode_width{1920};
+
+// Push quality + resolution settings through the pipeline. The capturer owns
+// the encoded size (native desktop capped by max_encode_width), so the
+// encoder is always initialised with what the capturer will actually emit.
+void configure_pipeline(int fps, int bitrate_kbps, int max_encode_width) {
+    if (!g_capturer || !g_encoder) {
+        return;
+    }
+    EncoderConfig ec;
+    ec.fps = fps;
+    ec.bitrate_kbps = bitrate_kbps;
+    ec.max_encode_width = max_encode_width;
+    g_capturer->configure(ec);
+    g_capturer->encode_size(&ec.width, &ec.height);
+    g_encoder->initialize(ec);
+}
 
 std::wstring to_wide(const std::string& s) {
     if (s.empty()) return {};
@@ -116,15 +133,9 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
                 int old_br = g_state.target_bitrate_kbps.exchange(bitrate);
                 // Reconfigure the encoder when quality parameters change so
                 // the server's quality preset takes effect immediately.
-                if (g_encoder && (old_fps != fps || old_br != bitrate)) {
-                    EncoderConfig ec;
-                    ec.fps = fps;
-                    ec.bitrate_kbps = bitrate;
-                    ec.width = GetSystemMetrics(SM_CXSCREEN);
-                    ec.height = GetSystemMetrics(SM_CYSCREEN);
-                    g_encoder->shutdown();
-                    g_encoder->initialize(ec);
-                    g_encoder->force_keyframe();
+                if (old_fps != fps || old_br != bitrate) {
+                    configure_pipeline(fps, bitrate,
+                                       g_max_encode_width.load());
                 }
             }
             g_state.streaming.store(true);
@@ -278,8 +289,7 @@ void stream_loop() {
             ++captures;
             QueryPerformanceCounter(&t0);
             bool encoded = g_encoder->is_initialized() &&
-                           g_encoder->encode_frame(frame.raw_bgra.data(), frame.width,
-                                                   frame.height, &frame);
+                           g_encoder->encode_frame(frame);
             QueryPerformanceCounter(&t1);
             enc_us += static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) *
                                             us_per_tick);
@@ -303,7 +313,9 @@ void stream_loop() {
                     mlog::info("Streaming active: first frame " +
                                std::to_string(frame.h264_data.size()) + " bytes, " +
                                std::to_string(frame.width) + "x" +
-                               std::to_string(frame.height));
+                               std::to_string(frame.height) + " of desktop " +
+                               std::to_string(frame.source_width) + "x" +
+                               std::to_string(frame.source_height));
                 }
             }
         }
@@ -372,7 +384,7 @@ namespace {
 void set_autostart(bool enable) {
     HKEY key;
     if (RegOpenKeyExA(HKEY_CURRENT_USER,
-                      "Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                      "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
                       KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
         return;
     }
@@ -485,14 +497,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     mlog::info(std::string("Capture backend: ") +
                (g_capturer->using_bitblt_fallback() ? "BitBlt (DXGI unavailable)"
                                                    : "DXGI Desktop Duplication"));
-    EncoderConfig enc_cfg;
-    enc_cfg.fps = 30;
-    enc_cfg.width = GetSystemMetrics(SM_CXSCREEN);
-    enc_cfg.height = GetSystemMetrics(SM_CYSCREEN);
-    g_capturer->configure(enc_cfg);
-
+    g_max_encode_width.store(cfg.max_encode_width);
     g_encoder = std::make_unique<VideoEncoder>();
-    g_encoder->initialize(enc_cfg);
+    configure_pipeline(g_state.target_fps.load(),
+                       g_state.target_bitrate_kbps.load(),
+                       cfg.max_encode_width);
 
     g_connection = std::make_unique<Connection>();
     g_connection->set_message_callback(on_message);
@@ -530,6 +539,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             if (args.port_override > 0) cfg.server_port = args.port_override;
             g_control_password = cfg.control_password;
             g_connection->set_encryption_key(crypto::derive_key(cfg.secret_key));
+            g_max_encode_width.store(cfg.max_encode_width);
+            configure_pipeline(g_state.target_fps.load(),
+                               g_state.target_bitrate_kbps.load(),
+                               cfg.max_encode_width);
             backoff_ms = 1000;
             next_try_tick = 0;
         }

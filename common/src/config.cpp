@@ -134,6 +134,7 @@ ClientConfig ClientConfig::load(const std::string& path) {
     json.get_string("secret_key", cfg.secret_key);
     json.get_string("device_name", cfg.device_name);
     json.get_string("control_password", cfg.control_password);
+    json.get_int("max_encode_width", cfg.max_encode_width);
     return cfg;
 }
 
@@ -148,7 +149,8 @@ bool ClientConfig::save(const ClientConfig& cfg, const std::string& path) {
          << "    \"secret_key\": \"" << json_escape(cfg.secret_key) << "\",\n"
          << "    \"device_name\": \"" << json_escape(cfg.device_name) << "\",\n"
          << "    \"control_password\": \"" << json_escape(cfg.control_password)
-         << "\"\n"
+         << "\",\n"
+         << "    \"max_encode_width\": " << cfg.max_encode_width << "\n"
          << "}\n";
     file.flush();
     return file.good();
