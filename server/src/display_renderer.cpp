@@ -179,7 +179,6 @@ void DisplayRenderer::paintEvent(QPaintEvent*) {
     if (target.isEmpty()) {
         target = rect();
     }
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.drawImage(target, frame);
 }
 

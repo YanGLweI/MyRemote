@@ -28,10 +28,19 @@ bool VideoEncoder::initialize(const EncoderConfig& config) {
     params.iUsageType = CAMERA_VIDEO_REAL_TIME;
     params.iPicWidth = config_.width;
     params.iPicHeight = config_.height;
-    params.fMaxFrameRate = static_cast<float>(config_.fps > 0 ? config_.fps : 30);
-    params.iTargetBitrate = config_.bitrate_kbps * 1000;
-    params.iMaxBitrate = params.iTargetBitrate * 12 / 10;
-    params.bEnableFrameSkip = true;
+    int fps = config_.fps > 0 ? config_.fps : 30;
+    params.fMaxFrameRate = static_cast<float>(fps);
+    // The server's preset bitrate (e.g. 2 Mbps) is far below what a 6 MP
+    // desktop needs; RC then skips most frames and fps collapses to 1-7.
+    // Floor the target at ~0.05 bpp (capped at 8 Mbps, fine on LAN).
+    long long floor_bps =
+        static_cast<long long>(config_.width) * config_.height * fps * 5 / 100;
+    long long target = std::max<long long>(config_.bitrate_kbps * 1000LL,
+                                           floor_bps);
+    target = std::min<long long>(target, 8000000LL);
+    params.iTargetBitrate = static_cast<int>(target);
+    params.iMaxBitrate = static_cast<int>(target * 13 / 10);
+    params.bEnableFrameSkip = false;
 
     if (encoder->InitializeExt(&params) != 0) {
         mlog::error("OpenH264 InitializeExt failed");
@@ -96,8 +105,19 @@ void VideoEncoder::bgra_to_i420(const uint8_t* bgra, int width, int height,
 bool VideoEncoder::encode_frame(const uint8_t* bgra_data, int width, int height,
                                 CapturedFrame* frame_out) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_ || !frame_out || width != config_.width ||
-        height != config_.height) {
+    if (!initialized_ || !frame_out) {
+        return false;
+    }
+    if (width != config_.width || height != config_.height) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            mlog::warn("Capture size " + std::to_string(width) + "x" +
+                       std::to_string(height) + " != encoder size " +
+                       std::to_string(config_.width) + "x" +
+                       std::to_string(config_.height) +
+                       "; frames dropped until reconfigured");
+        }
         return false;
     }
 
@@ -124,15 +144,19 @@ bool VideoEncoder::encode_frame(const uint8_t* bgra_data, int width, int height,
     SFrameBSInfo bs{};
     int rv = static_cast<ISVCEncoder*>(encoder_)->EncodeFrame(&pic, &bs);
     if (rv != 0 || bs.eFrameType == videoFrameTypeSkip) {
-        static int warn_count = 0;
-        if (warn_count++ < 3) {
-            mlog::warn("EncodeFrame rv=" + std::to_string(rv) +
-                       " frameType=" + std::to_string((int)bs.eFrameType));
-        }
+        skips_.fetch_add(1);
         return false;
     }
 
+    size_t total = 0;
+    for (int l = 0; l < bs.iLayerNum; ++l) {
+        const SLayerBSInfo& layer = bs.sLayerInfo[l];
+        for (int n = 0; n < layer.iNalCount; ++n) {
+            total += static_cast<size_t>(layer.pNalLengthInByte[n]);
+        }
+    }
     frame_out->h264_data.clear();
+    frame_out->h264_data.reserve(total);
     for (int l = 0; l < bs.iLayerNum; ++l) {
         const SLayerBSInfo& layer = bs.sLayerInfo[l];
         int offset = 0;

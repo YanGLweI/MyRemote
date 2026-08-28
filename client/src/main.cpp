@@ -222,6 +222,43 @@ bool establish_session(const config::ClientConfig& cfg, const std::string& dev_i
 void stream_loop() {
     CapturedFrame frame;
     bool logged_first = false;
+
+    LARGE_INTEGER freq_q;
+    QueryPerformanceFrequency(&freq_q);
+    const double us_per_tick = 1e6 / static_cast<double>(freq_q.QuadPart);
+    LARGE_INTEGER t0{}, t1{};
+
+    uint64_t win_start_ms = GetTickCount64();
+    uint64_t cap_us = 0, enc_us = 0, send_us = 0;
+    uint64_t captures = 0, encodes = 0, sends = 0, send_fails = 0;
+
+    auto log_window = [&]() {
+        uint64_t now = GetTickCount64();
+        double secs = (now - win_start_ms) / 1000.0;
+        if (secs < 4.5 || captures == 0) {
+            if (secs >= 4.5) {  // idle desktop: still report once per window
+                mlog::info("Perf 5s: idle (no new desktop frames)");
+                win_start_ms = now;
+            }
+            return;
+        }
+        uint64_t skips = g_encoder->exchange_skips();
+        char line[256];
+        snprintf(line, sizeof(line),
+                 "Perf 5s: fps=%.1f cap=%.1fms enc=%.1fms send=%.1fms "
+                 "enc=%llu skips=%llu netfail=%llu",
+                 encodes / secs, cap_us / captures / 1000.0,
+                 enc_us / (encodes ? encodes : 1) / 1000.0,
+                 send_us / (sends ? sends : 1) / 1000.0,
+                 static_cast<unsigned long long>(encodes),
+                 static_cast<unsigned long long>(skips),
+                 static_cast<unsigned long long>(send_fails));
+        mlog::info(line);
+        cap_us = enc_us = send_us = 0;
+        captures = encodes = sends = send_fails = 0;
+        win_start_ms = now;
+    };
+
     while (g_state.running.load()) {
         if (!g_state.streaming.load() || !g_connection->is_connected()) {
             logged_first = false;
@@ -232,16 +269,35 @@ void stream_loop() {
         int fps = g_state.target_fps.load();
         if (fps <= 0) fps = 30;
 
-        if (g_capturer->capture_frame(frame, 1000 / fps)) {
+        QueryPerformanceCounter(&t0);
+        bool captured = g_capturer->capture_frame(frame, 1000 / fps);
+        QueryPerformanceCounter(&t1);
+        if (captured) {
+            cap_us += static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) *
+                                            us_per_tick);
+            ++captures;
+            QueryPerformanceCounter(&t0);
             bool encoded = g_encoder->is_initialized() &&
                            g_encoder->encode_frame(frame.raw_bgra.data(), frame.width,
                                                    frame.height, &frame);
+            QueryPerformanceCounter(&t1);
+            enc_us += static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) *
+                                            us_per_tick);
             if (encoded && !frame.h264_data.empty()) {
+                ++encodes;
                 uint32_t seq = g_state.frame_seq.fetch_add(1) + 1;
                 auto payload = proto::make_video_frame_payload(
                     seq, frame.timestamp_us, frame.is_keyframe,
                     frame.h264_data.data(), frame.h264_data.size());
-                g_connection->send(proto::MessageType::VideoFrame, payload);
+                QueryPerformanceCounter(&t0);
+                if (g_connection->send(proto::MessageType::VideoFrame, payload)) {
+                    ++sends;
+                } else {
+                    ++send_fails;
+                }
+                QueryPerformanceCounter(&t1);
+                send_us += static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) *
+                                                 us_per_tick);
                 if (!logged_first) {
                     logged_first = true;
                     mlog::info("Streaming active: first frame " +
@@ -251,6 +307,7 @@ void stream_loop() {
                 }
             }
         }
+        log_window();
     }
 }
 
@@ -425,6 +482,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         tray.stop();
         return 1;
     }
+    mlog::info(std::string("Capture backend: ") +
+               (g_capturer->using_bitblt_fallback() ? "BitBlt (DXGI unavailable)"
+                                                   : "DXGI Desktop Duplication"));
     EncoderConfig enc_cfg;
     enc_cfg.fps = 30;
     enc_cfg.width = GetSystemMetrics(SM_CXSCREEN);

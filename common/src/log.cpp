@@ -17,11 +17,15 @@ std::ofstream g_file;
 std::string timestamp() {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  now.time_since_epoch()) % 1000;
     std::tm tm_buf{};
     localtime_s(&tm_buf, &t);
-    char buf[32];
+    char buf[40];
     std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf);
-    return buf;
+    return std::string(buf) + "." +
+           std::string(ms.count() < 100 ? (ms.count() < 10 ? "0" : "") : "") +
+           std::to_string(ms.count());
 }
 
 void write_line(const char* level, const std::string& message) {

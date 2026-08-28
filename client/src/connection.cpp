@@ -91,6 +91,18 @@ bool Connection::connect(const std::string& server_ip, int port, int timeout_sec
     setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO,
                reinterpret_cast<const char*>(&recv_timeout_ms), sizeof(recv_timeout_ms));
 
+    // Video frames must not sit in Nagle; a stalled peer must not freeze the
+    // stream loop forever either.
+    int nodelay = 1;
+    setsockopt(socket_, IPPROTO_TCP, TCP_NODELAY,
+               reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+    int sndbuf = 1024 * 1024;
+    setsockopt(socket_, SOL_SOCKET, SO_SNDBUF,
+               reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
+    DWORD send_timeout_ms = 2000;
+    setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char*>(&send_timeout_ms), sizeof(send_timeout_ms));
+
     should_stop_.store(false);
     connected_.store(true);
     recv_thread_ = std::thread(&Connection::receive_loop, this);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -23,6 +24,8 @@ public:
                       CapturedFrame* frame_out);
     void force_keyframe();
     bool is_initialized() const { return initialized_; }
+    // Cumulative EncodeFrame skips since the last exchange (diagnostics).
+    uint64_t exchange_skips() { return skips_.exchange(0); }
 
 private:
     void bgra_to_i420(const uint8_t* bgra, int width, int height,
@@ -34,4 +37,5 @@ private:
     std::vector<uint8_t> y_plane_, u_plane_, v_plane_;
     bool initialized_ = false;
     bool keyframe_requested_ = false;
+    std::atomic<uint64_t> skips_{0};
 };

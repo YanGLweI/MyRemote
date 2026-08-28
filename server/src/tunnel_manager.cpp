@@ -199,6 +199,7 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                 frame = std::move(inner);
                 switch (frame.type) {
                     case proto::MessageType::VideoFrame:
+                        video_frames_in_.fetch_add(1);
                         emit video_frame_received(
                             QString::fromStdString(session->device_id),
                             QByteArray(reinterpret_cast<const char*>(

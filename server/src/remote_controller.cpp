@@ -25,8 +25,9 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
     : QObject(parent), tunnels_(tunnels), renderer_(renderer) {
     auto* fps_timer = new QTimer(this);
     connect(fps_timer, &QTimer::timeout, this, [this]() {
-        uint64_t count = frames_received_.exchange(0);
-        emit fps_updated(static_cast<float>(count));
+        int net = static_cast<int>(tunnels_.exchange_video_frames_in());
+        int dec = static_cast<int>(frames_decoded_.exchange(0));
+        emit fps_updated(net, dec);
     });
     fps_timer->start(1000);
 }
@@ -61,7 +62,8 @@ bool RemoteController::do_start(const std::string& device_id) {
     tunnels_.send_to_device(device_id, proto::MessageType::RequestKeyframe);
 
     controlled_ = device_id;
-    frames_received_.store(0);
+    frames_decoded_.store(0);
+    tunnels_.exchange_video_frames_in();
     last_good_frame_ms_.store(0);
     mlog::info("Control session started: " + device_id);
     emit control_started(QString::fromStdString(device_id));
@@ -93,10 +95,9 @@ void RemoteController::on_video_frame(QString device_id, QByteArray payload) {
         return;
     }
 
-    frames_received_.fetch_add(1);
-
     QImage frame;
     if (decoder_.decode(info.data, info.size, frame)) {
+        frames_decoded_.fetch_add(1);
         last_good_frame_ms_.store(now_ms());
         renderer_.set_frame(frame);
     } else if (now_ms() - last_good_frame_ms_.load() > 2000) {

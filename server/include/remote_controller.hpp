@@ -33,7 +33,7 @@ signals:
     void control_started(QString device_id);
     void control_stopped();
     void control_denied(QString device_id);
-    void fps_updated(float fps);
+    void fps_updated(int net_fps, int decoded_fps);
 
 public slots:
     void on_video_frame(QString device_id, QByteArray payload);
@@ -52,6 +52,6 @@ private:
     std::string pending_device_;
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
-    std::atomic<uint64_t> frames_received_{0};
+    std::atomic<uint64_t> frames_decoded_{0};
     std::atomic<long long> last_good_frame_ms_{0};
 };

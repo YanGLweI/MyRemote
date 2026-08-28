@@ -177,10 +177,12 @@ public:
         connect(&renderer_, &DisplayRenderer::key_changed, controller_.get(),
                 &RemoteController::on_key);
         connect(controller_.get(), &RemoteController::fps_updated, this,
-                [this](float fps) {
+                [this](int net_fps, int decoded_fps) {
                     if (controller_->is_controlling()) {
-                        fps_label_->setText(QStringLiteral("FPS: %1").arg(
-                            static_cast<double>(fps), 0, 'f', 0));
+                        fps_label_->setText(
+                            QStringLiteral("NET %1 | DEC %2 fps")
+                                .arg(net_fps)
+                                .arg(decoded_fps));
                     }
                 });
 

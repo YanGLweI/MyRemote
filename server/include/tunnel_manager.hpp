@@ -62,6 +62,12 @@ public:
 
     std::vector<DeviceInfo> online_devices() const;
 
+    // Video frames forwarded from session threads since the last call
+    // (network arrival rate, independent of GUI decode speed).
+    uint64_t exchange_video_frames_in() {
+        return video_frames_in_.exchange(0);
+    }
+
 signals:
     void device_registered(QString device_id, QString device_name, int width,
                            int height);
@@ -87,6 +93,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread reaper_thread_;
+    std::atomic<uint64_t> video_frames_in_{0};
     crypto::AesGcm aes_;
     std::mutex auth_mutex_;
     std::unordered_map<std::string, std::pair<std::vector<uint8_t>, std::string>>
