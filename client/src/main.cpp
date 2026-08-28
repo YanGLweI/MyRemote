@@ -145,8 +145,10 @@ bool establish_session(const config::ClientConfig& cfg, const std::string& dev_i
 
 void stream_loop() {
     CapturedFrame frame;
+    bool logged_first = false;
     while (g_state.running.load()) {
         if (!g_state.streaming.load() || !g_connection->is_connected()) {
+            logged_first = false;
             Sleep(100);
             continue;
         }
@@ -164,6 +166,13 @@ void stream_loop() {
                     seq, frame.timestamp_us, frame.is_keyframe,
                     frame.h264_data.data(), frame.h264_data.size());
                 g_connection->send(proto::MessageType::VideoFrame, payload);
+                if (!logged_first) {
+                    logged_first = true;
+                    mlog::info("Streaming active: first frame " +
+                               std::to_string(frame.h264_data.size()) + " bytes, " +
+                               std::to_string(frame.width) + "x" +
+                               std::to_string(frame.height));
+                }
             }
         }
     }

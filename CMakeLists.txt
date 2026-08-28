@@ -24,6 +24,14 @@ endif()
 set(OPENSSL_USE_STATIC_LIBS TRUE)
 find_package(OpenSSL REQUIRED)
 
+# OpenH264 (via vcpkg static triplet)
+set(VCPKG_STATIC_ROOT "C:/vcpkg/installed/x64-windows-static"
+    CACHE PATH "vcpkg x64-windows-static installed tree")
+add_library(openh264 STATIC IMPORTED)
+set_target_properties(openh264 PROPERTIES
+    IMPORTED_LOCATION "${VCPKG_STATIC_ROOT}/lib/openh264.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${VCPKG_STATIC_ROOT}/include")
+
 include_directories(
     ${CMAKE_SOURCE_DIR}/common/include
     ${CMAKE_SOURCE_DIR}/client/include
@@ -61,7 +69,7 @@ if(BUILD_CLIENT)
         ${WINDOWS_SYS_LIBS}
         iphlpapi
         d3d11 dxgi dwmapi
-        mfplat mfreadwrite mfuuid runtimeobject
+        openh264
     )
     set_target_properties(agent PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -88,8 +96,8 @@ if(BUILD_SERVER)
         common_lib
         Qt6::Widgets
         ${WINDOWS_SYS_LIBS}
-        mfplat mfreadwrite mfuuid runtimeobject
         d3d11 dxgi
+        openh264
     )
     set_target_properties(control_server PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

@@ -61,8 +61,16 @@ public:
         side_panel->setFixedWidth(340);
         root_layout->addWidget(side_panel);
 
-        // Right: remote desktop view.
-        root_layout->addWidget(&renderer_, 1);
+        // Right: remote desktop view with FPS overlay.
+        auto* right_panel = new QWidget();
+        auto* right_layout = new QVBoxLayout(right_panel);
+        right_layout->setContentsMargins(0, 0, 0, 0);
+        fps_label_ = new QLabel(QStringLiteral("FPS: --"));
+        fps_label_->setAlignment(Qt::AlignRight);
+        fps_label_->setStyleSheet("color: #2E8B57; font-weight: bold;");
+        right_layout->addWidget(fps_label_);
+        right_layout->addWidget(&renderer_, 1);
+        root_layout->addWidget(right_panel, 1);
 
         statusBar()->showMessage(QStringLiteral("Ready"), 0);
 
@@ -89,7 +97,17 @@ public:
         connect(controller_.get(), &RemoteController::control_stopped, this,
                 [this]() {
                     stop_button_->setEnabled(false);
+                    fps_label_->setText(QStringLiteral("FPS: --"));
                     statusBar()->showMessage(QStringLiteral("Ready"), 0);
+                });
+        connect(tunnels_.get(), &TunnelManager::video_frame_received,
+                controller_.get(), &RemoteController::on_video_frame);
+        connect(controller_.get(), &RemoteController::fps_updated, this,
+                [this](float fps) {
+                    if (controller_->is_controlling()) {
+                        fps_label_->setText(QStringLiteral("FPS: %1").arg(
+                            static_cast<double>(fps), 0, 'f', 0));
+                    }
                 });
 
         if (!tunnels_->start(cfg.bind_address, cfg.listening_port)) {
@@ -140,6 +158,7 @@ private:
     DeviceListWidget* device_list_ = nullptr;
     DisplayRenderer renderer_;
     QPushButton* stop_button_ = nullptr;
+    QLabel* fps_label_ = nullptr;
 };
 
 }  // namespace

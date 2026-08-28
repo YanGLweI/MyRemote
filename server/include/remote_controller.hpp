@@ -30,6 +30,7 @@ public:
 signals:
     void control_started(QString device_id);
     void control_stopped();
+    void fps_updated(float fps);
 
 public slots:
     void on_video_frame(QString device_id, QByteArray payload);
@@ -40,4 +41,5 @@ private:
     H264Decoder decoder_;
     std::optional<std::string> controlled_;
     std::atomic<uint64_t> frames_received_{0};
+    std::atomic<long long> last_good_frame_ms_{0};
 };
