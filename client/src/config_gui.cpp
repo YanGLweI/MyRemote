@@ -341,11 +341,19 @@ void on_save(HWND hwnd) {
         return;
     }
     g_cfg->saved = true;
-    MessageBoxW(hwnd,
-                (L"配置已保存到：" + wide(g_cfg->config_path) +
-                 L"\r\n\r\n直接运行 agent.exe 即可连接服务端。")
-                    .c_str(),
-                L"MyRemote 配置", MB_OK | MB_ICONINFORMATION);
+    if (g_cfg->run_after_save) {
+        MessageBoxW(hwnd,
+                    (L"配置已保存到：" + wide(g_cfg->config_path) +
+                     L"\r\n\r\nagent 将在后台运行并注册到服务端。")
+                        .c_str(),
+                    L"MyRemote 配置", MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxW(hwnd,
+                    (L"配置已保存到：" + wide(g_cfg->config_path) +
+                     L"\r\n\r\n直接运行 agent.exe 即可连接服务端。")
+                        .c_str(),
+                    L"MyRemote 配置", MB_OK | MB_ICONINFORMATION);
+    }
     DestroyWindow(hwnd);
 }
 
@@ -410,9 +418,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                          reinterpret_cast<WPARAM>(g_font), TRUE);
             y += px(66) + px(kGap);
 
-            make_button(hwnd, IDC_BTN_SAVE, L"保存", px(kMargin), y, 90);
-            make_button(hwnd, IDC_BTN_CANCEL, L"取消", px(kMargin) + px(100), y,
-                        90);
+            bool run_mode = g_cfg && g_cfg->run_after_save;
+            make_button(hwnd, IDC_BTN_SAVE,
+                        run_mode ? L"保存并后台运行" : L"保存", px(kMargin), y,
+                        run_mode ? 140 : 90);
+            make_button(hwnd, IDC_BTN_CANCEL, L"取消",
+                        px(kMargin) + (run_mode ? px(150) : px(100)), y, 90);
             y += px(30) + px(kGap) + px(2);
 
             HWND file_label = CreateWindowExW(

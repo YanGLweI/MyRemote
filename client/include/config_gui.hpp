@@ -12,6 +12,7 @@ struct ConfigUi {
     std::string device_name;
     std::string control_password;
     std::string config_path;  // shown read-only; where Save writes to
+    bool run_after_save = false;  // double-click flow: agent loop starts after save
     bool saved = false;       // true when the user pressed Save
 };
 

@@ -3,6 +3,7 @@
 // The client never listens or accepts connections (one-way network rule).
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <atomic>
@@ -212,6 +213,7 @@ namespace {
 struct Args {
     bool console = false;
     bool config_ui = false;
+    bool background = false;
     bool install_autostart = false;
     bool uninstall_autostart = false;
     std::string ip_override;
@@ -247,6 +249,7 @@ Args parse_command_line() {
 
     args.console = has_flag("--console");
     args.config_ui = has_flag("--config-ui");
+    args.background = has_flag("--background");
     args.install_autostart = has_flag("--install-autostart");
     args.uninstall_autostart = has_flag("--uninstall-autostart");
     args.ip_override = get_value("--ip");
@@ -261,6 +264,46 @@ Args parse_command_line() {
 }  // namespace
 
 namespace {
+// Terminates other running copies of this exact executable so a freshly
+// configured instance can take over (config changes need a reconnect).
+void kill_other_agent_instances() {
+    wchar_t my_path[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, my_path, MAX_PATH);
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, L"agent.exe") != 0 ||
+                pe.th32ProcessID == GetCurrentProcessId()) {
+                continue;
+            }
+            HANDLE proc = OpenProcess(
+                PROCESS_TERMINATE | SYNCHRONIZE |
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE, pe.th32ProcessID);
+            if (!proc) {
+                continue;
+            }
+            wchar_t path[MAX_PATH] = {};
+            DWORD len = MAX_PATH;
+            if (QueryFullProcessImageNameW(proc, 0, path, &len) &&
+                _wcsicmp(path, my_path) == 0) {
+                TerminateProcess(proc, 0);
+                WaitForSingleObject(proc, 2000);
+            }
+            CloseHandle(proc);
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+}
+}  // namespace
+
+namespace {
 void set_autostart(bool enable) {
     HKEY key;
     if (RegOpenKeyExA(HKEY_CURRENT_USER,
@@ -271,7 +314,7 @@ void set_autostart(bool enable) {
     if (enable) {
         char path[MAX_PATH] = {};
         GetModuleFileNameA(nullptr, path, MAX_PATH);
-        std::string cmd = std::string("\"") + path + "\"";
+        std::string cmd = std::string("\"") + path + "\" --background";
         RegSetValueExA(key, "MyRemoteAgent", 0, REG_SZ,
                        reinterpret_cast<const BYTE*>(cmd.c_str()),
                        static_cast<DWORD>(cmd.size() + 1));
@@ -293,7 +336,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 0;
     }
 
-    if (args.config_ui) {
+    // Double-click (no --background) opens the configuration GUI; after
+    // "save and run" this same process continues as the background agent.
+    if (args.config_ui || !args.background) {
         std::string dir = exe_dir();
         std::string config_path = args.config_path.empty()
                                       ? dir + "/config.json"
@@ -306,7 +351,15 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         ui.device_name = current.device_name;
         ui.control_password = current.control_password;
         ui.config_path = config_path;
-        return gui::run_config_gui(ui) ? 0 : 1;
+        ui.run_after_save = !args.config_ui;
+        bool saved = gui::run_config_gui(ui);
+        if (args.config_ui) {
+            return saved ? 0 : 1;
+        }
+        if (!saved) {
+            return 0;
+        }
+        kill_other_agent_instances();
     }
 
     if (args.console) {
@@ -329,6 +382,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     std::string dev_id = device::make_device_id();
     mlog::info("Device id: " + dev_id + ", target server: " + cfg.server_ip + ":" +
               std::to_string(cfg.server_port));
+
+    HANDLE single_instance =
+        CreateMutexW(nullptr, TRUE, L"MyRemoteAgent_SingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        mlog::error("Another agent instance is already running, exiting");
+        return 1;
+    }
+    (void)single_instance;
 
     g_capturer = std::make_unique<DesktopCapturer>();
     if (!g_capturer->initialize(0)) {
