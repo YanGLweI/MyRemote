@@ -62,22 +62,49 @@ cmake --build build --config Release
 ## 使用
 
 1. 服务端：将 `deploy/server_config.json` 放到 `control_server.exe` 同目录（可省略，使用默认端口 7500 / 默认密钥），运行。
-2. 客户端：把 `agent.exe` 拷到目标电脑，**直接双击运行**即打开图形配置界面，填写服务器地址/端口/连接密钥，可点“测试连接并注册”验证；点“保存并后台运行”后 agent 自动转入后台并注册到服务端。仅改配置不启动：`agent.exe --config-ui`。开机自启：`agent.exe --install-autostart`（卸载 `--uninstall-autostart`）注册**最高权限**计划任务，登录后即以管理员权限静默运行（需在管理员命令行下执行一次）。调试窗口：`agent.exe --console --background`。
-3. 控制端双击在线设备 → 输入该设备的控制密码（客户端未设置则留空）→ 查看/操作远程桌面。
+2. 客户端：把 `agent.exe` 拷到目标电脑，**直接双击运行**即打开图形配置界面，填写服务器地址/端口/连接密钥，可点“测试连接并注册”验证；点“保存并后台运行”后 agent 自动转入后台并注册到服务端。仅改配置不启动：`agent.exe --config-ui`。调试窗口：`agent.exe --console --background`。
+3. **推荐安装为服务**（唯一能在无人登录时工作的形态）：`agent.exe --install-service`。服务以 LocalSystem 自启（延迟启动），在控制台会话里托管一个采集/注入进程，因此机器停在登录界面时也能远程查看并远程输入密码登录 Windows。配置读写位置改为 `%ProgramData%\MyRemote\config.json`（普通用户可写，便于现场改配置）；装了服务之后再双击 `agent.exe` 只会打开这份配置后退出，不会建立第二条隧道（排障需要强行接管用 `--force`）。配套命令：`--uninstall-service`、`--start-service`、`--stop-service`、`--service-state`（打印服务状态、会话解析结果与宿主实时状态）。
+4. 不能装服务的机器可退回登录计划任务：`agent.exe --install-autostart`（卸载 `--uninstall-autostart`）注册**最高权限**计划任务，登录后以管理员权限静默运行；它做不到服务能做的“无人登录时可用”。`--install-service` 会自动删掉这个遗留任务，避免两个 agent 抢同一个设备号。
+5. 控制端双击在线设备 → 输入该设备的控制密码（客户端未设置则留空）→ 查看/操作远程桌面。
 
-> 任务管理器、UAC 弹窗、管理员控制台等提权窗口只接受来自提权进程的注入输入（UIPI）。以普通权限运行的 agent 在设备列表中标注 `〔受限〕`：可远程操作普通窗口，但点不动提权窗口。在目标机托盘图标右键选“以管理员身份重启”即可接管。
+> 任务管理器、UAC 弹窗、管理员控制台等提权窗口只接受来自提权进程的注入输入（UIPI）。以普通权限运行的 agent 在设备列表中标注 `〔受限〕`：可远程操作普通窗口，但点不动提权窗口。在目标机托盘图标右键选“以管理员身份重启”即可接管；**装成服务后不存在这个问题**（宿主以 SYSTEM 运行，高于任何提权窗口）。
+>
+> 其余徽章：`〔服务〕`由 MyRemoteAgent 服务托管；`〔登录界面〕`对端此刻正停在登录/凭据界面，可以直接远程输密码；`〔非控制台〕`该会话没接在物理显示器上（典型原因是 RDP 客户端被关掉），点 “Attach to console” 拉回来。想主动回到登录界面输密码，点“返回登录界面”（锁定工作站）。注意 **Ctrl+Alt+Del 无法被注入**：若该机策略要求先按 Ctrl+Alt+Del 才出现登录框（`DisableCAD=0`），这一页远程点不动，请将该值设为 1。
 
 客户端与服务端的 `secret_key` 必须一致，否则注册被拒。
 
 ## 部署形态
 
-- 客户端普通进程 + 最高权限登录计划任务自启 + 无控制台窗口（后台静默）
-- 不使用 Windows 服务（Session 0 无法捕获交互桌面）
-- 客户端仅出站连接，本机不监听任何端口
+- **两个进程，一个二进制**：`agent.exe --service`（LocalSystem，Session 0）只做监管——不联网、不碰 GDI、不弹界面；它把唯一一个 `agent.exe --session-host` 用复制的 SYSTEM 令牌投放到**当前持有物理控制台的那个会话**里（`Winsta0\Default`）。
+- 宿主按名字跟随真实输入桌面（`Default` ⇄ `Winlogon` ⇄ `SAC-Desktop`），所以登录界面与 UAC 同意框都能看、能打；它从不调用 `SwitchDesktop`——那会把显示器从现场用户手里抢走。
+- 隧道与设备身份归**宿主**：服务从不建立连接，手工启动的 agent 检测到服务已装就让位，因此一台机器永远只有一行设备。
+- 仍然只出站：客户端不监听、不 accept，控制端地址由被控机主动连出。
+- Session 0 本身确实无法捕获交互桌面，早期因此放弃了服务形态；正确解法不是不用服务，而是让服务只当_launcher_，采集放在控制台会话里。
+
+## 开发循环
+
+服务装在哪个路径就跑哪个 exe（`binPath` 取自 `GetModuleFileNameW`），所以可以直接从 build 树安装、改完就重装：
+
+```bat
+build\bin\Release\agent.exe --stop-service       REM 先释放 agent.exe，否则 LNK1168
+cmake --build build --config Release --target agent
+build\bin\Release\agent.exe --install-service    REM ChangeServiceConfigW 重指 binPath 并启动
+build\bin\Release\agent.exe --service-state
+```
+
+只改宿主逻辑时可以完全绕开服务：`agent.exe --background --console`。
 
 ## 已知限制
 
 - 串流为 CPU 软件编码，帧率上限取决于被控机自身开销：同一 3400×1812 桌面，1920 档实测本机 30fps（采集 20ms+编码 10ms）、弱机仅 2fps（采集 170ms+编码 250ms），画质档位里的 1280 上限即为此准备；后续可换 GPU 缩放/编码
 - 服务端解码已移出 GUI 线程（独立解码线程 + 单槽最新帧），帧率显示区分 NET（收包）与 DEC（解码）
-- DXGI 复制的纹理不含硬件指针，因此远程画面里的箭头由控制端本地回显；远端有人自己移动鼠标时该箭头不会跟随
+- DXGI 复制的纹理不含硬件指针，远程画面里看不到对端的箭头；曾试过在控制端本地回显，但每次鼠标移动都触发整帧重绘、操作明显变迟钝，已撤销
+- 登录界面相关（M14）的能力边界：
+  - 预启动/BitLocker PIN/BSOD/固件层不可达——服务还没开始运行，需要 iDRAC/iLO/虚拟机控制台
+  - Ctrl+Alt+Del **无法**被注入（系统硬性限制）。开机后/锁屏后的欢迎界面本身就是安全桌面且已聚焦密码框，远程输密码登录不需要它；但若策略 `DisableCAD=0` 要求先按 Ctrl+Alt+Del，那一页远程点不动，请设为 1
+  - 开启 Fast Startup 的机器在“关机再开机”后服务启动较晚（延迟自启 + 网络就绪 + 退避），设备会有约一分钟的离线窗口；建议用重启
+  - 登录/注销/快速用户切换/宿主崩溃时设备行会闪断，服务在 ≤2 秒内拉起新宿主
+  - 设置了 `WDA_EXCLUDEFROMCAPTURE` 的窗口与硬件保护视频流仍捕获为黑色；指纹/人脸/安全密钥类 Windows Hello 需要本地硬件
+  - 多显示器只采集主屏；登录界面固定在主屏，因此不是新增的退化
+  - `%ProgramData%\MyRemote\config.json` 允许本机普通用户写（保住“双击改配置”的流程），代价是任何本地用户都能改服务器地址与控制密码——这与 M14 之前“任何人都能跑 agent.exe --config”的暴露面相同。若要收紧，改成仅管理员可写并让配置框自提权
 - DXGI 桌面复制在部分虚拟机/远程会话下不可用时自动降级 BitBlt

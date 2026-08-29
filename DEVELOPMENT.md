@@ -2,6 +2,10 @@
 
 本文档详细说明各个模块的实现细节、扩展方法和优化策略。
 
+> **以代码为准**：本文写作时间早于 M1–M14 的落地过程，其中的 Protobuf/ECDH/FFmpeg/OpenGL 等描述并未采用。
+> 现状见 `README.md`（架构与部署）、`common/include/messages.hpp`（协议）、`client/src/service.cpp`
+> 与 `client/src/main.cpp`（服务 + 会话宿主）。
+
 ## 目录结构详解
 
 ### 公共库 (`common/`)

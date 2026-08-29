@@ -2,6 +2,11 @@
 
 This document provides detailed instructions for building MyRemote Control on Windows.
 
+> **部分内容已过时**：本文件的若干章节（Protobuf、FFmpeg/MediaFoundation、OpenGL）写于选型变更之前。
+> 当前实现是 **OpenH264 软编码 + DXGI 桌面复制（BitBlt 回退）+ 手写二进制分帧协议 + Qt Widgets 控制端**，
+> 请以 [README.md](README.md) 的构建章节与代码（`CMakeLists.txt`）为准；本文件只在 Visual Studio/CMake
+> 安装步骤和故障排查框架上仍然有用。
+
 ## Prerequisites Installation
 
 ### 1. Visual Studio 2022 (Required)
@@ -236,12 +241,20 @@ cmake .. \
 
 ### Client Installation
 
-1. Copy `agent.exe` from `build/bin/Release/` to target machine
-2. Optionally register as Windows service:
+1. Copy `agent.exe` from `build/bin/Release/` to target machine (the service
+   registers whatever path the installer runs from, so copy it first)
+2. To run as a Windows service, use the agent's own installer:
    ```cmd
-   sc create MyRemoteAgent binPath="C:\path\to\agent.exe"
-   sc start MyRemoteAgent
+   agent.exe --install-service
+   agent.exe --service-state
+   agent.exe --stop-service
+   agent.exe --uninstall-service
    ```
+   Do **not** use `sc create MyRemoteAgent binPath="...\agent.exe"`: without the
+   `--service` argument the process cannot attach to the service control
+   manager and the SCM kills it with error 1053. `--install-service` also sets
+   delayed auto-start, failure actions, the `%ProgramData%\MyRemote` layout and
+   removes the legacy logon task.
 
 ### Server Installation
 
