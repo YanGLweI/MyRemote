@@ -7,6 +7,14 @@
 #include "messages.hpp"
 #include "tunnel_manager.hpp"
 
+const QualityPreset kQualityPresets[] = {
+    {"流畅 (30fps/1.5M/1280)", 30, 1500, 1280},
+    {"均衡 (30fps/2M/1920)", 30, 2048, 1920},
+    {"清晰 (60fps/6M/设备上限)", 60, 6000, 0},
+};
+const int kQualityPresetCount =
+    static_cast<int>(sizeof(kQualityPresets) / sizeof(kQualityPresets[0]));
+
 RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& renderer,
                                    QObject* parent)
     : QObject(parent), tunnels_(tunnels), renderer_(renderer), pipeline_(renderer) {
@@ -46,7 +54,8 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
 
     auto* fps_timer = new QTimer(this);
     connect(fps_timer, &QTimer::timeout, this, [this]() {
-        int net = static_cast<int>(tunnels_.exchange_video_frames_in());
+        int net = static_cast<int>(
+            tunnels_.exchange_frames_in(controlled_device()));
         int dec = static_cast<int>(pipeline_.exchange_decoded());
         emit fps_updated(net, dec);
     });
@@ -106,7 +115,7 @@ bool RemoteController::do_start(const std::string& device_id) {
     request_keyframe();
 
     set_controlled(device_id);
-    tunnels_.exchange_video_frames_in();
+    tunnels_.exchange_frames_in(device_id);
     mlog::info("Control session started: " + device_id);
     emit control_started(QString::fromStdString(device_id));
     return true;

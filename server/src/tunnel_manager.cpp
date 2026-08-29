@@ -251,7 +251,7 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                         break;
                     }
                     case proto::MessageType::VideoFrame:
-                        video_frames_in_.fetch_add(1);
+                        session->frames_in.fetch_add(1);
                         emit video_frame_received(
                             QString::fromStdString(session->device_id),
                             QByteArray(reinterpret_cast<const char*>(
@@ -501,6 +501,19 @@ bool TunnelManager::roster_for(const std::string& device_id,
         *out = it->second;
     }
     return true;
+}
+
+uint64_t TunnelManager::exchange_frames_in(const std::string& device_id) {
+    std::shared_ptr<ClientSession> session;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = sessions_.find(device_id);
+        if (it == sessions_.end()) {
+            return 0;
+        }
+        session = it->second;
+    }
+    return session->frames_in.exchange(0);
 }
 
 DeviceState TunnelManager::note_state_locked(const std::string& device_id,

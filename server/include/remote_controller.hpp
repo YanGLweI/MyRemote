@@ -12,6 +12,19 @@ class DisplayRenderer;
 class QTimer;
 class TunnelManager;
 
+// One entry per picker row. max_encode_width 0 means "whatever the device's own
+// preset says", which is what the sharpest tier deliberately does.
+struct QualityPreset {
+    const char* label;
+    uint8_t fps;
+    uint16_t bitrate_kbps;
+    uint16_t max_encode_width;
+};
+
+extern const QualityPreset kQualityPresets[];
+extern const int kQualityPresetCount;
+constexpr int kQualityDefault = 1;
+
 // Drives one active control session over an existing client tunnel.
 class RemoteController : public QObject {
     Q_OBJECT

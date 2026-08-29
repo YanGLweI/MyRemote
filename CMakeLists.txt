@@ -87,6 +87,9 @@ if(BUILD_SERVER)
     add_executable(control_server WIN32
         server/src/main.cpp
         server/src/main_window.cpp
+        server/src/sessions_area.cpp
+        server/src/session_view.cpp
+        server/src/session_toolbar.cpp
         server/src/listener.cpp
         server/src/tunnel_manager.cpp
         server/src/display_renderer.cpp
@@ -97,6 +100,9 @@ if(BUILD_SERVER)
         # Q_OBJECT headers must be listed so AUTOMOC generates their moc files
         server/include/tunnel_manager.hpp
         server/include/main_window.hpp
+        server/include/sessions_area.hpp
+        server/include/session_view.hpp
+        server/include/session_toolbar.hpp
         server/include/device_list.hpp
         server/include/display_renderer.hpp
         server/include/remote_controller.hpp

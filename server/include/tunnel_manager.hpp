@@ -40,6 +40,9 @@ struct ClientSession {
     std::atomic<long long> last_heartbeat_ms{0};
     std::atomic<bool> registered{false};
     std::atomic<bool> alive{true};
+    // Network arrival rate for this tunnel only, so each open session can
+    // report its own NET fps.
+    std::atomic<uint64_t> frames_in{0};
     std::mutex send_mutex;
 };
 
@@ -85,11 +88,9 @@ public:
     // which no longer holds a device during the reconnect window.
     bool roster_for(const std::string& device_id, DeviceInfo* out) const;
 
-    // Video frames forwarded from session threads since the last call
-    // (network arrival rate, independent of GUI decode speed).
-    uint64_t exchange_video_frames_in() {
-        return video_frames_in_.exchange(0);
-    }
+    // Video frames forwarded from this device's session thread since the last
+    // call: the network arrival rate, independent of GUI decode speed.
+    uint64_t exchange_frames_in(const std::string& device_id);
 
 signals:
     void device_registered(QString device_id, QString device_name, int width,
@@ -122,7 +123,6 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread reaper_thread_;
-    std::atomic<uint64_t> video_frames_in_{0};
     crypto::AesGcm aes_;
     std::mutex auth_mutex_;
     std::unordered_map<std::string, std::pair<std::vector<uint8_t>, std::string>>
