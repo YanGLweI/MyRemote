@@ -94,6 +94,7 @@ private:
     mutable std::mutex mutex_;
     bool use_bitblt_ = false;
     bool logged_no_desktop_ = false;
+    bool logged_duplication_denied_ = false;
     ULONGLONG next_dxgi_retry_ms_ = 0;
     int staging_width_ = 0;
     int staging_height_ = 0;

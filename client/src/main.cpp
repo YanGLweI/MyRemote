@@ -221,15 +221,17 @@ void log_session_state() {
     mlog::info(msg);
 }
 
-// Any second copy of this exact image would fight for the tunnel and the
-// single-instance mutex, so the process that is allowed to run retires the
-// others: the elevated copy for the limited one, the service host for anything
-// started by hand.
+// Any second copy of this exact image in this session would fight for the
+// tunnel and the single-instance mutex. The scan is deliberately limited to
+// the caller's own session: the service and its host share one image path, and
+// a host that killed its own supervisor would be restarted by the SCM forever.
 bool retire_same_path_instances() {
     wchar_t self_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, self_path, MAX_PATH)) {
         return false;
     }
+    DWORD own_session = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &own_session);
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) {
         return false;
@@ -240,6 +242,11 @@ bool retire_same_path_instances() {
     for (BOOL ok = Process32FirstW(snap, &entry); ok;
          ok = Process32NextW(snap, &entry)) {
         if (entry.th32ProcessID == GetCurrentProcessId()) {
+            continue;
+        }
+        DWORD other_session = 0;
+        if (!ProcessIdToSessionId(entry.th32ProcessID, &other_session) ||
+            other_session != own_session) {
             continue;
         }
         HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |

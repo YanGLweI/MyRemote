@@ -71,12 +71,18 @@ bool DesktopCapturer::init_duplication(int monitor_index) {
 
     hr = output1->DuplicateOutput(device_.Get(), &duplication_);
     if (FAILED(hr)) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "DuplicateOutput failed: 0x%08lX",
+        char msg[80];
+        snprintf(msg, sizeof(msg), "Desktop Duplication refused: 0x%08lX",
                  static_cast<unsigned long>(hr));
-        mlog::error(msg);
+        // On the secure desktop this is refused outright and retrying does not
+        // change it, so say it once per desktop instead of every 3s.
+        if (!logged_duplication_denied_) {
+            logged_duplication_denied_ = true;
+            mlog::warn(msg);
+        }
         return false;
     }
+    logged_duplication_denied_ = false;
 
     DXGI_OUTDUPL_DESC desc{};
     duplication_->GetDesc(&desc);
@@ -125,12 +131,14 @@ void DesktopCapturer::apply_encode_size() {
     // I420 needs even dimensions; the encoder needs a minimum size.
     w = w < kMinEncodeDimension ? kMinEncodeDimension : (w & ~1);
     h = h < kMinEncodeDimension ? kMinEncodeDimension : (h & ~1);
+    const int prev_w = encode_width_;
+    const int prev_h = encode_height_;
     encode_width_ = w;
     encode_height_ = h;
     config_.width = w;
     config_.height = h;
     prepare_resampling(source_width_, source_height_, w, h);
-    if (w != source_width_ || h != source_height_) {
+    if ((w != prev_w || h != prev_h) && (w != source_width_ || h != source_height_)) {
         mlog::info("Encode size " + std::to_string(w) + "x" + std::to_string(h) +
                    " (desktop " + std::to_string(source_width_) + "x" +
                    std::to_string(source_height_) + ")");
@@ -374,6 +382,7 @@ void DesktopCapturer::on_desktop_switched() {
     encode_width_ = 0;
     encode_height_ = 0;
     logged_no_desktop_ = false;
+    logged_duplication_denied_ = false;
     next_dxgi_retry_ms_ = 0;  // a desktop hop is exactly when recovery is due
     staging_.Reset();
     duplication_.Reset();

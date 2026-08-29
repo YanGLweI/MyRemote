@@ -263,6 +263,15 @@ VOID WINAPI service_main(DWORD, LPWSTR*) {
     }
     CreateDirectoryW(dir.c_str(), nullptr);
     mlog::init(win32util::wide_to_utf8((dir + L"\\service.log").c_str()));
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* info) -> LONG {
+        char line[160];
+        snprintf(line, sizeof(line),
+                 "UNHANDLED EXCEPTION code=0x%08lX at %p",
+                 static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+                 info->ExceptionRecord->ExceptionAddress);
+        mlog::error(line);
+        return EXCEPTION_EXECUTE_HANDLER;
+    });
     mlog::info("MyRemote agent service starting");
     // SeTcbPrivilege is what lets this process move a token into another
     // session; SeDebugPrivilege is what lets it retire a stray agent.
@@ -552,8 +561,13 @@ std::string query() {
     }
     out += "  console session: " +
            std::to_string(win32util::resolve_console_session(false)) + "\n";
-    std::wstring status_file =
-        win32util::program_data_dir() + L"\\host.status";
+    // Same resolution order the host itself used, otherwise the status file is
+    // looked for in the wrong place on a build-tree install.
+    std::string log_dir = win32util::resolve_paths(std::string()).log_dir;
+    if (log_dir.empty()) {
+        return out;
+    }
+    std::wstring status_file = win32util::utf8_to_wide(log_dir + "\\host.status");
     std::string text;
     if (HANDLE file = CreateFileW(status_file.c_str(), GENERIC_READ,
                                   FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
