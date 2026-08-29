@@ -12,6 +12,10 @@ namespace {
 constexpr long long kHeartbeatTimeoutMs = 3000;
 constexpr long long kRegisterDeadlineMs = 10000;
 constexpr int kRecvTimeoutMs = 500;
+// The agent retries on a 1s backoff and the service relaunches its host in
+// about 2s, so 30s of silence is a machine that is really not coming back.
+constexpr long long kReconnectGraceMs = 30000;
+constexpr long long kRosterPruneMs = 30 * 60 * 1000;
 
 long long steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -361,6 +365,8 @@ bool TunnelManager::register_session(const std::shared_ptr<ClientSession>& sessi
         auto existing = sessions_.find(info.device_id);
         if (existing != sessions_.end() && existing->second != session) {
             // Same device re-registering (reconnect): retire the old tunnel.
+            // Erasing it here is also what tells that session's thread, when it
+            // finally wakes up, that its departure is not news anymore.
             auto old = existing->second;
             old->alive.store(false);
             if (old->socket != INVALID_SOCKET) {
@@ -370,6 +376,17 @@ bool TunnelManager::register_session(const std::shared_ptr<ClientSession>& sessi
             sessions_.erase(existing);
         }
         sessions_[info.device_id] = session;
+
+        note_state_locked(info.device_id, DeviceState::Live);
+        DeviceInfo& entry = roster_[info.device_id];
+        entry.device_name = session->device_name;
+        entry.peer_ip = session->peer_ip;
+        entry.screen_width = session->screen_width;
+        entry.screen_height = session->screen_height;
+        entry.elevated = session->elevated;
+        entry.elevation_known = session->elevation_known;
+        entry.flags = session->flags;
+        entry.connect_time = session->connect_time;
     }
 
     session->registered.store(true);
@@ -388,15 +405,29 @@ void TunnelManager::remove_session(const std::shared_ptr<ClientSession>& session
     if (!session->registered.exchange(false)) {
         return;
     }
+    DeviceState previous = DeviceState::Offline;
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
         auto it = sessions_.find(session->device_id);
-        if (it != sessions_.end() && it->second == session) {
+        if (it != sessions_.end() && it->second != session) {
+            // A newer tunnel already took this device over. The registration
+            // order is Live(new) then this late teardown, and honouring it would
+            // mark a live device as reconnecting - which is the flicker this
+            // function used to cause on every flapping connection.
+            return;
+        }
+        if (it != sessions_.end()) {
             sessions_.erase(it);
         }
+        previous = note_state_locked(session->device_id, DeviceState::Reconnecting);
     }
-    mlog::info("Device unregistered: " + session->device_id);
-    emit device_unregistered(QString::fromStdString(session->device_id));
+    if (previous == DeviceState::Reconnecting || previous == DeviceState::Offline) {
+        return;  // already announced, and nothing about the row changed
+    }
+    mlog::info("Device " + session->device_id +
+              " tunnel closed; the row stays as reconnecting");
+    emit device_state_changed(QString::fromStdString(session->device_id),
+                              static_cast<int>(DeviceState::Reconnecting));
 }
 
 bool TunnelManager::send_to_device(const std::string& device_id,
@@ -440,24 +471,51 @@ bool TunnelManager::send_to_device(const std::string& device_id,
 std::vector<TunnelManager::DeviceInfo> TunnelManager::online_devices() const {
     std::lock_guard<std::mutex> lock(pool_mutex_);
     std::vector<DeviceInfo> result;
-    result.reserve(sessions_.size());
-    for (const auto& [id, session] : sessions_) {
-        if (!session->registered.load()) {
-            continue;
+    result.reserve(roster_.size());
+    for (const auto& [id, info] : roster_) {
+        if (info.state == DeviceState::Live) {
+            result.push_back(info);
         }
-        DeviceInfo info;
-        info.device_id = session->device_id;
-        info.device_name = session->device_name;
-        info.peer_ip = session->peer_ip;
-        info.screen_width = session->screen_width;
-        info.screen_height = session->screen_height;
-        info.elevated = session->elevated;
-        info.elevation_known = session->elevation_known;
-        info.flags = session->flags;
-        info.connect_time = session->connect_time;
-        result.push_back(std::move(info));
     }
     return result;
+}
+
+std::vector<TunnelManager::DeviceInfo> TunnelManager::roster() const {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    std::vector<DeviceInfo> result;
+    result.reserve(roster_.size());
+    for (const auto& [id, info] : roster_) {
+        result.push_back(info);
+    }
+    return result;
+}
+
+bool TunnelManager::roster_for(const std::string& device_id,
+                               DeviceInfo* out) const {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = roster_.find(device_id);
+    if (it == roster_.end()) {
+        return false;
+    }
+    if (out) {
+        *out = it->second;
+    }
+    return true;
+}
+
+DeviceState TunnelManager::note_state_locked(const std::string& device_id,
+                                             DeviceState state) {
+    auto it = roster_.find(device_id);
+    if (it == roster_.end()) {
+        DeviceInfo info;
+        info.device_id = device_id;
+        it = roster_.emplace(device_id, std::move(info)).first;
+    }
+    const DeviceState previous = it->second.state;
+    it->second.state = state;
+    it->second.last_seen_ms = steady_now_ms();
+    it->second.last_seen_time = std::time(nullptr);
+    return previous;
 }
 
 void TunnelManager::reaper_loop() {
@@ -465,6 +523,7 @@ void TunnelManager::reaper_loop() {
         Sleep(1000);
         long long now = steady_now_ms();
 
+        std::vector<std::string> gone_offline;
         std::vector<std::shared_ptr<ClientSession>> expired;
         {
             std::lock_guard<std::mutex> lock(pool_mutex_);
@@ -474,6 +533,25 @@ void TunnelManager::reaper_loop() {
                     expired.push_back(session);
                 }
             }
+            for (auto& [id, info] : roster_) {
+                if (info.state == DeviceState::Reconnecting &&
+                    now - info.last_seen_ms > kReconnectGraceMs) {
+                    info.state = DeviceState::Offline;
+                    gone_offline.push_back(id);
+                }
+            }
+            for (auto it = roster_.begin(); it != roster_.end();) {
+                if (it->second.state == DeviceState::Offline &&
+                    now - it->second.last_seen_ms > kRosterPruneMs) {
+                    it = roster_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (const auto& id : gone_offline) {
+            emit device_state_changed(QString::fromStdString(id),
+                                      static_cast<int>(DeviceState::Offline));
         }
         for (auto& session : expired) {
             mlog::warn("Device " + session->device_id +

@@ -17,6 +17,15 @@
 #include "listener.hpp"
 #include "messages.hpp"
 
+// What the operator's roster row should say. A device is never dropped from the
+// roster because its tunnel blinked: the agent is designed to come back, and a
+// row that disappears and re-appears reads as a broken console.
+enum class DeviceState : int {
+    Live = 0,         // registered tunnel right now
+    Reconnecting = 1, // tunnel gone moments ago, expecting it back
+    Offline = 2,      // still not back; last known details only
+};
+
 struct ClientSession {
     SOCKET socket = INVALID_SOCKET;
     std::string device_id;
@@ -50,6 +59,9 @@ public:
         bool elevation_known = false;
         uint8_t flags = 0;  // proto::kRegisterFlag* / kFlag*
         time_t connect_time = 0;
+        DeviceState state = DeviceState::Offline;
+        long long last_seen_ms = 0;  // steady clock of the last proof of life
+        time_t last_seen_time = 0;   // wall clock, for "上次 HH:MM" in the roster
     };
 
     TunnelManager(std::string secret_key, int max_connections,
@@ -67,6 +79,11 @@ public:
     void disconnect_device(const std::string& device_id);
 
     std::vector<DeviceInfo> online_devices() const;
+    // Everything seen this run, live or not: the roster's source of truth.
+    std::vector<DeviceInfo> roster() const;
+    // One lookup instead of the scan callers used to do over online_devices(),
+    // which no longer holds a device during the reconnect window.
+    bool roster_for(const std::string& device_id, DeviceInfo* out) const;
 
     // Video frames forwarded from session threads since the last call
     // (network arrival rate, independent of GUI decode speed).
@@ -77,7 +94,8 @@ public:
 signals:
     void device_registered(QString device_id, QString device_name, int width,
                            int height);
-    void device_unregistered(QString device_id);
+    // int is a DeviceState. Never emitted just to say "delete this row".
+    void device_state_changed(QString device_id, int state);
     void video_frame_received(QString device_id, QByteArray payload);
     void auth_result(QString device_id, bool ok);
 
@@ -88,6 +106,9 @@ private:
                           const proto::RegisterInfo& info);
     void remove_session(const std::shared_ptr<ClientSession>& session);
     void reaper_loop();
+    // Caller holds pool_mutex_. Records what the operator saw last so the row
+    // survives the tunnel, and returns the previous state for change detection.
+    DeviceState note_state_locked(const std::string& device_id, DeviceState state);
     static long long now_ms();
 
     Listener listener_;
@@ -96,6 +117,8 @@ private:
 
     mutable std::mutex pool_mutex_;
     std::unordered_map<std::string, std::shared_ptr<ClientSession>> sessions_;
+    // device_id -> last known details + state, kept across reconnects.
+    std::unordered_map<std::string, DeviceInfo> roster_;
 
     std::atomic<bool> running_{false};
     std::thread reaper_thread_;

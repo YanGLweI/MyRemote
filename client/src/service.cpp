@@ -165,8 +165,10 @@ void shutdown_host() {
 // How long a console handover has to look stable before we act on it, and how
 // young a host has to be for us to leave it alone. A session-change storm
 // (mstsc connecting fires five of them inside two seconds) must never be able
-// to terminate a healthy host: that kills the only outbound tunnel.
-constexpr ULONGLONG kSettleMs = 5000;
+// to terminate a healthy host: that kills the only outbound tunnel. The settle
+// no longer has to be long, only longer than the storm itself, because
+// console_session() can name nothing but the physical console.
+constexpr ULONGLONG kSettleMs = 2000;
 constexpr ULONGLONG kMinHostAgeMs = 15000;
 
 void supervise() {

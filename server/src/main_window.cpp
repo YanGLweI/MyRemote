@@ -150,13 +150,18 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
     });
     connect(tunnels_.get(), &TunnelManager::device_registered, this,
             &MainWindow::on_device_registered);
-    connect(tunnels_.get(), &TunnelManager::device_unregistered, this,
-            [this](QString device_id) {
-                device_list_->remove_device(device_id.toStdString());
-                if (controller_->is_controlling() &&
+    connect(tunnels_.get(), &TunnelManager::device_state_changed, this,
+            [this](QString device_id, int) {
+                TunnelManager::DeviceInfo info;
+                if (!tunnels_->roster_for(device_id.toStdString(), &info)) {
+                    return;
+                }
+                upsert_row(info);
+                if (info.state != DeviceState::Live &&
+                    controller_->is_controlling() &&
                     controller_->controlled_device() == device_id.toStdString()) {
-                    // A service-managed host comes back in about two
-                    // seconds, so do not make the operator re-authenticate.
+                    // A service-managed host comes back in about two seconds,
+                    // so keep the session armed instead of ending it.
                     controller_->suspend_control();
                 }
             });
@@ -223,33 +228,29 @@ MainWindow::~MainWindow() {
     }
 }
 
+void MainWindow::upsert_row(const TunnelManager::DeviceInfo& stored) {
+    TunnelManager::DeviceInfo info = stored;
+    QString remark = remarks_.value(QString::fromStdString(info.device_id)).toString();
+    info.device_name = device_label(info, remark);
+    device_list_->upsert_device(info);
+}
+
 void MainWindow::on_device_registered(QString device_id, QString, int, int) {
-    for (const auto& info : tunnels_->online_devices()) {
-        if (QString::fromStdString(info.device_id) == device_id) {
-            QString remark = remarks_.value(QString::fromStdString(info.device_id)).toString();
-            std::string display = device_label(info, remark);
-            device_list_->upsert_device(info.device_id, display,
-                                        info.screen_width, info.screen_height,
-                                        info.peer_ip, info.connect_time);
-            // Capabilities move at runtime (logon screen, console owner).
-            if (controller_->is_controlling()) {
-                logon_button_->setEnabled(controller_->controlled_supports_logon());
-            }
-            return;
-        }
+    TunnelManager::DeviceInfo info;
+    if (!tunnels_->roster_for(device_id.toStdString(), &info)) {
+        return;  // a rejected or not-yet-installed registration
+    }
+    upsert_row(info);
+    // Capabilities move at runtime (logon screen, console owner).
+    if (controller_->is_controlling()) {
+        logon_button_->setEnabled(controller_->controlled_supports_logon());
     }
 }
 
 void MainWindow::on_refresh_remark(QString device_id) {
-    for (const auto& info : tunnels_->online_devices()) {
-        if (QString::fromStdString(info.device_id) == device_id) {
-            QString remark = remarks_.value(device_id).toString();
-            std::string display = device_label(info, remark);
-            device_list_->upsert_device(info.device_id, display,
-                                        info.screen_width, info.screen_height,
-                                        info.peer_ip, info.connect_time);
-            return;
-        }
+    TunnelManager::DeviceInfo info;
+    if (tunnels_->roster_for(device_id.toStdString(), &info)) {
+        upsert_row(info);
     }
 }
 

@@ -7,22 +7,23 @@
 #include <string>
 #include <vector>
 
+#include "tunnel_manager.hpp"
+
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
 
-// Live roster of registered clients.
+// Roster of every device seen this run. Rows survive their tunnel: a device
+// that is reconnecting must still be on screen, or the console looks broken.
 class DeviceListWidget : public QWidget {
     Q_OBJECT
 
 public:
     explicit DeviceListWidget(QWidget* parent = nullptr);
 
-    void upsert_device(const std::string& device_id, const std::string& device_name,
-                       int width, int height, const std::string& peer_ip,
-                       time_t connect_time);
-    void remove_device(const std::string& device_id);
-    void clear_devices();
+    enum ItemDataRole { StateRole = Qt::UserRole + 1 };
+
+    void upsert_device(const TunnelManager::DeviceInfo& info);
 
     std::optional<std::string> selected_device_id() const;
     std::vector<std::string> selected_device_ids() const;

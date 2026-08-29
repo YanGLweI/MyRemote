@@ -7,13 +7,13 @@
 
 #include "config.hpp"
 #include "display_renderer.hpp"
+#include "tunnel_manager.hpp"
 
 class DeviceListWidget;
 class QComboBox;
 class QLabel;
 class QPushButton;
 class RemoteController;
-class TunnelManager;
 
 // The operator console: a device roster on the left, the remote desktop view on
 // the right. Owns the listening TunnelManager and the one control session.
@@ -31,6 +31,10 @@ private slots:
     void on_control_requested(QString device_id);
 
 private:
+    // One roster record in, one row out: the remark always wins over the
+    // hostname, and the state drives the marker and colour.
+    void upsert_row(const TunnelManager::DeviceInfo& info);
+
     DisplayRenderer renderer_;
     std::unique_ptr<TunnelManager> tunnels_;
     std::unique_ptr<RemoteController> controller_;
