@@ -25,6 +25,15 @@
   - M14-3 宿主半边：无托盘无对话框、输入注入改由采集线程排空（与捕获同一桌面）、桌面切换时重建采集链+强制关键帧、无桌面时不再退出、host.status sidecar、跨会话的配置 mtime 热更新
   - M14-4 能力上报：Register flags（服务宿主/SYSTEM/控制台拥有者/可跟随安全桌面/登录界面）+ 实时 StateReport；控制端〔服务〕〔登录界面〕〔非控制台〕徽章与“返回登录界面”；手工启动的 agent 让位给服务
   - M14-5 文档：修正 README“不使用服务”的旧结论、COMPILATION.md 里 `sc create` 的错误教程、开发循环与能力边界
+- [x] **M15** TEST-WIN 实测后的修正：死守物理控制台 + 断线自动恢复 + 删除 Attach to console
+  - 实测结论：无人登录开机 → 宿主进 `Winlogon`（BitBlt，DXGI 被拒 0x80070005）→ 远程输密码真的登录成功（`WTS_SESSION_LOGON`），且全程无 `UNHANDLED EXCEPTION`（M14-0 的崩溃根因确认已修）
+  - M15-0 会话解析只认物理控制台：`win32util::console_session()` 以 `WinStationName=="Console"` 为首选（不看连接状态），`RDP-*` 站点硬否决，解析不出就返回 false 让宿主原地不动。旧实现用 `WTSGetActiveConsoleSessionId()`，控制台一旦被 RDP 顶成断开就返回 0xFFFFFFFF，于是落到"最大编号的 active 会话"= 刚建起来的 RDP 会话，宿主被迁走并杀掉唯一隧道
+  - M15-1 监管去抖：迁移需要同一目标稳定 5 秒且宿主已满 15 秒；`SESSIONCHANGE` 只在可能改变控制台归属的事件（1/2/3/4/6）上唤醒，登录/锁定/解锁不再插手；`--service-state` 打印站点表与判定来源
+  - M15-2 端到端删除 Attach to console：`0x0C` 退役不复用，agent 的 `tscon` 分支与控制端按钮一并去掉，只保留 `〔非控制台〕` 提示
+  - M15-3 控制端自动恢复：设备重新注册后自动重新鉴权并恢复画面，60 秒内最多 5 次，密码错误立刻放弃；操作者主动停止才会解除
+  - M15-4 `--force` 不再清理服务宿主（否则与监管互相残杀），宿主仍清理用户态重复实例
+  - M15-5 取消服务延迟自启（实测开机后有 2 分 26 秒的离线空窗），文档同步
+  - 顺带修好：`ControlService(STOP)` 传 `nullptr` 出参会以 `ERROR_INVALID_ADDRESS(487)` 失败，因此 `--stop-service`/`--uninstall-service` 从来没真的停过服务
 
 ## 后续可选优化
 
