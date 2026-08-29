@@ -13,6 +13,7 @@ namespace mlog {
 namespace {
 std::mutex g_mutex;
 std::ofstream g_file;
+std::string g_path;
 Sink g_sink;
 
 std::wstring utf8_to_wide(const std::string& s) {
@@ -70,11 +71,35 @@ void write_line(Level level, const std::string& message) {
     }
     OutputDebugStringA(line.c_str());
 }
+
+void close_locked() {
+    if (g_file.is_open()) {
+        g_file.close();
+    }
+    g_path.clear();
+}
 }  // namespace
 
-void init(const std::string& file_path) {
+bool init(const std::string& file_path) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_file.open(utf8_to_wide(file_path), std::ios::app);
+    if (file_path.empty()) {
+        close_locked();
+        return false;  // "no file" is a choice, not a failure
+    }
+    // The candidate is opened while the current file is still held: a path that
+    // cannot be written must not cost us the record we already have.
+    std::ofstream candidate(utf8_to_wide(file_path), std::ios::app);
+    if (!candidate.is_open()) {
+        return false;
+    }
+    g_file = std::move(candidate);  // lets go of whatever it was writing to
+    g_path = file_path;
+    return true;
+}
+
+std::string path() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_path;
 }
 
 void set_sink(Sink sink) {

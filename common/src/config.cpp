@@ -171,4 +171,20 @@ ServerConfig ServerConfig::load(const std::string& path) {
     return cfg;
 }
 
+bool ServerConfig::save(const ServerConfig& cfg, const std::string& path) {
+    std::ofstream file(utf8_to_wide(path), std::ios::trunc);
+    if (!file.good()) {
+        return false;
+    }
+    file << "{\n"
+         << "    \"listening_port\": " << cfg.listening_port << ",\n"
+         << "    \"bind_address\": \"" << json_escape(cfg.bind_address) << "\",\n"
+         << "    \"max_connections\": " << cfg.max_connections << ",\n"
+         << "    \"secret_key\": \"" << json_escape(cfg.secret_key) << "\",\n"
+         << "    \"log_file\": \"" << json_escape(cfg.log_file) << "\"\n"
+         << "}\n";
+    file.flush();
+    return file.good();
+}
+
 }  // namespace config

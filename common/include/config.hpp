@@ -28,6 +28,9 @@ struct ServerConfig {
     std::string log_file = "control_server.log";
 
     static ServerConfig load(const std::string& path);
+    // Writes every field, not just the ones a caller edited: a partial write
+    // would reset the rest to whatever the defaults happen to be.
+    static bool save(const ServerConfig& cfg, const std::string& path);
 };
 
 }  // namespace config
