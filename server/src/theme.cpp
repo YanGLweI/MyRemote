@@ -144,11 +144,18 @@ QString stylesheet() {
         "QTabBar::tab:selected { color: @TEXT@; border-bottom: 2px solid @ACCENT@; }"
 
         // Marks that live inside another widget — a line edit's search and clear
-        // buttons, a tab's close button — must not be painted as native chips:
-        // the style would drop a light plate inside a dark surface.
+        // buttons, a tab's close button, the status bar's log exit — must not be
+        // painted as native chips: the style would drop a light plate inside a
+        // dark surface, and a checked one is brighter than an unchecked it needs
+        // to be readable against.
         "QLineEdit QToolButton, QTabBar QToolButton { border: none;"
         "  background: transparent; padding: 0; margin: 0; }"
+        "QStatusBar QToolButton { border: none; background: transparent;"
+        "  padding: 0 6px; margin: 0; color: @TEXT@; }"
         "QTabBar QToolButton:hover { background: @HOVER@; border-radius: 3px; }"
+        "QStatusBar QToolButton:hover { color: @ACCENT@; }"
+        "QStatusBar QToolButton:checked { background: @RAISE@;"
+        "  border-radius: 3px; }"
 
         "QListView, QAbstractItemView { background: @SURF@; color: @TEXT@;"
         "  border: none; outline: none;"
