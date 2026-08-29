@@ -25,7 +25,7 @@ public:
     // and guessing is how a session starts typing into the wrong machine.
     void set_capture(bool captured);
     void set_zoomed(bool zoomed);
-    void set_fps(int net_fps, int decoded_fps);
+    void set_fps(int fps);
     void set_quality_index(int index);
     int quality_index() const;
 

@@ -1,5 +1,6 @@
 #include "icon_factory.hpp"
 
+#include <QDir>
 #include <QGuiApplication>
 #include <QPainter>
 #include <QPen>
@@ -108,6 +109,25 @@ QIcon close() {
         g.drawLine(QPointF(inset, inset), QPointF(kSide - inset, kSide - inset));
         g.drawLine(QPointF(kSide - inset, inset), QPointF(inset, kSide - inset));
     });
+}
+
+QString down_arrow_url() {
+    static const QString path = [] {
+        const QString file =
+            QDir::tempPath() + QStringLiteral("/myremote-down-arrow.png");
+        const QPixmap pm = rasterise(
+            [](QPainter& g, const QColor&) {
+                g.drawPolyline(QPolygonF() << QPointF(4.0, 6.5)
+                                           << QPointF(8.0, 10.0)
+                                           << QPointF(12.0, 6.5));
+            },
+            theme::colors().muted);
+        if (!pm.save(file, "PNG")) {
+            return QString();
+        }
+        return QDir::fromNativeSeparators(file);
+    }();
+    return path;
 }
 
 }  // namespace icons

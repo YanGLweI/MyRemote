@@ -4,6 +4,8 @@
 #include <QPalette>
 #include <QWidget>
 
+#include "icon_factory.hpp"
+
 namespace theme {
 
 const Palette& colors() {
@@ -121,10 +123,10 @@ QString stylesheet() {
         "  border-color: @LINE@; }"
 
         // A styled QComboBox keeps a white popup unless its item view is named
-        // too. Naming ::drop-down is not free, though: once that subcontrol has a
-        // rule, Qt stops drawing the native arrow and the picker looks like an
-        // empty box - so the arrow container is left to the style, which colours
-        // it from the palette we already set.
+        // too. Its arrow container is flattened further down, once there is a
+        // drawn arrow to put in it: left to the native style, the container
+        // renders as a light chip with its own seam inside our box, which reads
+        // as a different control from the buttons beside it.
         "QComboBox { background: @RAISE@; color: @TEXT@; border: 1px solid @LINE@;"
         "  border-radius: 4px; padding: 3px 8px; }"
         "QComboBox:hover { border-color: @MUTED@; }"
@@ -169,6 +171,20 @@ QString stylesheet() {
 
     for (const auto& sub : subs) {
         css.replace(QLatin1String(sub.name), sub.value);
+    }
+
+    // The arrow is the one mark a stylesheet can only take as a file, so it is
+    // drawn out to the temp dir and named here. The url is quoted because a
+    // user's temp path may well contain a space. With no file to name, these
+    // rules stay out and the native container comes back: a slightly foreign
+    // chip is a better failure than a picker with no arrow at all.
+    const QString arrow = icons::down_arrow_url();
+    if (!arrow.isEmpty()) {
+        css += QStringLiteral("QComboBox::drop-down { width: 22px; border: none;"
+                              "  background: transparent; } "
+                              "QComboBox::down-arrow { image: url(\"%1\");"
+                              "  width: 11px; height: 11px; }")
+                   .arg(arrow);
     }
     return css;
 }

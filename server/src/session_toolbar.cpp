@@ -16,7 +16,7 @@
 namespace {
 
 // Text that changes size at runtime must never drive the layout. A QLabel's
-// minimumSizeHint is its own text width, so an unbounded NET/DEC counter raises
+// minimumSizeHint is its own text width, so an unbounded 帧率 counter raises
 // this tab's minimum width once per second and the splitter pays for it out of
 // the roster: that reads as the whole window shaking. So every label whose words
 // come and go is pinned to the width of its widest possible string.
@@ -88,11 +88,11 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
         "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
     detail_ = new ElidedLabel();
     detail_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    fps_ = new QLabel(QStringLiteral("帧率 -- · 到达 --"));
+    fps_ = new QLabel(QStringLiteral("帧率 --"));
     fps_->setToolTip(QStringLiteral(
-        "帧率＝每秒真正解码并画到屏幕上的帧数；到达＝每秒从网络收到的帧数。\n"
-        "到达明显高于帧率：本机解码跟不上。\n"
-        "帧率低于画质档位的设定值：对端或链路没发够。"));
+        "帧率＝每秒真正解码并画到屏幕上的帧数。\n"
+        "它低于画质档位的设定值，说明对端或链路没发够；\n"
+        "它忽高忽低，通常是本机解码跟不上。"));
 
     actions->addWidget(title_, 1);
     actions->addWidget(quality_);
@@ -107,7 +107,7 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
 
     reserve(state_, QStringLiteral("重连中"));
     reserve(capture_, QStringLiteral("键盘 · 远程"));
-    reserve(fps_, QStringLiteral("帧率 100 · 到达 100"));
+    reserve(fps_, QStringLiteral("帧率 100"));
     fps_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     reserve_button(stop_button_, QStringLiteral("重新连接"));
     reserve_button(fullscreen_button_, QStringLiteral("退出全屏"));
@@ -173,11 +173,11 @@ void SessionToolbar::set_zoomed(bool zoomed) {
     fullscreen_button_->setIcon(zoomed ? icons::restore() : icons::fullscreen());
 }
 
-void SessionToolbar::set_fps(int net_fps, int decoded_fps) {
+void SessionToolbar::set_fps(int fps) {
     if (!streaming_) {
         return;
     }
-    fps_->setText(QStringLiteral("帧率 %1 · 到达 %2").arg(decoded_fps).arg(net_fps));
+    fps_->setText(QStringLiteral("帧率 %1").arg(fps));
 }
 
 void SessionToolbar::set_quality_index(int index) {
