@@ -43,6 +43,10 @@ bool FramePipeline::start(const std::string& device_id, int width, int height,
         has_pending_ = false;
         quit_ = false;
     }
+    {
+        std::lock_guard<std::mutex> lock(window_mutex_);
+        window_ = LatencyWindow{};
+    }
     thread_ = std::thread(&FramePipeline::run, this);
     return true;
 }
@@ -94,6 +98,14 @@ void FramePipeline::run() {
         if (decoder_ && decoder_->decode(info.data, info.size, frame)) {
             last_good_ms_ = now_ms();
             decoded_.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lock(window_mutex_);
+                // Raw, because the offset between the two clocks is not this
+                // thread's business; the reader knows it and adds it once.
+                window_.diff_sum_us += static_cast<int64_t>(proto::steady_us()) -
+                                       static_cast<int64_t>(info.timestamp_us);
+                ++window_.frames;
+            }
             renderer_.set_frame(frame);
             emit frame_ready();
         } else if (now_ms() - last_good_ms_ > kStallMs) {
@@ -104,4 +116,11 @@ void FramePipeline::run() {
             }
         }
     }
+}
+
+FramePipeline::LatencyWindow FramePipeline::exchange_window() {
+    std::lock_guard<std::mutex> lock(window_mutex_);
+    LatencyWindow taken = window_;
+    window_ = LatencyWindow{};
+    return taken;
 }

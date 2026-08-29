@@ -49,10 +49,10 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
             &SessionToolbar::set_capture);
     connect(gateway_, &InputGateway::escape_released, this,
             &SessionView::escape_released);
-    // Only the decoded rate reaches the header: while this machine keeps up, the
-    // arrival count is the same number, so it would be noise on screen.
-    connect(controller_.get(), &RemoteController::fps_updated, toolbar_,
-            [this](int, int decoded) { toolbar_->set_fps(decoded); });
+    // The frame rate is what reached the screen; the latency is how old those
+    // pictures were, and is -1 until this device's clock has been tied to ours.
+    connect(controller_.get(), &RemoteController::stats_updated, toolbar_,
+            &SessionToolbar::set_stats);
     connect(controller_.get(), &RemoteController::control_started, this,
             [this](QString) { refresh_buttons(); });
     connect(controller_.get(), &RemoteController::control_stopped, this,

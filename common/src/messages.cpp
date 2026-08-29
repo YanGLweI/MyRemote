@@ -206,6 +206,40 @@ bool parse_video_frame_payload(const std::vector<uint8_t>& payload, VideoFrameIn
     return true;
 }
 
+uint64_t steady_us() {
+    // Never the wall clock: a machine's date can be corrected mid-session by NTP
+    // or by the user, and a monotonic clock is all the latency arithmetic needs.
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count());
+}
+
+std::vector<uint8_t> make_ping_payload(uint64_t t0_us) {
+    std::vector<uint8_t> payload;
+    put_u64(payload, t0_us);
+    return payload;
+}
+
+bool parse_ping_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us) {
+    size_t offset = 0;
+    return read_u64(payload, offset, t0_us);
+}
+
+std::vector<uint8_t> make_pong_payload(const ClockEcho& echo) {
+    std::vector<uint8_t> payload;
+    put_u64(payload, echo.t0_us);
+    put_u64(payload, echo.agent_recv_us);
+    put_u64(payload, echo.agent_send_us);
+    return payload;
+}
+
+bool parse_pong_payload(const std::vector<uint8_t>& payload, ClockEcho& echo) {
+    size_t offset = 0;
+    return read_u64(payload, offset, echo.t0_us) &&
+           read_u64(payload, offset, echo.agent_recv_us) &&
+           read_u64(payload, offset, echo.agent_send_us);
+}
+
 namespace {
 void put_u8(std::vector<uint8_t>& out, uint8_t v) { out.push_back(v); }
 }

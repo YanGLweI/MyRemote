@@ -258,6 +258,16 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                                            frame.payload.data()),
                                        static_cast<int>(frame.payload.size())));
                         break;
+                    case proto::MessageType::Pong: {
+                        proto::ClockEcho echo;
+                        if (!proto::parse_pong_payload(frame.payload, echo)) {
+                            break;
+                        }
+                        emit clock_pong(QString::fromStdString(session->device_id),
+                                        echo.t0_us, proto::steady_us(),
+                                        echo.agent_recv_us, echo.agent_send_us);
+                        break;
+                    }
                     case proto::MessageType::AuthResponse: {
                         std::vector<uint8_t> salt;
                         std::string password;

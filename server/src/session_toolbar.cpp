@@ -88,11 +88,12 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
         "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
     detail_ = new ElidedLabel();
     detail_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    fps_ = new QLabel(QStringLiteral("帧率 --"));
-    fps_->setToolTip(QStringLiteral(
-        "帧率＝每秒真正解码并画到屏幕上的帧数。\n"
-        "它低于画质档位的设定值，说明对端或链路没发够；\n"
-        "它忽高忽低，通常是本机解码跟不上。"));
+    stats_ = new QLabel(QStringLiteral("帧率 -- · 延迟 --"));
+    stats_->setToolTip(QStringLiteral(
+        "帧率＝每秒真正解码并画到屏幕上的帧数；它低于画质档位的设定值，说明对端或链\n"
+        "路没发够，忽高忽低通常是本机解码跟不上。\n"
+        "延迟＝对端抓取屏幕到这幅画在本机解码完成所花的时间，含采集、编码、网络与\n"
+        "解码。显示 -- 表示还没和对方机器对好表，或这一秒没有新画面。"));
 
     actions->addWidget(title_, 1);
     actions->addWidget(quality_);
@@ -103,12 +104,12 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     status->addWidget(state_);
     status->addWidget(capture_);
     status->addWidget(detail_, 1);
-    status->addWidget(fps_);
+    status->addWidget(stats_);
 
     reserve(state_, QStringLiteral("重连中"));
     reserve(capture_, QStringLiteral("键盘 · 远程"));
-    reserve(fps_, QStringLiteral("帧率 100"));
-    fps_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    reserve(stats_, QStringLiteral("帧率 100 · 延迟 1234ms"));
+    stats_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     reserve_button(stop_button_, QStringLiteral("重新连接"));
     reserve_button(fullscreen_button_, QStringLiteral("退出全屏"));
 
@@ -146,7 +147,7 @@ void SessionToolbar::set_streaming(bool on) {
                              : QStringLiteral("重新连接"));
     capture_->setVisible(on);
     if (!on) {
-        fps_->setText(QStringLiteral("NET --  DEC --"));
+        stats_->setText(QStringLiteral("帧率 -- · 延迟 --"));
     }
 }
 
@@ -173,11 +174,15 @@ void SessionToolbar::set_zoomed(bool zoomed) {
     fullscreen_button_->setIcon(zoomed ? icons::restore() : icons::fullscreen());
 }
 
-void SessionToolbar::set_fps(int fps) {
+void SessionToolbar::set_stats(int fps, int latency_ms) {
     if (!streaming_) {
         return;
     }
-    fps_->setText(QStringLiteral("帧率 %1").arg(fps));
+    // A negative latency means the reading is not available yet, which has to
+    // look like an absence: a zero would read as a network nobody could build.
+    stats_->setText(latency_ms >= 0
+                      ? QStringLiteral("帧率 %1 · 延迟 %2ms").arg(fps).arg(latency_ms)
+                      : QStringLiteral("帧率 %1 · 延迟 --").arg(fps));
 }
 
 void SessionToolbar::set_quality_index(int index) {

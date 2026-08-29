@@ -15,6 +15,18 @@ const QualityPreset kQualityPresets[] = {
 const int kQualityPresetCount =
     static_cast<int>(sizeof(kQualityPresets) / sizeof(kQualityPresets[0]));
 
+namespace {
+
+// An agent that has never answered will not start answering: it is older than
+// this message. Asking again would also cost its log a warning every second.
+constexpr int kPingGiveUp = 5;
+// A round trip or an age outside these bounds means a clock jumped (sleep, boot,
+// a correction) or the peer stamped wrongly. Neither is worth reporting.
+constexpr int64_t kRttCeilingUs = 2000000;
+constexpr int64_t kLatencyCeilingMs = 5000;
+
+}  // namespace
+
 RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& renderer,
                                    QObject* parent)
     : QObject(parent), tunnels_(tunnels), renderer_(renderer), pipeline_(renderer) {
@@ -52,14 +64,16 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
     connect(auto_window_timer_, &QTimer::timeout, this,
             [this] { auto_attempts_ = 0; });
 
-    auto* fps_timer = new QTimer(this);
-    connect(fps_timer, &QTimer::timeout, this, [this]() {
-        int net = static_cast<int>(
-            tunnels_.exchange_frames_in(controlled_device()));
-        int dec = static_cast<int>(pipeline_.exchange_decoded());
-        emit fps_updated(net, dec);
+    connect(&tunnels_, &TunnelManager::clock_pong, this,
+            &RemoteController::on_clock_pong);
+
+    auto* stats_timer = new QTimer(this);
+    connect(stats_timer, &QTimer::timeout, this, [this]() {
+        const int decoded = static_cast<int>(pipeline_.exchange_decoded());
+        ask_clock();
+        emit stats_updated(decoded, latency_ms());
     });
-    fps_timer->start(1000);
+    stats_timer->start(1000);
 }
 
 RemoteController::~RemoteController() {
@@ -116,6 +130,12 @@ bool RemoteController::do_start(const std::string& device_id) {
 
     set_controlled(device_id);
     tunnels_.exchange_frames_in(device_id);
+    // Whatever offset was learned belonged to the previous session, and the
+    // device may have rebooted since. Nothing is claimed until a fresh exchange.
+    clock_synced_ = false;
+    clock_offset_us_ = 0;
+    ping_sent_us_ = 0;
+    ping_unanswered_ = 0;
     mlog::info("Control session started: " + device_id);
     emit control_started(QString::fromStdString(device_id));
     return true;
@@ -296,4 +316,58 @@ void RemoteController::on_auth_result(QString device_id, bool ok) {
     mlog::warn("Control authorization failed for " + device_id.toStdString());
     disarm_auto_resume();
     emit control_denied(device_id);
+}
+
+void RemoteController::ask_clock() {
+    const std::string id = controlled_device();
+    if (id.empty() || ping_unanswered_ >= kPingGiveUp) {
+        return;
+    }
+    ping_sent_us_ = proto::steady_us();
+    ++ping_unanswered_;
+    tunnels_.send_to_device(id, proto::MessageType::Ping,
+                            proto::make_ping_payload(ping_sent_us_));
+}
+
+void RemoteController::on_clock_pong(QString device_id, quint64 t0_us, quint64 t3_us,
+                                     quint64 agent_recv_us, quint64 agent_send_us) {
+    const std::string id = device_id.toStdString();
+    if (id.empty() || id != controlled_device() || t0_us != ping_sent_us_) {
+        return;  // the answer to a Ping this controller has already superseded
+    }
+    const int64_t ours = static_cast<int64_t>(t3_us) - static_cast<int64_t>(t0_us);
+    const int64_t theirs = static_cast<int64_t>(agent_send_us) -
+                           static_cast<int64_t>(agent_recv_us);
+    if (theirs < 0 || theirs > ours || ours - theirs > kRttCeilingUs) {
+        return;  // one of the two clocks moved mid-exchange; learn nothing
+    }
+    // The two clocks, paired: the agent's offset from ours is the mean of the two
+    // comparisons, which is what cancels a symmetric delay.
+    const int64_t offset =
+        (static_cast<int64_t>(agent_recv_us) - static_cast<int64_t>(t0_us) +
+         static_cast<int64_t>(agent_send_us) - static_cast<int64_t>(t3_us)) /
+        2;
+    // Drifted rather than replaced: a reply can be late because the thread that
+    // wrote it was descheduled, and the reading must not swing on that.
+    clock_offset_us_ = clock_synced_ ? (clock_offset_us_ * 3 + offset) / 4 : offset;
+    clock_synced_ = true;
+    ping_unanswered_ = 0;
+}
+
+int RemoteController::latency_ms() {
+    const FramePipeline::LatencyWindow window = pipeline_.exchange_window();
+    if (!clock_synced_ || window.frames == 0) {
+        return -1;
+    }
+    // The window holds "our clock at decode" minus "the agent's clock at capture";
+    // the offset turns the second into ours, so what is left is the whole trip:
+    // capture, encode, wire, queue and decode.
+    const int64_t ms =
+        (window.diff_sum_us / static_cast<int64_t>(window.frames) +
+         clock_offset_us_) /
+        1000;
+    if (ms < 0 || ms > kLatencyCeilingMs) {
+        return -1;
+    }
+    return static_cast<int>(ms);
 }

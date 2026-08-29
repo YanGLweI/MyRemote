@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "log.hpp"
+#include "messages.hpp"
 
 DesktopCapturer::~DesktopCapturer() = default;
 
@@ -463,10 +464,7 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
                 frame.width = encode_width_;
                 frame.height = encode_height_;
                 frame.is_keyframe = false;  // filled in by the encoder
-                frame.timestamp_us = static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count());
+                frame.timestamp_us = proto::steady_us();
 
                 frame.i420.resize(static_cast<size_t>(frame.width) *
                                   frame.height * 3 / 2);
@@ -526,10 +524,9 @@ bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
     HGDIOBJ old = SelectObject(hdc_mem, bitmap);
     BitBlt(hdc_mem, 0, 0, src_w, src_h, hdc_screen, 0, 0, SRCCOPY);
 
-    frame.timestamp_us = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    // The same helper the clock exchange stamps with: the control centre
+    // subtracts one from the other to show a latency.
+    frame.timestamp_us = proto::steady_us();
     frame.source_width = src_w;
     frame.source_height = src_h;
     frame.width = encode_width_;

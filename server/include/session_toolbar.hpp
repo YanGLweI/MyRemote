@@ -25,7 +25,7 @@ public:
     // and guessing is how a session starts typing into the wrong machine.
     void set_capture(bool captured);
     void set_zoomed(bool zoomed);
-    void set_fps(int fps);
+    void set_stats(int fps, int latency_ms);
     void set_quality_index(int index);
     int quality_index() const;
 
@@ -45,6 +45,6 @@ private:
     QPushButton* logon_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
     QPushButton* stop_button_ = nullptr;
-    QLabel* fps_ = nullptr;
+    QLabel* stats_ = nullptr;
     bool streaming_ = false;
 };

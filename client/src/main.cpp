@@ -401,6 +401,21 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
                           : "LockWorkStation refused by this session");
             break;
         }
+        case proto::MessageType::Ping: {
+            // Nothing but clock readings go back. The control centre needs them
+            // because every frame's capture stamp is in *this* machine's steady
+            // clock, and only this machine can report that clock alongside a
+            // moment the control centre itself stamped.
+            proto::ClockEcho echo;
+            if (!proto::parse_ping_payload(payload, echo.t0_us)) {
+                break;
+            }
+            echo.agent_recv_us = proto::steady_us();
+            echo.agent_send_us = proto::steady_us();
+            g_connection->send(proto::MessageType::Pong,
+                               proto::make_pong_payload(echo));
+            break;
+        }
         default:
             mlog::warn("Unknown message type: " +
                       std::to_string(static_cast<int>(type)));
