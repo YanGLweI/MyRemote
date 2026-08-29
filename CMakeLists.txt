@@ -98,6 +98,10 @@ if(BUILD_SERVER)
         server/src/device_panel.cpp
         server/src/device_list_model.cpp
         server/src/device_row_delegate.cpp
+        server/src/theme.cpp
+        server/include/theme.hpp
+        server/src/icon_factory.cpp
+        server/include/icon_factory.hpp
         server/src/remote_controller.cpp
         server/src/frame_pipeline.cpp
         server/src/h264_decoder.cpp

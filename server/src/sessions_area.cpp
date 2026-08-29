@@ -4,10 +4,14 @@
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
+#include "icon_factory.hpp"
 #include "log.hpp"
 #include "session_view.hpp"
+#include "theme.hpp"
 
 namespace {
 
@@ -25,7 +29,7 @@ QWidget* make_empty_page() {
     hint->setWordWrap(true);
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     hint->setMinimumWidth(0);
-    hint->setStyleSheet(QStringLiteral("color: gray;"));
+    theme::tint(hint, theme::colors().stale);
     box->addWidget(hint);
     return page;
 }
@@ -104,6 +108,31 @@ void SessionsArea::close_tab(int index) {
     delete widget;
 }
 
+void SessionsArea::apply_close_button(int index) {
+    // QTabBar's own close button is a private widget that draws the style's
+    // PE_IndicatorTabClose and ignores icons, so a legible mark on a dark strip
+    // means replacing it. A stylesheet cannot do this: it can only name a file.
+    auto* button = new QToolButton(tabs_->tabBar());
+    button->setAutoRaise(true);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setIcon(icons::close());
+    button->setIconSize(QSize(12, 12));
+    connect(button, &QToolButton::clicked, this, [this, button] {
+        // Tabs move, so the index is read when the mark is clicked rather than
+        // remembered from the tab's birth.
+        QTabBar* bar = tabs_->tabBar();
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabButton(i, QTabBar::RightSide) == button) {
+                // Closing deletes the page, and doing it from inside clicked()
+                // would destroy the very button still emitting the signal.
+                QTimer::singleShot(0, this, [this, i] { close_tab(i); });
+                return;
+            }
+        }
+    });
+    tabs_->tabBar()->setTabButton(index, QTabBar::RightSide, button);
+}
+
 void SessionsArea::open_session(const TunnelManager::DeviceInfo& info,
                                 const QString& display_name) {
     const int existing = tab_of(info.device_id);
@@ -133,12 +162,13 @@ void SessionsArea::open_session(const TunnelManager::DeviceInfo& info,
     connect(view, &SessionView::escape_released, this,
             [this] { tabs_->tabBar()->setFocus(); });
     const int index = tabs_->addTab(view, display_name);
+    apply_close_button(index);
     tabs_->setCurrentIndex(index);
     view->set_header(display_name, QStringLiteral("%1 · %2x%3")
                                        .arg(QString::fromStdString(info.peer_ip))
                                        .arg(info.screen_width)
                                        .arg(info.screen_height),
-                     QStringLiteral("连接中"), true);
+                     QStringLiteral("连接中"), false);
     view->begin();
 }
 

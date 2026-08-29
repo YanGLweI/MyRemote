@@ -1,6 +1,7 @@
 #include "session_toolbar.hpp"
 
 #include <QComboBox>
+#include <QColor>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -8,7 +9,9 @@
 #include <QVBoxLayout>
 
 #include "elided_label.hpp"
+#include "icon_factory.hpp"
 #include "remote_controller.hpp"
+#include "theme.hpp"
 
 namespace {
 
@@ -59,6 +62,7 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     quality_->setToolTip(QStringLiteral("画质档位（只作用于这台设备）"));
 
     logon_button_ = new QPushButton(QStringLiteral("返回登录界面"));
+    logon_button_->setIcon(icons::lock());
     logon_button_->setEnabled(false);
     logon_button_->setToolTip(QStringLiteral(
         "锁定工作站，让对端回到登录界面后可以远程输入密码登录。\n"
@@ -66,6 +70,7 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
         "请将该机器的 DisableCAD 设为 1。"));
 
     fullscreen_button_ = new QPushButton(QStringLiteral("全屏"));
+    fullscreen_button_->setIcon(icons::fullscreen());
     fullscreen_button_->setCheckable(true);
     fullscreen_button_->setToolTip(QStringLiteral(
         "让这台设备铺满整个窗口。标签栏和这一条工具栏都会留在画面上方，\n"
@@ -127,8 +132,7 @@ void SessionToolbar::set_title(const QString& device_name, const QString& detail
 
 void SessionToolbar::set_state_text(const QString& text, bool live) {
     state_->setText(text);
-    state_->setStyleSheet(live ? QStringLiteral("color: #2E8B57;")
-                               : QStringLiteral("color: #B07A18;"));
+    theme::tint(state_, live ? theme::colors().live : theme::colors().reconnecting);
 }
 
 void SessionToolbar::set_streaming(bool on) {
@@ -149,8 +153,7 @@ void SessionToolbar::set_supports_logon(bool on) {
 void SessionToolbar::set_capture(bool captured) {
     capture_->setText(captured ? QStringLiteral("键盘 · 远程")
                                : QStringLiteral("键盘 · 本地"));
-    capture_->setStyleSheet(captured ? QStringLiteral("color: #3E9B6E;")
-                                     : QStringLiteral("color: #98A2AD;"));
+    theme::tint(capture_, captured ? theme::colors().accent : theme::colors().muted);
 }
 
 void SessionToolbar::set_zoomed(bool zoomed) {
@@ -161,6 +164,9 @@ void SessionToolbar::set_zoomed(bool zoomed) {
     fullscreen_button_->blockSignals(false);
     fullscreen_button_->setText(zoomed ? QStringLiteral("退出全屏")
                                        : QStringLiteral("全屏"));
+    // The mark has to change with the words, or the button keeps promising the
+    // opposite of what it now does.
+    fullscreen_button_->setIcon(zoomed ? icons::restore() : icons::fullscreen());
 }
 
 void SessionToolbar::set_fps(int net_fps, int decoded_fps) {

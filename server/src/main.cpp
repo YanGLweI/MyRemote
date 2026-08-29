@@ -11,6 +11,7 @@
 #include "config.hpp"
 #include "log.hpp"
 #include "main_window.hpp"
+#include "theme.hpp"
 
 namespace {
 
@@ -27,6 +28,8 @@ std::string exe_dir() {
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     QApplication app(__argc, __argv);
     QApplication::setApplicationName(QStringLiteral("MyRemote Control Center"));
+    // Before any widget exists: the style and font are fixed at first polish.
+    theme::apply(app);
 
     std::string dir = exe_dir();
     mlog::init(dir + "/" + "control_server.log");

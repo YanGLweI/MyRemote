@@ -4,11 +4,12 @@
 #include <QPainter>
 #include <QWheelEvent>
 
+#include "theme.hpp"
+
 DisplayRenderer::DisplayRenderer(QWidget* parent) : QWidget(parent) {
     setMinimumSize(320, 240);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-    setStyleSheet("background-color: #1a1a1a;");
 }
 
 void DisplayRenderer::set_remote_size(int width, int height) {
@@ -58,19 +59,25 @@ QPoint DisplayRenderer::map_to_remote(const QPoint& widget_pos) const {
 
 void DisplayRenderer::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(26, 26, 26));
+    const theme::Palette& c = theme::colors();
+    painter.fillRect(rect(), c.canvas);
     QImage frame;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         frame = current_;
     }
     if (frame.isNull()) {
-        painter.setPen(QColor(120, 120, 120));
+        painter.setPen(c.stale);
         painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("等待远程画面…"));
     } else {
         QRect target = remote_rect();
         if (target.isEmpty()) {
-            target = rect();
+            // The desktop-size event can trail the first frames by seconds. Until
+            // it lands, letterbox on the coded size: filling the widget would
+            // stretch the picture to whatever shape the pane happens to have.
+            QSize fit = frame.size().scaled(size(), Qt::KeepAspectRatio);
+            target = QRect(QPoint(0, 0), fit);
+            target.moveCenter(rect().center());
         }
         painter.drawImage(target, frame);
     }
@@ -83,9 +90,13 @@ void DisplayRenderer::paintEvent(QPaintEvent*) {
     const QRect chip((width() - fm.horizontalAdvance(hint_) - 20) / 2, 10,
                      fm.horizontalAdvance(hint_) + 20, chip_h);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(12, 14, 16, 210));
+    // Translucent canvas rather than a new colour: the chip has to stay readable
+    // over whatever the remote desktop happens to be showing underneath.
+    QColor scrim = c.canvas;
+    scrim.setAlpha(210);
+    painter.setBrush(scrim);
     painter.drawRoundedRect(chip, 4, 4);
-    painter.setPen(QColor(232, 236, 240));
+    painter.setPen(c.text);
     painter.drawText(chip, Qt::AlignCenter, hint_);
 }
 

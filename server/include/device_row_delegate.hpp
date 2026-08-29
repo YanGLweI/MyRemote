@@ -15,8 +15,4 @@ public:
                    const QModelIndex& index) const override;
     void paint(QPainter* painter, const QStyleOptionViewItem& option,
                const QModelIndex& index) const override;
-
-private:
-    static QFont meta_font(const QFont& base);
-    static int row_height(const QFont& base);
 };

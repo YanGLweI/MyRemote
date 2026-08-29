@@ -1,52 +1,47 @@
 #include "device_row_delegate.hpp"
 
-#include <QFont>
 #include <QFontMetrics>
 #include <QPainter>
 #include <QStyle>
 #include <QStyleOptionViewItem>
 
 #include "device_list_model.hpp"
+#include "theme.hpp"
 
 namespace {
-
-// The four states a row can be in, and the only colours this delegate owns.
-// Everything else comes from the palette so the theme still drives it.
-QColor state_color(DeviceState state) {
-    switch (state) {
-        case DeviceState::Live:
-            return QColor(0x3E, 0x9B, 0x6E);
-        case DeviceState::Reconnecting:
-            return QColor(0xD9, 0xA0, 0x3C);
-        case DeviceState::Offline:
-            return QColor(0x6E, 0x76, 0x81);
-    }
-    return QColor();
-}
 
 constexpr int kHPadding = 10;
 constexpr int kVPadding = 7;
 constexpr int kDot = 9;
 constexpr int kGap = 9;
 
+QColor state_color(DeviceState state) {
+    switch (state) {
+        case DeviceState::Live:
+            return theme::colors().live;
+        case DeviceState::Reconnecting:
+            return theme::colors().reconnecting;
+        case DeviceState::Offline:
+            return theme::colors().stale;
+    }
+    return theme::colors().stale;
+}
+
+QFont name_font() {
+    QFont f = theme::base_font();
+    f.setBold(true);
+    return f;
+}
+
+int line_height(const QFont& font) { return QFontMetrics(font).height(); }
+
 }  // namespace
-
-QFont DeviceRowDelegate::meta_font(const QFont& base) {
-    QFont mono = base;
-    mono.setFamilies({QStringLiteral("Consolas"), QStringLiteral("Cascadia Mono"),
-                      QStringLiteral("Courier New")});
-    mono.setPointSizeF(base.pointSizeF() - 1.0);
-    return mono;
-}
-
-int DeviceRowDelegate::row_height(const QFont& base) {
-    const QFontMetrics name(base), meta(meta_font(base));
-    return kVPadding * 2 + name.height() + meta.height();
-}
 
 QSize DeviceRowDelegate::sizeHint(const QStyleOptionViewItem& option,
                                   const QModelIndex&) const {
-    return QSize(220, row_height(option.font));
+    const int height = kVPadding * 2 + line_height(name_font()) +
+                       line_height(theme::meta_font());
+    return QSize(220, height);
 }
 
 void DeviceRowDelegate::paint(QPainter* painter,
@@ -55,18 +50,26 @@ void DeviceRowDelegate::paint(QPainter* painter,
     const bool selected = option.state & QStyle::State_Selected;
     const bool hovered = option.state & QStyle::State_MouseOver;
 
-    // Let the style draw the base, selection and focus; this is where a widget
-    // would get those for free.
+    // Let the style draw the base, the selection and the focus ring: this is
+    // where a widget would get them for free.
     QStyleOptionViewItem base = option;
     initStyleOption(&base, index);
     base.text.clear();
     base.icon = QIcon();
-    if (!selected && hovered) {
-        base.backgroundBrush = QBrush(option.palette.color(QPalette::Mid)
-                                           .lighter(108));
+    // The focus rectangle is drawn in the highlight colour, which would paint
+    // every row the operator has merely tabbed past as if it were chosen.
+    base.state &= ~QStyle::State_HasFocus;
+    if (selected) {
+        base.backgroundBrush = QBrush(theme::colors().surface_hover);
+    } else if (hovered) {
+        // Lighter than a selection on purpose: the pointer is transient, the
+        // choice is not.
+        QColor plate = theme::colors().surface_hover;
+        plate.setAlpha(110);
+        base.backgroundBrush = QBrush(plate);
     }
     option.widget->style()->drawControl(QStyle::CE_ItemViewItem, &base, painter,
-                                        option.widget);
+                                        base.widget);
 
     const DeviceState state = static_cast<DeviceState>(
         index.data(DeviceListModel::StateRole).toInt());
@@ -74,30 +77,36 @@ void DeviceRowDelegate::paint(QPainter* painter,
     const QString meta = index.data(DeviceListModel::MetaRole).toString();
     const QStringList badges = index.data(DeviceListModel::BadgesRole).toStringList();
 
-    QColor text = option.palette.color(
-        selected ? QPalette::HighlightedText : QPalette::Text);
-    QColor muted = option.palette.color(QPalette::PlaceholderText);
-    if (state == DeviceState::Offline) {
-        text = muted;  // a remembered row should look remembered
-    }
+    const bool dimmed = state == DeviceState::Offline;
+    // A remembered row should look remembered; selection is a border plus a
+    // surface here, not an inversion, so the name keeps its own colour either way.
+    QColor text = dimmed ? theme::colors().stale : theme::colors().text;
+    const QColor muted = theme::colors().muted;
+    const QFontMetrics name_fm(name_font());
+    const QFontMetrics mono_fm(theme::meta_font());
+    const QFontMetrics chip_fm(theme::badge_font());
+    const int name_h = name_fm.height();
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
 
+    if (selected) {
+        // The bar is the mark of a choice. The plate behind it is shared with
+        // hovering, so a moving pointer cannot imitate a selection.
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(theme::colors().accent);
+        painter->drawRect(QRectF(option.rect.left(), option.rect.top(), 2,
+                                 option.rect.height()));
+    }
+
     const QRect body = option.rect.adjusted(kHPadding, kVPadding, -kHPadding,
                                             -kVPadding);
-    QFont name_font = option.font;
-    name_font.setBold(true);
-    const QFontMetrics name_fm(name_font);
-    const int name_h = name_fm.height();
-    const QFont mono = meta_font(option.font);
-    const QFontMetrics mono_fm(mono);
 
-    // State dot, centred on the name line so it marks the machine rather than
-    // one of its facts. Offline is a ring: there is nothing to light up.
+    // State dot, centred on the name line so it marks the machine rather than one
+    // of its facts. Offline is a ring: there is nothing lit to show.
     const QRectF dot(body.left(), body.top() + (name_h - kDot) / 2.0, kDot, kDot);
     const QColor edge = state_color(state);
-    if (state == DeviceState::Offline) {
+    if (dimmed) {
         QPen ring(muted);
         ring.setWidthF(1.4);
         painter->setPen(ring);
@@ -110,14 +119,10 @@ void DeviceRowDelegate::paint(QPainter* painter,
 
     const int text_left = static_cast<int>(dot.right()) + kGap;
     const int line_right = option.rect.right() - kHPadding;
-    QRect name_line(text_left, body.top(), line_right - text_left, name_h);
+    const QRect name_line(text_left, body.top(), line_right - text_left, name_h);
 
     // Chips are measured first: a long hostname must never push the capability
     // badges off the row.
-    QFont chip_font = option.font;
-    chip_font.setPointSizeF(option.font.pointSizeF() - 2.0);
-    const QFontMetrics chip_fm(chip_font);
-    const int chip_h = chip_fm.height() + 4;
     int chips_w = 0;
     for (const QString& badge : badges) {
         chips_w += chip_fm.horizontalAdvance(badge) + 12 + 4;
@@ -126,20 +131,21 @@ void DeviceRowDelegate::paint(QPainter* painter,
         qMax(40, name_line.width() - (chips_w ? chips_w - 4 : 0));
     const QString shown_name =
         name_fm.elidedText(name, Qt::ElideRight, name_room);
-    painter->setFont(name_font);
+    painter->setFont(name_font());
     painter->setPen(text);
     painter->drawText(name_line, Qt::AlignLeft | Qt::AlignVCenter, shown_name);
 
     int chip_x = name_line.left() + name_fm.horizontalAdvance(shown_name);
-    painter->setFont(chip_font);
+    const int chip_h = chip_fm.height() + 4;
+    painter->setFont(theme::badge_font());
     for (const QString& badge : badges) {
         const int w = chip_fm.horizontalAdvance(badge) + 12;
         QRectF chip(chip_x, name_line.top() + (name_h - chip_h) / 2.0, w, chip_h);
         if (chip.right() > line_right) {
             break;
         }
-        QColor chip_edge = edge;
-        chip_edge.setAlpha(150);
+        QColor chip_edge = dimmed ? muted : edge;
+        chip_edge.setAlpha(selected ? 220 : 150);
         painter->setPen(QPen(chip_edge, 1));
         painter->setBrush(Qt::NoBrush);
         painter->drawRoundedRect(chip, chip_h / 2.0, chip_h / 2.0);
@@ -150,8 +156,8 @@ void DeviceRowDelegate::paint(QPainter* painter,
 
     const QRect meta_line(text_left, body.top() + name_h, line_right - text_left,
                           mono_fm.height());
-    painter->setFont(mono);
-    painter->setPen(muted);
+    painter->setFont(theme::meta_font());
+    painter->setPen(dimmed ? muted : theme::colors().muted);
     painter->drawText(meta_line, Qt::AlignLeft | Qt::AlignVCenter,
                       mono_fm.elidedText(meta, Qt::ElideRight, meta_line.width()));
     painter->restore();

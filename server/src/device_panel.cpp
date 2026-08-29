@@ -15,6 +15,7 @@
 #include "device_list_model.hpp"
 #include "device_row_delegate.hpp"
 #include "elided_label.hpp"
+#include "icon_factory.hpp"
 
 namespace {
 
@@ -55,6 +56,8 @@ DevicePanel::DevicePanel(QWidget* parent) : QWidget(parent) {
     search_ = new QLineEdit();
     search_->setPlaceholderText(QStringLiteral("搜索名称 / IP / 设备 id / 备注"));
     search_->setClearButtonEnabled(true);
+    // Qt 6.7 has no leading-icon setter; a leading action is the only way in.
+    search_->addAction(icons::search(), QLineEdit::LeadingPosition);
 
     model_ = new DeviceListModel(this);
     filter_ = new RosterFilter(this);

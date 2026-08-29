@@ -42,6 +42,9 @@ private:
     void refresh_zoom();
     int tab_of(const std::string& device_id) const;
     void close_tab(int index);
+    // The style's tab close glyph is a dark mark that disappears on this tab
+    // strip, so each tab gets one drawn from the theme instead.
+    void apply_close_button(int index);
 
     TunnelManager& tunnels_;
     QTabWidget* tabs_ = nullptr;

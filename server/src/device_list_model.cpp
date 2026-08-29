@@ -132,12 +132,14 @@ QString DeviceListModel::badge_text(const TunnelManager::DeviceInfo& info) {
     entry.flags = info.flags;
     entry.elevated = info.elevated;
     entry.elevation_known = info.elevation_known;
-    QStringList badges = DeviceListModel::badges(entry);
-    QString text;
-    for (const QString& badge : badges) {
-        text += QStringLiteral("〔%1〕").arg(badge);
+    const QStringList badges = DeviceListModel::badges(entry);
+    if (badges.isEmpty()) {
+        return QString();
     }
-    return text;
+    // The roster row paints these as chips; a tab title and a header label can
+    // only carry words, so they use the same separator as every other inline
+    // list in this console. The words are shared, the notation is not.
+    return QStringLiteral(" · ") + badges.join(QStringLiteral(" · "));
 }
 
 QString DeviceListModel::display_name(const TunnelManager::DeviceInfo& info,
@@ -145,5 +147,5 @@ QString DeviceListModel::display_name(const TunnelManager::DeviceInfo& info,
     // The remark wins: it is the name the operator chose.
     const QString name =
         remark.isEmpty() ? QString::fromStdString(info.device_name) : remark;
-    return name + QStringLiteral(" ") + badge_text(info);
+    return name + badge_text(info);
 }
