@@ -159,7 +159,7 @@ void SessionsArea::update_session(const TunnelManager::DeviceInfo& info,
                          .arg(QString::fromStdString(info.peer_ip))
                          .arg(info.screen_width)
                          .arg(info.screen_height),
-                     live ? QStringLiteral("")
+                     live ? QStringLiteral("已连接")
                           : (info.state == DeviceState::Reconnecting
                                  ? QStringLiteral("重连中")
                                  : QStringLiteral("离线")),

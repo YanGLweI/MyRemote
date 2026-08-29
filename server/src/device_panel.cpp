@@ -14,6 +14,7 @@
 
 #include "device_list_model.hpp"
 #include "device_row_delegate.hpp"
+#include "elided_label.hpp"
 
 namespace {
 
@@ -70,12 +71,9 @@ DevicePanel::DevicePanel(QWidget* parent) : QWidget(parent) {
     list_->setMouseTracking(true);
     list_->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    footer_ = new QLabel(QStringLiteral("还没有设备注册"));
+    footer_ = new ElidedLabel();
+    footer_->setText(QStringLiteral("还没有设备注册"));
     footer_->setContentsMargins(2, 0, 2, 0);
-    // The count changes width as devices come and go; that must not become the
-    // panel's minimum width, or the roster resizes itself under the splitter.
-    footer_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    footer_->setMinimumWidth(0);
 
     box->addWidget(search_);
     box->addWidget(list_, 1);

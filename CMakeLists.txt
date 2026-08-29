@@ -90,6 +90,7 @@ if(BUILD_SERVER)
         server/src/sessions_area.cpp
         server/src/session_view.cpp
         server/src/session_toolbar.cpp
+        server/src/elided_label.cpp
         server/src/listener.cpp
         server/src/tunnel_manager.cpp
         server/src/display_renderer.cpp
@@ -106,6 +107,7 @@ if(BUILD_SERVER)
         server/include/sessions_area.hpp
         server/include/session_view.hpp
         server/include/session_toolbar.hpp
+        server/include/elided_label.hpp
         server/include/device_panel.hpp
         server/include/device_list_model.hpp
         server/include/device_row_delegate.hpp

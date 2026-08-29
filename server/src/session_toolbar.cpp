@@ -5,32 +5,55 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QVBoxLayout>
 
+#include "elided_label.hpp"
 #include "remote_controller.hpp"
 
-SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
-    auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(8, 4, 8, 4);
-    row->setSpacing(8);
+namespace {
 
-    title_ = new QLabel(QStringLiteral("会话"));
+// Text that changes size at runtime must never drive the layout. A QLabel's
+// minimumSizeHint is its own text width, so an unbounded NET/DEC counter raises
+// this tab's minimum width once per second and the splitter pays for it out of
+// the roster: that reads as the whole window shaking. So every label whose words
+// come and go is pinned to the width of its widest possible string.
+void reserve(QWidget* w, const QString& widest) {
+    w->setFixedWidth(w->fontMetrics().horizontalAdvance(widest) + 8);
+}
+
+void reserve_button(QPushButton* b, const QString& widest) {
+    const QString current = b->text();
+    b->setText(widest);
+    const int width = b->sizeHint().width();
+    b->setText(current);
+    b->setMinimumWidth(width);
+}
+
+}  // namespace
+
+SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
+    auto* box = new QVBoxLayout(this);
+    box->setContentsMargins(8, 5, 8, 5);
+    box->setSpacing(3);
+
+    auto* actions = new QHBoxLayout();
+    actions->setSpacing(8);
+    auto* status = new QHBoxLayout();
+    status->setSpacing(8);
+    box->addLayout(actions);
+    box->addLayout(status);
+
+    title_ = new ElidedLabel();
     QFont bold = title_->font();
     bold.setBold(true);
     title_->setFont(bold);
-    detail_ = new QLabel();
-    state_ = new QLabel();
-    capture_ = new QLabel();
-    capture_->setText(QStringLiteral("  键盘 · 本地"));
-    capture_->setToolTip(QStringLiteral(
-        "在远程画面里点一下即可开始输入键盘；连按两次 Esc 交还。\n"
-        "也可以按释放热键（默认 Ctrl+Alt+Shift+R）交还。\n"
-        "Alt+F4 与 Win 始终留在本机：Windows 在外壳层优先处理 Win 和\n"
-        "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
-    fps_ = new QLabel(QStringLiteral("NET -- | DEC --"));
+    title_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
     quality_ = new QComboBox();
     for (int i = 0; i < kQualityPresetCount; ++i) {
         quality_->addItem(QString::fromUtf8(kQualityPresets[i].label));
+        quality_->setItemData(i, QString::fromUtf8(kQualityPresets[i].spec),
+                              Qt::ToolTipRole);
     }
     quality_->setCurrentIndex(kQualityDefault);
     quality_->setToolTip(QStringLiteral("画质档位（只作用于这台设备）"));
@@ -42,56 +65,43 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
         "Ctrl+Alt+Del 无法被注入：若策略要求按 Ctrl+Alt+Del 才开始登录，\n"
         "请将该机器的 DisableCAD 设为 1。"));
 
-    stop_button_ = new QPushButton(QStringLiteral("断开"));
-
     fullscreen_button_ = new QPushButton(QStringLiteral("全屏"));
     fullscreen_button_->setCheckable(true);
     fullscreen_button_->setToolTip(QStringLiteral(
         "让这台设备铺满整个窗口。标签栏和这一条工具栏都会留在画面上方，\n"
         "出口一直在屏幕上。"));
 
-    row->addWidget(title_);
-    row->addWidget(detail_);
-    row->addWidget(state_);
-    row->addWidget(capture_);
-    row->addStretch(1);
-    row->addWidget(fps_);
-    row->addWidget(quality_);
-    row->addWidget(logon_button_);
-    row->addWidget(fullscreen_button_);
-    row->addWidget(stop_button_);
+    stop_button_ = new QPushButton(QStringLiteral("断开"));
 
-    // Text that changes size at runtime must never drive the layout. A QLabel's
-    // minimumSizeHint is its own text width, so an unbounded NET/DEC counter
-    // raises this tab's minimum width once per second and the splitter pays for
-    // it out of the roster: that reads as the whole window shaking.
-    const auto reserve = [](QWidget* w, const QString& widest) {
-        w->setFixedWidth(w->fontMetrics().horizontalAdvance(widest) + 8);
-    };
-    const auto reserve_button = [](QPushButton* b, const QString& widest) {
-        const QString current = b->text();
-        b->setText(widest);
-        const int width = b->sizeHint().width();
-        b->setText(current);
-        b->setMinimumWidth(width);
-    };
-    reserve(fps_, QStringLiteral("NET 100 | DEC 100"));
+    state_ = new QLabel();
+    capture_ = new QLabel();
+    capture_->setText(QStringLiteral("键盘 · 本地"));
+    capture_->setToolTip(QStringLiteral(
+        "在远程画面里点一下即可开始输入键盘；连按两次 Esc 交还。\n"
+        "也可以按释放热键（默认 Ctrl+Alt+Shift+R）交还。\n"
+        "Alt+F4 与 Win 始终留在本机：Windows 在外壳层优先处理 Win 和\n"
+        "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
+    detail_ = new ElidedLabel();
+    detail_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    fps_ = new QLabel(QStringLiteral("NET --  DEC --"));
+
+    actions->addWidget(title_, 1);
+    actions->addWidget(quality_);
+    actions->addWidget(logon_button_);
+    actions->addWidget(fullscreen_button_);
+    actions->addWidget(stop_button_);
+
+    status->addWidget(state_);
+    status->addWidget(capture_);
+    status->addWidget(detail_, 1);
+    status->addWidget(fps_);
+
+    reserve(state_, QStringLiteral("重连中"));
+    reserve(capture_, QStringLiteral("键盘 · 远程"));
+    reserve(fps_, QStringLiteral("NET 100  DEC 100"));
     fps_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    reserve(state_, QStringLiteral("  重连中"));
-    reserve(capture_, capture_->text());
     reserve_button(stop_button_, QStringLiteral("重新连接"));
     reserve_button(fullscreen_button_, QStringLiteral("退出全屏"));
-
-    // The machine's name and address are the parts worth clipping: they carry no
-    // action, and the full text is in the tooltip.
-    title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    title_->setMinimumWidth(title_->fontMetrics().horizontalAdvance(QStringLiteral("MM")));
-    detail_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    detail_->setMinimumWidth(0);
-
-    quality_->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    quality_->setMinimumContentsLength(10);
 
     connect(quality_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int idx) { emit quality_selected(idx); });
@@ -111,12 +121,12 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
 void SessionToolbar::set_title(const QString& device_name, const QString& detail) {
     title_->setText(device_name);
     title_->setToolTip(device_name);
-    detail_->setText(detail.isEmpty() ? QString() : QStringLiteral("  %1").arg(detail));
+    detail_->setText(detail);
     detail_->setToolTip(detail);
 }
 
 void SessionToolbar::set_state_text(const QString& text, bool live) {
-    state_->setText(text.isEmpty() ? QString() : QStringLiteral("  %1").arg(text));
+    state_->setText(text);
     state_->setStyleSheet(live ? QStringLiteral("color: #2E8B57;")
                                : QStringLiteral("color: #B07A18;"));
 }
@@ -128,7 +138,7 @@ void SessionToolbar::set_streaming(bool on) {
                              : QStringLiteral("重新连接"));
     capture_->setVisible(on);
     if (!on) {
-        fps_->setText(QStringLiteral("NET -- | DEC --"));
+        fps_->setText(QStringLiteral("NET --  DEC --"));
     }
 }
 
@@ -137,8 +147,8 @@ void SessionToolbar::set_supports_logon(bool on) {
 }
 
 void SessionToolbar::set_capture(bool captured) {
-    capture_->setText(captured ? QStringLiteral("  键盘 · 远程")
-                              : QStringLiteral("  键盘 · 本地"));
+    capture_->setText(captured ? QStringLiteral("键盘 · 远程")
+                               : QStringLiteral("键盘 · 本地"));
     capture_->setStyleSheet(captured ? QStringLiteral("color: #3E9B6E;")
                                      : QStringLiteral("color: #98A2AD;"));
 }
@@ -157,7 +167,7 @@ void SessionToolbar::set_fps(int net_fps, int decoded_fps) {
     if (!streaming_) {
         return;
     }
-    fps_->setText(QStringLiteral("NET %1 | DEC %2").arg(net_fps).arg(decoded_fps));
+    fps_->setText(QStringLiteral("NET %1  DEC %2").arg(net_fps).arg(decoded_fps));
 }
 
 void SessionToolbar::set_quality_index(int index) {
