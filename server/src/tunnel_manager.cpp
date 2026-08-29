@@ -218,6 +218,34 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                             QString::fromStdString(session->device_name), w, h);
                         break;
                     }
+                    case proto::MessageType::StateReport: {
+                        uint8_t flags = 0;
+                        uint16_t w = 0;
+                        uint16_t h = 0;
+                        if (!proto::parse_state_report_payload(frame.payload, flags,
+                                                               w, h)) {
+                            break;
+                        }
+                        session->flags = flags;
+                        if (w && h) {
+                            session->screen_width = w;
+                            session->screen_height = h;
+                        }
+                        mlog::info("Device " + session->device_id +
+                                   " capabilities now 0x" +
+                                   [&] {
+                                       char hex[4];
+                                       snprintf(hex, sizeof(hex), "%02X", flags);
+                                       return std::string(hex);
+                                   }() +
+                                   " at " + std::to_string(session->screen_width) +
+                                   "x" + std::to_string(session->screen_height));
+                        emit device_registered(
+                            QString::fromStdString(session->device_id),
+                            QString::fromStdString(session->device_name),
+                            session->screen_width, session->screen_height);
+                        break;
+                    }
                     case proto::MessageType::VideoFrame:
                         video_frames_in_.fetch_add(1);
                         emit video_frame_received(
@@ -315,17 +343,23 @@ bool TunnelManager::register_session(const std::shared_ptr<ClientSession>& sessi
     session->screen_height = info.screen_height;
     session->elevated = info.elevated;
     session->elevation_known = info.elevation_known;
+    session->flags = info.flags;
     if (info.elevation_known) {
         mlog::info("Device " + info.device_id + " agent is " +
-                   (info.elevated ? "elevated"
-                                  : "limited: injected input cannot reach "
-                                    "elevated windows"));
+                   (info.service_host
+                        ? std::string(info.is_system
+                                          ? "a service session host (SYSTEM)"
+                                          : "a session host (not SYSTEM)")
+                        : info.is_system ? "SYSTEM"
+                        : info.elevated  ? "elevated"
+                                         : "limited: injected input cannot reach "
+                                           "elevated windows"));
     }
 
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
         auto existing = sessions_.find(info.device_id);
-        if (existing != sessions_.end()) {
+        if (existing != sessions_.end() && existing->second != session) {
             // Same device re-registering (reconnect): retire the old tunnel.
             auto old = existing->second;
             old->alive.store(false);
@@ -419,6 +453,7 @@ std::vector<TunnelManager::DeviceInfo> TunnelManager::online_devices() const {
         info.screen_height = session->screen_height;
         info.elevated = session->elevated;
         info.elevation_known = session->elevation_known;
+        info.flags = session->flags;
         info.connect_time = session->connect_time;
         result.push_back(std::move(info));
     }

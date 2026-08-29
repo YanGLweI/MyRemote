@@ -65,6 +65,10 @@ std::atomic<int> g_max_encode_width{1920};
 bool g_session_host = false;
 bool g_follow_desktop = false;
 std::atomic<bool> g_secure_desktop{false};
+// Whether this process may follow the logon screen at all, as opposed to
+// whether it is on one right now.
+bool g_can_use_secure_desktop = false;
+std::atomic<uint8_t> g_reported_flags{0};
 
 // SendInput is delivered to whatever desktop the *calling* thread is attached
 // to, and only one thread may ever hold that affinity, so the network thread
@@ -383,6 +387,14 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
         case proto::MessageType::AttachConsole:
             attach_to_console();
             break;
+        case proto::MessageType::LockWorkstation: {
+            // Ctrl+Alt+Del cannot be injected, so this is the honest way back to
+            // a credential prompt.
+            const BOOL ok = LockWorkStation();
+            mlog::info(ok ? "Workstation locked; logon screen is up"
+                          : "LockWorkStation refused by this session");
+            break;
+        }
         default:
             mlog::warn("Unknown message type: " +
                       std::to_string(static_cast<int>(type)));
@@ -390,15 +402,61 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
     }
 }
 
+uint8_t capability_flags() {
+    uint8_t f = 0;
+    if (g_elevated) {
+        f |= proto::kRegisterFlagElevated;
+    }
+    if (win32util::process_is_system()) {
+        f |= proto::kFlagIsSystem | proto::kRegisterFlagElevated;
+    }
+    if (g_session_host) {
+        f |= proto::kFlagServiceHost;
+    }
+    if (g_can_use_secure_desktop) {
+        f |= proto::kFlagSecureDesktop;
+    }
+    if (g_secure_desktop.load()) {
+        f |= proto::kFlagLogonScreen;
+    }
+    DWORD session_id = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    if (session_id == WTSGetActiveConsoleSessionId()) {
+        f |= proto::kFlagConsoleOwner;
+    }
+    return f;
+}
+
+// Silent unless something actually changed, so it is cheap to call per beat.
+// A second Register would not do: the server retires the previous session for
+// the same device id, which is this one.
+void send_state_report() {
+    if (!g_connection || !g_state.registered.load() ||
+        !g_connection->is_connected()) {
+        return;
+    }
+    const uint8_t f = capability_flags();
+    if (g_reported_flags.exchange(f) == f) {
+        return;
+    }
+    char hex[8];
+    snprintf(hex, sizeof(hex), "%02X", f);
+    mlog::info(std::string("Capability change reported (flags=0x") + hex + ")");
+    g_connection->send(
+        proto::MessageType::StateReport,
+        proto::make_state_report_payload(
+            f, static_cast<uint16_t>(GetSystemMetrics(SM_CXSCREEN)),
+            static_cast<uint16_t>(GetSystemMetrics(SM_CYSCREEN))));
+}
+
 bool send_register(const config::ClientConfig& cfg, const std::string& dev_id) {
     std::string name = cfg.device_name.empty() ? device::default_device_name()
                                                : cfg.device_name;
     int width = GetSystemMetrics(SM_CXSCREEN);
     int height = GetSystemMetrics(SM_CYSCREEN);
-    uint8_t flags = g_elevated ? proto::kRegisterFlagElevated : 0;
     auto payload = proto::make_register_payload(
         dev_id, name, static_cast<uint16_t>(width), static_cast<uint16_t>(height),
-        flags);
+        capability_flags());
     return g_connection->send(proto::MessageType::Register, payload);
 }
 
@@ -877,6 +935,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         // precisely why the host has to run as SYSTEM.
         tcb_privilege = win32util::enable_privilege(L"SeTcbPrivilege");
         debug_privilege = win32util::enable_privilege(L"SeDebugPrivilege");
+        g_can_use_secure_desktop = tcb_privilege;
     }
 
     // Exactly one agent process, acquired before any UI is shown. A takeover
@@ -958,6 +1017,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         ui.save_mode = gui::SaveMode::SaveOnly;
         return gui::run_config_gui(ui) ? 0 : 1;
     }
+    if (!g_session_host && !args.force && svc::is_installed()) {
+        mlog::info("The MyRemoteAgent service owns this machine; this instance "
+                   "exits so the tunnel stays with the hosted process. Use "
+                   "--force to override.");
+        if (!args.background) {
+            gui::ConfigUi ui = make_ui(cfg);
+            ui.save_mode = gui::SaveMode::SaveOnly;
+            gui::run_config_gui(ui);
+        }
+        return 0;
+    }
     if (!args.background) {
         // First double-click on a fresh machine: configure, then run.
         gui::ConfigUi ui = make_ui(cfg);
@@ -1022,6 +1092,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     g_heartbeat = std::make_unique<HeartbeatKeeper>();
     g_heartbeat->start(1000, []() {
+        send_state_report();
         if (!g_state.registered.load() || !g_connection->is_connected()) {
             return true;  // nothing to do yet
         }

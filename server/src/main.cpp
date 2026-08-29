@@ -43,6 +43,14 @@ std::string device_label(const TunnelManager::DeviceInfo& info,
                          const QString& remark) {
     std::string name = remark.isEmpty() ? info.device_name
                                         : remark.toStdString();
+    if (info.flags & proto::kFlagServiceHost) {
+        name += " 〔服务〕";
+    }
+    if (info.flags & proto::kFlagLogonScreen) {
+        name += " 〔登录界面〕";
+    } else if (info.elevation_known && !(info.flags & proto::kFlagConsoleOwner)) {
+        name += " 〔非控制台〕";
+    }
     if (info.elevation_known && !info.elevated) {
         name += " 〔受限〕";
     }
@@ -84,12 +92,20 @@ public:
         console_button_->setEnabled(false);
         console_button_->setToolTip(QStringLiteral(
             "Restore the picture after an RDP client closed and left this "
-            "session with no display attached (needs an elevated agent)."));
+            "session with no display attached (handled by the MyRemote "
+            "service on that machine)."));
+        logon_button_ = new QPushButton(QStringLiteral("返回登录界面"));
+        logon_button_->setEnabled(false);
+        logon_button_->setToolTip(QStringLiteral(
+            "锁定工作站，让对端回到登录界面后可以远程输入密码登录。\n"
+            "Ctrl+Alt+Del 无法被注入：若策略要求按 Ctrl+Alt+Del 才开始登录，\n"
+            "请将该机器的 DisableCAD 设为 1。"));
         side_layout->addWidget(device_list_, 1);
         side_layout->addWidget(quality_combo_);
         side_layout->addWidget(fullscreen_button_);
         side_layout->addWidget(remark_button_);
         side_layout->addWidget(console_button_);
+        side_layout->addWidget(logon_button_);
         side_layout->addWidget(stop_button_);
         disconnect_button_ = new QPushButton(QStringLiteral("Disconnect Selected"));
         side_layout->addWidget(disconnect_button_);
@@ -172,6 +188,8 @@ public:
                 [this](QString device_id) {
                     stop_button_->setEnabled(true);
                     console_button_->setEnabled(true);
+                    logon_button_->setEnabled(
+                        controller_->controlled_supports_logon());
                     statusBar()->showMessage(
                         QStringLiteral("Controlling %1").arg(device_id), 0);
                 });
@@ -179,11 +197,14 @@ public:
                 [this]() {
                     stop_button_->setEnabled(false);
                     console_button_->setEnabled(false);
+                    logon_button_->setEnabled(false);
                     fps_label_->setText(QStringLiteral("FPS: --"));
                     statusBar()->showMessage(QStringLiteral("Ready"), 0);
                 });
         connect(console_button_, &QPushButton::clicked, this,
                 [this]() { controller_->attach_console(); });
+        connect(logon_button_, &QPushButton::clicked, this,
+                [this]() { controller_->lock_workstation(); });
         connect(tunnels_.get(), &TunnelManager::video_frame_received,
                 controller_.get(), &RemoteController::on_video_frame,
                 Qt::DirectConnection);
@@ -238,6 +259,11 @@ private slots:
                 device_list_->upsert_device(info.device_id, display,
                                             info.screen_width, info.screen_height,
                                             info.peer_ip, info.connect_time);
+                // Capabilities move at runtime (logon screen, console owner).
+                if (controller_->is_controlling()) {
+                    logon_button_->setEnabled(
+                        controller_->controlled_supports_logon());
+                }
                 return;
             }
         }
@@ -284,6 +310,7 @@ private:
     DeviceListWidget* device_list_ = nullptr;
     QPushButton* stop_button_ = nullptr;
     QPushButton* console_button_ = nullptr;
+    QPushButton* logon_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
     QPushButton* disconnect_button_ = nullptr;
     QPushButton* remark_button_ = nullptr;

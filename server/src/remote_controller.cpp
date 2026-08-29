@@ -169,6 +169,29 @@ void RemoteController::attach_console() {
     tunnels_.send_to_device(device, proto::MessageType::AttachConsole);
 }
 
+void RemoteController::lock_workstation() {
+    std::string device = controlled_device();
+    if (device.empty()) {
+        mlog::warn("Logon screen requested with no active session");
+        return;
+    }
+    mlog::info("Requesting the logon screen on " + device);
+    tunnels_.send_to_device(device, proto::MessageType::LockWorkstation);
+}
+
+bool RemoteController::controlled_supports_logon() const {
+    std::string device = controlled_device();
+    if (device.empty()) {
+        return false;
+    }
+    for (const auto& info : tunnels_.online_devices()) {
+        if (info.device_id == device) {
+            return (info.flags & proto::kFlagServiceHost) != 0;
+        }
+    }
+    return false;
+}
+
 bool RemoteController::start_control(const std::string& device_id) {
     return do_start(device_id);
 }

@@ -98,8 +98,16 @@ bool parse_register_payload(const std::vector<uint8_t>& payload, RegisterInfo& i
            read_u16(payload, offset, info.screen_height);
     if (!ok) return false;
     info.elevation_known = offset < payload.size();
-    info.elevated = info.elevation_known &&
-                    (payload[offset] & kRegisterFlagElevated) != 0;
+    if (info.elevation_known) {
+        const uint8_t flags = payload[offset];
+        info.flags = flags;
+        info.elevated = (flags & kRegisterFlagElevated) != 0;
+        info.service_host = (flags & kFlagServiceHost) != 0;
+        info.is_system = (flags & kFlagIsSystem) != 0;
+        info.console_owner = (flags & kFlagConsoleOwner) != 0;
+        info.secure_desktop = (flags & kFlagSecureDesktop) != 0;
+        info.logon_screen = (flags & kFlagLogonScreen) != 0;
+    }
     return true;
 }
 
@@ -156,6 +164,23 @@ bool parse_display_changed_payload(const std::vector<uint8_t>& payload,
     size_t offset = 0;
     return read_u16(payload, offset, width) &&
            read_u16(payload, offset, height);
+}
+
+std::vector<uint8_t> make_state_report_payload(uint8_t flags, uint16_t width,
+                                               uint16_t height) {
+    std::vector<uint8_t> payload;
+    payload.push_back(flags);
+    put_u16(payload, width);
+    put_u16(payload, height);
+    return payload;
+}
+
+bool parse_state_report_payload(const std::vector<uint8_t>& payload, uint8_t& flags,
+                                uint16_t& width, uint16_t& height) {
+    if (payload.size() < 5) return false;
+    size_t offset = 0;
+    flags = payload[offset++];
+    return read_u16(payload, offset, width) && read_u16(payload, offset, height);
 }
 
 std::vector<uint8_t> make_video_frame_payload(uint32_t seq, uint64_t timestamp_us,

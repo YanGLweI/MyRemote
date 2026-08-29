@@ -26,6 +26,7 @@ struct ClientSession {
     uint16_t screen_height = 0;
     bool elevated = false;
     bool elevation_known = false;
+    uint8_t flags = 0;  // proto::kRegisterFlag* / kFlag*
     time_t connect_time = 0;
     std::atomic<long long> last_heartbeat_ms{0};
     std::atomic<bool> registered{false};
@@ -47,6 +48,7 @@ public:
         uint16_t screen_height = 0;
         bool elevated = false;
         bool elevation_known = false;
+        uint8_t flags = 0;  // proto::kRegisterFlag* / kFlag*
         time_t connect_time = 0;
     };
 

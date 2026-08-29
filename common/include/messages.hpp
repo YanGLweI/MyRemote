@@ -23,6 +23,8 @@ enum class MessageType : uint8_t {
     AuthResponse    = 0x0A,  // C→S secondary password response
     DisplayChanged  = 0x0B,  // C→S native desktop size changed [2B w][2B h]
     AttachConsole   = 0x0C,  // S→C reattach this session to the physical console
+    StateReport     = 0x0D,  // C→S live capability + geometry [1B flags][2B w][2B h]
+    LockWorkstation = 0x0F,  // S→C hand the machine back to its logon screen
     Encrypted       = 0x10,  // envelope: AES-GCM over [inner type][payload]
 };
 
@@ -32,8 +34,14 @@ enum class RegisterStatus : uint8_t {
     ServerFull = 2,
 };
 
-// Capability bits carried in the trailing Register flags byte.
+// Capability bits carried in the trailing Register flags byte, reused verbatim
+// by StateReport so a live change never needs a second registration.
 constexpr uint8_t kRegisterFlagElevated = 0x01;
+constexpr uint8_t kFlagServiceHost = 0x02;       // started by the MyRemote service
+constexpr uint8_t kFlagIsSystem = 0x04;          // LocalSystem (implies Elevated)
+constexpr uint8_t kFlagConsoleOwner = 0x08;      // this session owns the console
+constexpr uint8_t kFlagSecureDesktop = 0x10;     // can follow Winlogon (SeTcb)
+constexpr uint8_t kFlagLogonScreen = 0x20;       // input desktop is not "Default"
 
 struct RegisterInfo {
     uint16_t protocol_version = 0;
@@ -44,6 +52,12 @@ struct RegisterInfo {
     bool elevated = false;
     // False for agents too old to send the flags byte: elevation stays unknown.
     bool elevation_known = false;
+    uint8_t flags = 0;
+    bool service_host = false;
+    bool is_system = false;
+    bool console_owner = false;
+    bool secure_desktop = false;
+    bool logon_screen = false;
 };
 
 enum class InputKind : uint8_t {
@@ -99,6 +113,11 @@ bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fp
 std::vector<uint8_t> make_display_changed_payload(uint16_t width, uint16_t height);
 bool parse_display_changed_payload(const std::vector<uint8_t>& payload,
                                    uint16_t& width, uint16_t& height);
+
+std::vector<uint8_t> make_state_report_payload(uint8_t flags, uint16_t width,
+                                               uint16_t height);
+bool parse_state_report_payload(const std::vector<uint8_t>& payload, uint8_t& flags,
+                                uint16_t& width, uint16_t& height);
 
 std::vector<uint8_t> make_video_frame_payload(uint32_t seq, uint64_t timestamp_us,
                                               bool is_keyframe, const uint8_t* data,

@@ -31,6 +31,10 @@ public:
     // that disconnected leaves the desktop rendering nowhere.
     void attach_console();
     std::string controlled_device() const;
+    // Hands the remote machine back to its own logon screen; only a
+    // service-hosted agent can follow what happens next.
+    void lock_workstation();
+    bool controlled_supports_logon() const;
 
 signals:
     void control_started(QString device_id);
