@@ -11,7 +11,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -57,6 +59,60 @@ std::string g_log_dir;
 HANDLE g_reload_event = nullptr;
 std::atomic<bool> g_config_dialog_open{false};
 std::atomic<int> g_max_encode_width{1920};
+
+// Started by the service: no UI of any kind, and the desktop it has to work on
+// is whichever one currently owns the keyboard.
+bool g_session_host = false;
+bool g_follow_desktop = false;
+std::atomic<bool> g_secure_desktop{false};
+
+// SendInput is delivered to whatever desktop the *calling* thread is attached
+// to, and only one thread may ever hold that affinity, so the network thread
+// hands events over instead of injecting them itself.
+std::mutex g_inputs_mutex;
+std::deque<proto::InputEvent> g_pending_inputs;
+HANDLE g_input_wake = nullptr;
+
+void queue_input(const proto::InputEvent& ev) {
+    {
+        std::lock_guard<std::mutex> lock(g_inputs_mutex);
+        // Only the newest pointer position matters; presses and releases do not.
+        if (ev.kind == proto::InputKind::MouseMove && !g_pending_inputs.empty() &&
+            g_pending_inputs.back().kind == proto::InputKind::MouseMove) {
+            g_pending_inputs.back() = ev;
+        } else {
+            g_pending_inputs.push_back(ev);
+        }
+    }
+    if (g_input_wake) {
+        SetEvent(g_input_wake);
+    }
+}
+
+// Injects what the capture thread's desktop can actually receive.
+int drain_inputs() {
+    int injected = 0;
+    while (injected < 64) {
+        proto::InputEvent ev;
+        {
+            std::lock_guard<std::mutex> lock(g_inputs_mutex);
+            if (g_pending_inputs.empty()) {
+                break;
+            }
+            ev = g_pending_inputs.front();
+            g_pending_inputs.pop_front();
+        }
+        g_input.handle(ev);
+        if (ev.kind == proto::InputKind::Key && ev.pressed) {
+            char hex[8];
+            sprintf(hex, "%02X", ev.vk);
+            mlog::info(std::string("Key injected: vk=0x") + hex +
+                       (ev.extended ? " extended" : ""));
+        }
+        ++injected;
+    }
+    return injected;
+}
 
 // Push quality + resolution settings through the pipeline. The capturer owns
 // the encoded size (native desktop capped by max_encode_width), so the
@@ -152,13 +208,20 @@ void log_session_state() {
     } else {
         msg += " = console session";
     }
+    std::string desk = win32util::input_desktop_name();
+    msg += "; input desktop \"" + (desk.empty() ? std::string("unknown") : desk) +
+           "\"";
+    msg += win32util::process_is_system()
+               ? "; running as SYSTEM"
+               : (g_elevated ? "; running elevated" : "; running limited");
     mlog::info(msg);
 }
 
-// A user who right-clicks agent.exe and picks "Run as administrator" would
-// otherwise lose the single-instance race against the limited copy, so the
-// elevated copy retires same-path instances before claiming the mutex.
-bool retire_limited_instances() {
+// Any second copy of this exact image would fight for the tunnel and the
+// single-instance mutex, so the process that is allowed to run retires the
+// others: the elevated copy for the limited one, the service host for anything
+// started by hand.
+bool retire_same_path_instances() {
     wchar_t self_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, self_path, MAX_PATH)) {
         return false;
@@ -197,12 +260,17 @@ bool retire_limited_instances() {
 // still exists but renders nowhere, so the stream is black and input lands on
 // nothing. Putting the session back on the console restores both.
 void attach_to_console() {
-    if (!g_elevated) {
-        mlog::warn("Attach-console request ignored: agent is not elevated");
-        return;
-    }
     DWORD session_id = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    if (session_id == WTSGetActiveConsoleSessionId()) {
+        mlog::info("Attach-console request ignored: already the console session");
+        return;
+    }
+    if (!win32util::process_is_system()) {
+        mlog::warn("Attach-console request ignored: only the service-hosted agent "
+                   "can move a session to the console");
+        return;
+    }
     int code = win32util::run_command(L"tscon " + std::to_wstring(session_id) +
                                       L" /dest:console");
     mlog::info("tscon " + std::to_string(session_id) +
@@ -299,16 +367,10 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
                 if (ev.kind != proto::InputKind::MouseMove &&
                     (logged_kinds & kind_bit) == 0) {
                     logged_kinds |= kind_bit;
-                    mlog::info("First input event injected (kind=" +
+                    mlog::info("First input event received (kind=" +
                                std::to_string(static_cast<int>(ev.kind)) + ")");
                 }
-                if (ev.kind == proto::InputKind::Key && ev.pressed) {
-                    char hex[8];
-                    sprintf(hex, "%02X", ev.vk);
-                    mlog::info(std::string("Key injected: vk=0x") + hex +
-                               (ev.extended ? " extended" : ""));
-                }
-                g_input.handle(ev);
+                queue_input(ev);
             }
             break;
         }
@@ -377,6 +439,38 @@ bool establish_session(const config::ClientConfig& cfg, const std::string& dev_i
     return false;
 }
 
+// The host has no tray and must never show a window, so it leaves a one-line
+// status file behind instead: that is what `agent.exe --service-state` prints.
+void write_host_status(const std::string& desktop) {
+    if (!g_session_host || g_log_dir.empty()) {
+        return;
+    }
+    int width = 0;
+    int height = 0;
+    if (g_capturer) {
+        g_capturer->encode_size(&width, &height);
+    }
+    DWORD session_id = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    char line[256];
+    snprintf(line, sizeof(line),
+             "pid=%lu session=%lu desktop=%s capture=%s size=%dx%d registered=%d\n",
+             static_cast<unsigned long>(GetCurrentProcessId()),
+             static_cast<unsigned long>(session_id),
+             desktop.empty() ? "unknown" : desktop.c_str(),
+             g_capturer && g_capturer->using_bitblt_fallback() ? "bitblt" : "dxgi",
+             width, height, g_state.registered.load() ? 1 : 0);
+    std::wstring path = win32util::utf8_to_wide(g_log_dir + "\\host.status");
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+    CloseHandle(file);
+}
+
 void stream_loop() {
     CapturedFrame frame;
     bool logged_first = false;
@@ -419,12 +513,50 @@ void stream_loop() {
         win_start_ms = now;
     };
 
+    // This thread is the only one allowed to hold desktop affinity, so it is
+    // also the only one allowed to inject input.
+    win32util::DesktopFollower follower;
+    ULONGLONG last_status_ms = 0;
+    auto refresh_status = [&]() {
+        ULONGLONG now = GetTickCount64();
+        if (!g_session_host || now - last_status_ms < 1000) {
+            return;
+        }
+        last_status_ms = now;
+        write_host_status(g_follow_desktop ? follower.name()
+                                           : win32util::input_desktop_name());
+    };
+
     while (g_state.running.load()) {
+        bool desktop_changed = false;
+        if (g_follow_desktop) {
+            follower.update(nullptr, &desktop_changed);
+            if (desktop_changed) {
+                const std::string desktop = follower.name();
+                mlog::info("Now attached to desktop \"" + desktop + "\" (" +
+                           (follower.on_secure_desktop() ? "secure" : "user") + ")");
+                g_secure_desktop.store(follower.on_secure_desktop());
+                if (g_capturer) {
+                    g_capturer->on_desktop_switched();
+                }
+                reported_w = 0;
+                reported_h = 0;
+                if (g_encoder) {
+                    g_encoder->force_keyframe();
+                }
+                configure_pipeline(g_state.target_fps.load(),
+                                   g_state.target_bitrate_kbps.load(),
+                                   g_max_encode_width.load());
+            }
+        }
+
         if (!g_state.streaming.load() || !g_connection->is_connected()) {
             logged_first = false;
             reported_w = 0;
             reported_h = 0;
-            Sleep(100);
+            WaitForSingleObject(g_input_wake, 100);
+            drain_inputs();
+            refresh_status();
             continue;
         }
 
@@ -483,6 +615,10 @@ void stream_loop() {
                 }
             }
         }
+        // Inject after the capture, so the pointer and keystrokes land on the
+        // same desktop the frame that is going out was taken from.
+        drain_inputs();
+        refresh_status();
         // Neither the BitBlt fallback nor the "no desktop yet" early-out ever
         // blocks, so the frame budget has to be honoured here; AcquireNextFrame
         // already consumed it on the duplication path.
@@ -728,6 +864,21 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     g_config_path = paths.config;
     g_log_dir = paths.log_dir;
 
+    g_session_host = args.session_host;
+    g_follow_desktop = args.follow_desktop;
+    bool tcb_privilege = false;
+    bool debug_privilege = false;
+    if (g_session_host) {
+        // The service just made this process the owner of the tunnel, so any
+        // other copy of this image is now a bug, not a fallback.
+        retire_same_path_instances();
+        // Following the logon screen is impossible without SeTcbPrivilege:
+        // OpenInputDesktop on "Winlogon" is refused to everyone else, which is
+        // precisely why the host has to run as SYSTEM.
+        tcb_privilege = win32util::enable_privilege(L"SeTcbPrivilege");
+        debug_privilege = win32util::enable_privilege(L"SeDebugPrivilege");
+    }
+
     // Exactly one agent process, acquired before any UI is shown. A takeover
     // instance retries because the limited agent it replaces is still exiting;
     // an elevated instance instead retires that limited agent outright.
@@ -745,7 +896,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             instance_mutex = nullptr;
         }
         if (attempt == 0 && g_elevated && !args.takeover) {
-            replaced_instance = retire_limited_instances();
+            replaced_instance = retire_same_path_instances();
         }
         Sleep(100);
     }
@@ -777,6 +928,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     SetUnhandledExceptionFilter(crash_filter);
     mlog::info("MyRemote agent starting");
     mlog::info("Config file: " + g_config_path);
+    if (g_session_host) {
+        mlog::info("Session host started by the MyRemoteAgent service "
+                   "(no tray, no dialogs, follows the input desktop)");
+        mlog::info(std::string("SeTcbPrivilege: ") +
+                   (tcb_privilege ? "yes" : "NO - the logon screen stays dark"));
+        mlog::info(std::string("SeDebugPrivilege: ") +
+                   (debug_privilege ? "yes" : "no"));
+    }
     if (elevation_declined) {
         mlog::warn("UAC prompt dismissed; continuing without admin rights");
     }
@@ -816,29 +975,37 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
               std::to_string(cfg.server_port));
 
     g_reload_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_input_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
+    // A host has no tray and no dialogs: on the secure desktop every window it
+    // creates is visible to whoever is standing at the machine.
     TrayIcon tray;
-    TrayIcon::Actions tray_actions;
-    tray_actions.open_config = open_config_dialog;
-    tray_actions.quit = [] { g_state.running.store(false); };
-    tray_actions.install_autostart = request_autostart_install;
-    if (!g_elevated) {
-        tray_actions.elevate = relaunch_elevated;
+    if (!args.no_tray) {
+        TrayIcon::Actions tray_actions;
+        tray_actions.open_config = open_config_dialog;
+        tray_actions.quit = [] { g_state.running.store(false); };
+        tray_actions.install_autostart = request_autostart_install;
+        if (!g_elevated) {
+            tray_actions.elevate = relaunch_elevated;
+        }
+        if (!tray.start(std::move(tray_actions))) {
+            mlog::warn("Tray icon unavailable, running headless");
+        }
+        tray.set_tooltip(to_wide(cfg.device_name.empty()
+                                     ? device::default_device_name()
+                                     : cfg.device_name) +
+                         L" | 连接中");
     }
-    bool tray_ok = tray.start(std::move(tray_actions));
-    if (!tray_ok) {
-        mlog::warn("Tray icon unavailable, running headless");
-    }
-    tray.set_tooltip(to_wide(cfg.device_name.empty()
-                                 ? device::default_device_name()
-                                 : cfg.device_name) +
-                     L" | 连接中");
 
     g_capturer = std::make_unique<DesktopCapturer>();
     if (!g_capturer->initialize(0)) {
         mlog::error("Desktop capture initialization failed");
-        tray.stop();
-        return 1;
+        if (!g_session_host) {
+            tray.stop();
+            return 1;
+        }
+        // A host that quits here takes the machine offline until the next
+        // session change; it is cheaper to keep polling for a desktop.
     }
     mlog::info(std::string("Capture backend: ") +
                (g_capturer->using_bitblt_fallback() ? "BitBlt (DXGI unavailable)"
@@ -874,7 +1041,27 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     int backoff_ms = 1000;
     DWORD next_try_tick = 0;
     std::wstring last_tip;
+    auto config_stamp = [&]() {
+        FILETIME stamp{};
+        HANDLE f = CreateFileW(win32util::utf8_to_wide(g_config_path).c_str(),
+                               GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            GetFileTime(f, nullptr, nullptr, &stamp);
+            CloseHandle(f);
+        }
+        return stamp;
+    };
+    FILETIME config_written = config_stamp();
     while (g_state.running.load()) {
+        // The tray dialog can only signal its own session; the config file is
+        // what a user editing settings has in common with a hosted agent.
+        FILETIME stamp = config_stamp();
+        if (CompareFileTime(&stamp, &config_written) != 0) {
+            config_written = stamp;
+            SetEvent(g_reload_event);
+        }
         if (WaitForSingleObject(g_reload_event, 200) == WAIT_OBJECT_0) {
             mlog::info("Config saved while running; reloading");
             g_connection->disconnect();

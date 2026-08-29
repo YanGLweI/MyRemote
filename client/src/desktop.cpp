@@ -283,6 +283,21 @@ bool set_autostart(bool enable) {
     return code == 0;
 }
 
+std::string input_desktop_name() {
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!input) {
+        return {};
+    }
+    wchar_t text[64] = {};
+    DWORD needed = 0;
+    std::string name;
+    if (GetUserObjectInformationW(input, UOI_NAME, text, sizeof(text), &needed)) {
+        name = wide_to_utf8(text);
+    }
+    CloseDesktop(input);
+    return name;
+}
+
 DesktopFollower::~DesktopFollower() {
     if (held_) {
         CloseDesktop(held_);

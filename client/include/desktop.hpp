@@ -46,6 +46,11 @@ AgentPaths resolve_paths(const std::string& cli_override);
 // "not decided yet" rather than as a usable session.
 DWORD resolve_console_session(bool verbose = false);
 
+// Name of the desktop currently receiving keyboard and mouse input:
+// "Default", "Winlogon", "SAC-Desktop", ... Empty when it cannot be read.
+// Read-only: unlike DesktopFollower this never re-attaches the calling thread.
+std::string input_desktop_name();
+
 // Runs a console command to completion; returns its exit code (-1 on failure).
 int run_command(const std::wstring& command_line);
 
