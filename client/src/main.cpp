@@ -221,11 +221,33 @@ void log_session_state() {
     mlog::info(msg);
 }
 
+// The session host publishes its own pid next to agent.log. Only trust it while
+// the service is actually installed, or a stale file would spare a real
+// duplicate.
+DWORD hosted_agent_pid() {
+    if (!svc::is_installed() || g_log_dir.empty()) {
+        return 0;
+    }
+    std::wstring path = win32util::utf8_to_wide(g_log_dir + "\\host.status");
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    char text[256] = {};
+    DWORD read = 0;
+    ReadFile(file, text, sizeof(text) - 1, &read, nullptr);
+    CloseHandle(file);
+    unsigned long pid = 0;
+    return sscanf(text, "pid=%lu", &pid) == 1 ? static_cast<DWORD>(pid) : 0;
+}
+
 // Any second copy of this exact image in this session would fight for the
 // tunnel and the single-instance mutex. The scan is deliberately limited to
 // the caller's own session: the service and its host share one image path, and
 // a host that killed its own supervisor would be restarted by the SCM forever.
-bool retire_same_path_instances() {
+bool retire_same_path_instances(DWORD skip_pid = 0) {
     wchar_t self_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, self_path, MAX_PATH)) {
         return false;
@@ -241,7 +263,8 @@ bool retire_same_path_instances() {
     entry.dwSize = sizeof(entry);
     for (BOOL ok = Process32FirstW(snap, &entry); ok;
          ok = Process32NextW(snap, &entry)) {
-        if (entry.th32ProcessID == GetCurrentProcessId()) {
+        if (entry.th32ProcessID == GetCurrentProcessId() ||
+            entry.th32ProcessID == skip_pid) {
             continue;
         }
         DWORD other_session = 0;
@@ -265,27 +288,6 @@ bool retire_same_path_instances() {
     }
     CloseHandle(snap);
     return killed;
-}
-
-// Closing an RDP client detaches the session from any display: the desktop
-// still exists but renders nowhere, so the stream is black and input lands on
-// nothing. Putting the session back on the console restores both.
-void attach_to_console() {
-    DWORD session_id = 0;
-    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
-    if (session_id == WTSGetActiveConsoleSessionId()) {
-        mlog::info("Attach-console request ignored: already the console session");
-        return;
-    }
-    if (!win32util::process_is_system()) {
-        mlog::warn("Attach-console request ignored: only the service-hosted agent "
-                   "can move a session to the console");
-        return;
-    }
-    int code = win32util::run_command(L"tscon " + std::to_wstring(session_id) +
-                                      L" /dest:console");
-    mlog::info("tscon " + std::to_string(session_id) +
-               " /dest:console finished with code " + std::to_string(code));
 }
 
 // Our command line without the leading executable path.
@@ -391,9 +393,6 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             mlog::info("Auth challenge answered (control password check)");
             break;
         }
-        case proto::MessageType::AttachConsole:
-            attach_to_console();
-            break;
         case proto::MessageType::LockWorkstation: {
             // Ctrl+Alt+Del cannot be injected, so this is the honest way back to
             // a credential prompt.
@@ -962,7 +961,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             instance_mutex = nullptr;
         }
         if (attempt == 0 && g_elevated && !args.takeover) {
-            replaced_instance = retire_same_path_instances();
+            // Never sweep the service host: the supervisor would relaunch it
+            // within two seconds and the two would retire each other forever.
+            replaced_instance = retire_same_path_instances(hosted_agent_pid());
+            if (!replaced_instance && hosted_agent_pid()) {
+                mlog::info("The service session host keeps running; use "
+                           "--stop-service first to take its place");
+            }
         }
         Sleep(100);
     }

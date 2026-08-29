@@ -88,12 +88,6 @@ public:
         remark_button_->setEnabled(false);
         stop_button_ = new QPushButton(QStringLiteral("Stop Control"));
         stop_button_->setEnabled(false);
-        console_button_ = new QPushButton(QStringLiteral("Attach to console"));
-        console_button_->setEnabled(false);
-        console_button_->setToolTip(QStringLiteral(
-            "Restore the picture after an RDP client closed and left this "
-            "session with no display attached (handled by the MyRemote "
-            "service on that machine)."));
         logon_button_ = new QPushButton(QStringLiteral("返回登录界面"));
         logon_button_->setEnabled(false);
         logon_button_->setToolTip(QStringLiteral(
@@ -104,7 +98,6 @@ public:
         side_layout->addWidget(quality_combo_);
         side_layout->addWidget(fullscreen_button_);
         side_layout->addWidget(remark_button_);
-        side_layout->addWidget(console_button_);
         side_layout->addWidget(logon_button_);
         side_layout->addWidget(stop_button_);
         disconnect_button_ = new QPushButton(QStringLiteral("Disconnect Selected"));
@@ -181,13 +174,16 @@ public:
                     device_list_->remove_device(device_id.toStdString());
                     if (controller_->is_controlling() &&
                         controller_->controlled_device() == device_id.toStdString()) {
-                        controller_->stop_control();
+                        // A service-managed host comes back in about two
+                        // seconds, so do not make the operator re-authenticate.
+                        controller_->suspend_control();
                     }
                 });
+        connect(controller_.get(), &RemoteController::status_note, this,
+                [this](QString text) { statusBar()->showMessage(text, 8000); });
         connect(controller_.get(), &RemoteController::control_started, this,
                 [this](QString device_id) {
                     stop_button_->setEnabled(true);
-                    console_button_->setEnabled(true);
                     logon_button_->setEnabled(
                         controller_->controlled_supports_logon());
                     statusBar()->showMessage(
@@ -196,13 +192,10 @@ public:
         connect(controller_.get(), &RemoteController::control_stopped, this,
                 [this]() {
                     stop_button_->setEnabled(false);
-                    console_button_->setEnabled(false);
                     logon_button_->setEnabled(false);
                     fps_label_->setText(QStringLiteral("FPS: --"));
                     statusBar()->showMessage(QStringLiteral("Ready"), 0);
                 });
-        connect(console_button_, &QPushButton::clicked, this,
-                [this]() { controller_->attach_console(); });
         connect(logon_button_, &QPushButton::clicked, this,
                 [this]() { controller_->lock_workstation(); });
         connect(tunnels_.get(), &TunnelManager::video_frame_received,
@@ -309,7 +302,6 @@ private:
     std::unique_ptr<RemoteController> controller_;
     DeviceListWidget* device_list_ = nullptr;
     QPushButton* stop_button_ = nullptr;
-    QPushButton* console_button_ = nullptr;
     QPushButton* logon_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
     QPushButton* disconnect_button_ = nullptr;

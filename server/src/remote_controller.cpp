@@ -15,18 +15,34 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
     connect(&pipeline_, &FramePipeline::frame_ready, this,
             [this] { renderer_.update(); });
 
-    // The agent re-reports its geometry whenever the desktop resizes; an RDP
-    // session swapped for the console changes it under a live stream, which
-    // would otherwise leave pointer coordinates mapped against the old size.
+    // The agent re-reports its geometry whenever the desktop resizes, and
+    // re-registers when the service relaunches its host. Both need the same
+    // answer from here: stop trusting the frame we are holding.
     connect(&tunnels_, &TunnelManager::device_registered, this,
             [this](QString device_id, QString, int width, int height) {
-                if (device_id.toStdString() != controlled_device()) return;
+                const std::string id = device_id.toStdString();
+                if (id != controlled_device()) {
+                    // The operator's session was cut by the far end; pick it
+                    // back up. Delayed because the registration arrives a beat
+                    // before the agent is ready to stream.
+                    if (!id.empty() && id == auto_device_ && !is_controlling()) {
+                        QTimer::singleShot(700, this, [this, id] { resume(); });
+                    }
+                    return;
+                }
                 if (width <= 0 || height <= 0) return;
                 renderer_.set_remote_size(width, height);
                 renderer_.clear_frame();
-                tunnels_.send_to_device(device_id.toStdString(),
-                                        proto::MessageType::RequestKeyframe);
+                tunnels_.send_to_device(id, proto::MessageType::RequestKeyframe);
             });
+
+    // Reopens the retry window so a host that comes back broken cannot be
+    // re-authenticated forever.
+    auto_window_timer_ = new QTimer(this);
+    auto_window_timer_->setSingleShot(true);
+    auto_window_timer_->setInterval(60000);
+    connect(auto_window_timer_, &QTimer::timeout, this,
+            [this] { auto_attempts_ = 0; });
 
     auto* fps_timer = new QTimer(this);
     connect(fps_timer, &QTimer::timeout, this, [this]() {
@@ -35,6 +51,10 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
         emit fps_updated(net, dec);
     });
     fps_timer->start(1000);
+}
+
+RemoteController::~RemoteController() {
+    disarm_auto_resume();
 }
 
 bool RemoteController::is_controlling() const {
@@ -93,6 +113,11 @@ bool RemoteController::do_start(const std::string& device_id) {
 }
 
 void RemoteController::stop_control() {
+    disarm_auto_resume();
+    suspend_control();
+}
+
+void RemoteController::suspend_control() {
     std::string device_id;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -106,6 +131,47 @@ void RemoteController::stop_control() {
     renderer_.clear_frame();
     mlog::info("Control session stopped: " + device_id);
     emit control_stopped();
+}
+
+void RemoteController::disarm_auto_resume() {
+    auto_attempts_ = 0;
+    if (auto_window_timer_) {
+        auto_window_timer_->stop();
+    }
+    auto_device_.clear();
+    auto_password_.clear();
+}
+
+bool RemoteController::device_is_online(const std::string& device_id) const {
+    for (const auto& info : tunnels_.online_devices()) {
+        if (info.device_id == device_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RemoteController::resume() {
+    if (auto_device_.empty() || is_controlling()) {
+        return;
+    }
+    if (!device_is_online(auto_device_)) {
+        return;  // The next registration triggers another attempt.
+    }
+    if (auto_attempts_ >= 5) {
+        mlog::warn("Giving up on auto-resume for " + auto_device_);
+        emit status_note(QStringLiteral("自动恢复失败，请重新双击设备"));
+        disarm_auto_resume();
+        return;
+    }
+    ++auto_attempts_;
+    if (!auto_window_timer_->isActive()) {
+        auto_window_timer_->start();
+    }
+    mlog::info("Auto-resuming the control session on " + auto_device_ +
+               " (attempt " + std::to_string(auto_attempts_) + ")");
+    emit status_note(QStringLiteral("对端已重启，正在自动恢复画面…"));
+    request_control(auto_device_, auto_password_);
 }
 
 void RemoteController::on_video_frame(QString device_id, QByteArray payload) {
@@ -159,16 +225,6 @@ void RemoteController::apply_quality(uint8_t fps, uint16_t bitrate_kbps,
     }
 }
 
-void RemoteController::attach_console() {
-    std::string device = controlled_device();
-    if (device.empty()) {
-        mlog::warn("Attach console requested with no active session");
-        return;
-    }
-    mlog::info("Requesting console reattach for " + device);
-    tunnels_.send_to_device(device, proto::MessageType::AttachConsole);
-}
-
 void RemoteController::lock_workstation() {
     std::string device = controlled_device();
     if (device.empty()) {
@@ -192,10 +248,6 @@ bool RemoteController::controlled_supports_logon() const {
     return false;
 }
 
-bool RemoteController::start_control(const std::string& device_id) {
-    return do_start(device_id);
-}
-
 void RemoteController::request_control(const std::string& device_id,
                                        const std::string& password) {
     if (is_controlling()) {
@@ -203,6 +255,7 @@ void RemoteController::request_control(const std::string& device_id,
         return;
     }
     pending_device_ = device_id;
+    pending_password_ = password;
     tunnels_.begin_auth(device_id, password);
 }
 
@@ -212,9 +265,26 @@ void RemoteController::on_auth_result(QString device_id, bool ok) {
     }
     pending_device_.clear();
     if (ok) {
-        do_start(device_id.toStdString());
-    } else {
-        mlog::warn("Control authorization failed for " + device_id.toStdString());
-        emit control_denied(device_id);
+        if (do_start(device_id.toStdString())) {
+            // Only a session that is really streaming is worth picking back
+            // up later, and only the password that just worked may be kept.
+            auto_device_ = device_id.toStdString();
+            auto_password_ = pending_password_;
+            auto_attempts_ = 0;
+        }
+        pending_password_.clear();
+        return;
     }
+    pending_password_.clear();
+    if (device_id.toStdString() == auto_device_ &&
+        !device_is_online(device_id.toStdString())) {
+        // Retried too late in a restart: the device is simply not there, which
+        // the next registration will try again. Not a wrong password.
+        mlog::warn("Auto-resume of " + device_id.toStdString() +
+                   " found no live session");
+        return;
+    }
+    mlog::warn("Control authorization failed for " + device_id.toStdString());
+    disarm_auto_resume();
+    emit control_denied(device_id);
 }

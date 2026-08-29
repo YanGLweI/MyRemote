@@ -104,9 +104,6 @@ bool parse_register_payload(const std::vector<uint8_t>& payload, RegisterInfo& i
         info.elevated = (flags & kRegisterFlagElevated) != 0;
         info.service_host = (flags & kFlagServiceHost) != 0;
         info.is_system = (flags & kFlagIsSystem) != 0;
-        info.console_owner = (flags & kFlagConsoleOwner) != 0;
-        info.secure_desktop = (flags & kFlagSecureDesktop) != 0;
-        info.logon_screen = (flags & kFlagLogonScreen) != 0;
     }
     return true;
 }

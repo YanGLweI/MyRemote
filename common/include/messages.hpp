@@ -22,7 +22,10 @@ enum class MessageType : uint8_t {
     AuthChallenge   = 0x09,  // S→C secondary password challenge
     AuthResponse    = 0x0A,  // C→S secondary password response
     DisplayChanged  = 0x0B,  // C→S native desktop size changed [2B w][2B h]
-    AttachConsole   = 0x0C,  // S→C reattach this session to the physical console
+    // 0x0C retired: it asked the agent to tscon its session back to the
+    // console. The service host never leaves the console now, so there is
+    // nothing to reattach. The value stays unused; an old controller that
+    // still sends it is ignored without dropping the tunnel.
     StateReport     = 0x0D,  // C→S live capability + geometry [1B flags][2B w][2B h]
     LockWorkstation = 0x0F,  // S→C hand the machine back to its logon screen
     Encrypted       = 0x10,  // envelope: AES-GCM over [inner type][payload]
@@ -55,9 +58,6 @@ struct RegisterInfo {
     uint8_t flags = 0;
     bool service_host = false;
     bool is_system = false;
-    bool console_owner = false;
-    bool secure_desktop = false;
-    bool logon_screen = false;
 };
 
 enum class InputKind : uint8_t {

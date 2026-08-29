@@ -9,6 +9,7 @@
 #include "frame_pipeline.hpp"
 
 class DisplayRenderer;
+class QTimer;
 class TunnelManager;
 
 // Drives one active control session over an existing client tunnel.
@@ -18,18 +19,20 @@ class RemoteController : public QObject {
 public:
     RemoteController(TunnelManager& tunnels, DisplayRenderer& renderer,
                      QObject* parent = nullptr);
+    ~RemoteController() override;
 
-    bool start_control(const std::string& device_id);
     void request_control(const std::string& device_id, const std::string& password);
+    // Ends the session and forgets the device: the operator asked for this.
     void stop_control();
+    // Same teardown, but stays ready to pick the session back up when the same
+    // device reappears. A service-managed host restarts in about two seconds,
+    // and making the operator re-authenticate for that is not their problem.
+    void suspend_control();
 
     bool is_controlling() const;
     // max_encode_width: 0 keeps whatever the device itself is configured for.
     void apply_quality(uint8_t fps, uint16_t bitrate_kbps,
                        uint16_t max_encode_width = 0);
-    // Reattaches the controlled session to the physical console: an RDP client
-    // that disconnected leaves the desktop rendering nowhere.
-    void attach_console();
     std::string controlled_device() const;
     // Hands the remote machine back to its own logon screen; only a
     // service-hosted agent can follow what happens next.
@@ -41,6 +44,9 @@ signals:
     void control_stopped();
     void control_denied(QString device_id);
     void fps_updated(int net_fps, int decoded_fps);
+    // One-line explanation for the status bar: what auto-resume is doing, or
+    // why it stopped trying.
+    void status_note(QString text);
 
 public slots:
     // Connected directly: runs on the tunnel session thread and only hands the
@@ -55,6 +61,11 @@ public slots:
 private:
     bool do_start(const std::string& device_id);
     void set_controlled(const std::string& device_id);
+    void disarm_auto_resume();
+    bool device_is_online(const std::string& device_id) const;
+    // Re-authenticate and restart streaming on the armed device, if the retry
+    // budget still allows it.
+    void resume();
 
     TunnelManager& tunnels_;
     DisplayRenderer& renderer_;
@@ -62,6 +73,14 @@ private:
     mutable std::mutex state_mutex_;
     std::string controlled_;
     std::string pending_device_;
+    std::string pending_password_;
+    // Only ever armed while the operator's own session is live or was cut by
+    // the far end; stop_control() clears it, so a device can never take over
+    // the view unasked. The password lives here and nowhere else.
+    std::string auto_device_;
+    std::string auto_password_;
+    int auto_attempts_ = 0;
+    QTimer* auto_window_timer_ = nullptr;
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
     uint16_t max_encode_width_ = 0;
