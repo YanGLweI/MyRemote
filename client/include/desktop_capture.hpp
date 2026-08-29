@@ -9,6 +9,10 @@
 #include <mutex>
 #include <vector>
 
+// OpenH264 refuses (and the box filter cannot use) anything below this; both
+// the capturer and the encoder must agree on the floor.
+inline constexpr int kMinEncodeDimension = 32;
+
 // Capture/encoding quality parameters.
 struct EncoderConfig {
     int fps = 30;
@@ -52,6 +56,11 @@ public:
 
     bool using_bitblt_fallback() const { return use_bitblt_; }
 
+    // The desktop underneath us changed (session switch, secure-desktop hop,
+    // monitor reset): throw away the cached geometry and rebuild now instead
+    // of waiting for the next capture to fail.
+    void on_desktop_switched();
+
     // Encode size for the current configuration (even, 0 before configure()).
     void encode_size(int* width, int* height) const;
 
@@ -67,6 +76,7 @@ private:
     void prepare_resampling(int src_width, int src_height, int dst_width,
                             int dst_height);
     // Recompute encode_width_/encode_height_ from source_size + the cap.
+    // Caller must already hold mutex_ (it is reached from initialize()).
     void apply_encode_size();
     // Box-filter the mapped BGRA straight into the frame's I420 buffer,
     // splitting the destination rows over a few threads.
@@ -83,6 +93,7 @@ private:
     EncoderConfig config_;
     mutable std::mutex mutex_;
     bool use_bitblt_ = false;
+    bool logged_no_desktop_ = false;
     ULONGLONG next_dxgi_retry_ms_ = 0;
     int staging_width_ = 0;
     int staging_height_ = 0;

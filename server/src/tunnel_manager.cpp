@@ -205,6 +205,9 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                                                                   w, h)) {
                             break;
                         }
+                        if (!w || !h) {
+                            break;  // never wipe a good geometry with a blank one
+                        }
                         session->screen_width = w;
                         session->screen_height = h;
                         mlog::info("Device " + session->device_id +

@@ -11,7 +11,6 @@ namespace {
 // Slice parallelism is how OpenH264 spreads a frame over cores; the thread
 // count has to match it or the encoder silently stays single-threaded.
 constexpr int kSliceCount = 4;
-constexpr int kMinDimension = 32;
 
 long long bitrate_floor_bps(int width, int height, int fps) {
     return static_cast<long long>(width) * height * fps * 5 / 100;  // ~0.05 bpp
@@ -34,7 +33,7 @@ bool VideoEncoder::initialize_locked() {
         encoder_ = nullptr;
     }
     initialized_ = false;
-    if (config_.width < kMinDimension || config_.height < kMinDimension) {
+    if (config_.width < kMinEncodeDimension || config_.height < kMinEncodeDimension) {
         mlog::error("Encoder size too small: " + std::to_string(config_.width) + "x" +
                     std::to_string(config_.height));
         return false;
@@ -146,6 +145,8 @@ bool VideoEncoder::encode_frame(CapturedFrame& frame) {
         skips_.fetch_add(1);
         return false;
     }
+    frame.is_keyframe = bs.eFrameType == videoFrameTypeIDR ||
+                        bs.eFrameType == videoFrameTypeI;
 
     size_t total = 0;
     for (int l = 0; l < bs.iLayerNum; ++l) {

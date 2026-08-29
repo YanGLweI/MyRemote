@@ -32,6 +32,8 @@ bool DesktopCapturer::initialize(int monitor_index) {
 }
 
 bool DesktopCapturer::init_d3d() {
+    device_.Reset();
+    context_.Reset();
     D3D_FEATURE_LEVEL feature_levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
                                    feature_levels, ARRAYSIZE(feature_levels),
@@ -82,6 +84,10 @@ bool DesktopCapturer::init_duplication(int monitor_index) {
     source_height_ = static_cast<int>(desc.ModeDesc.Height);
     config_.width = source_width_;
     config_.height = source_height_;
+    // The resampling tables are indexed by the *new* geometry from here on;
+    // skipping this leaves try_recover_dxgi() reading out of bounds after a
+    // session switch or a resolution change.
+    apply_encode_size();
     return true;
 }
 
@@ -99,6 +105,16 @@ void DesktopCapturer::configure(const EncoderConfig& config) {
 }
 
 void DesktopCapturer::apply_encode_size() {
+    if (source_width_ < kMinEncodeDimension ||
+        source_height_ < kMinEncodeDimension) {
+        // No usable desktop yet (logon screen, detached session, headless):
+        // report "nothing to encode" instead of feeding the encoder a 1x1
+        // phantom, and make sure no stale table survives the empty state.
+        encode_width_ = 0;
+        encode_height_ = 0;
+        prepare_resampling(0, 0, 0, 0);
+        return;
+    }
     int w = source_width_;
     int h = source_height_;
     int cap = config_.max_encode_width;
@@ -106,9 +122,9 @@ void DesktopCapturer::apply_encode_size() {
         h = static_cast<int>((static_cast<double>(h) * cap + w / 2) / w);
         w = cap;
     }
-    // I420 needs even dimensions.
-    w = w < 2 ? 2 : (w & ~1);
-    h = h < 2 ? 2 : (h & ~1);
+    // I420 needs even dimensions; the encoder needs a minimum size.
+    w = w < kMinEncodeDimension ? kMinEncodeDimension : (w & ~1);
+    h = h < kMinEncodeDimension ? kMinEncodeDimension : (h & ~1);
     encode_width_ = w;
     encode_height_ = h;
     config_.width = w;
@@ -131,6 +147,15 @@ void DesktopCapturer::encode_size(int* width, int* height) const {
 // always at least one tap. The reciprocal keeps the averaging division-free.
 void DesktopCapturer::prepare_resampling(int src_width, int src_height,
                                          int dst_width, int dst_height) {
+    if (src_width <= 0 || src_height <= 0 || dst_width <= 0 || dst_height <= 0) {
+        x0_.clear();
+        x1_.clear();
+        xinv_.clear();
+        y0_.clear();
+        y1_.clear();
+        yinv_.clear();
+        return;
+    }
     x0_.resize(dst_width);
     x1_.resize(dst_width);
     xinv_.resize(dst_width);
@@ -176,6 +201,16 @@ void DesktopCapturer::convert_rows(const uint8_t* src, int src_pitch,
     const int dw = frame.width;
     const int dh = frame.height;
     const int cw = dw / 2;
+    // The tables were built for source_width_/source_height_. If they ever
+    // disagree with the frame being filled, drop the rows instead of reading
+    // out of bounds: a wrong picture is recoverable, an access violation is a
+    // dead agent.
+    if (dw <= 0 || dh <= 0 || dy1 <= dy0 ||
+        frame.i420.size() < static_cast<size_t>(dw) * dh * 3 / 2 ||
+        x0_.size() < static_cast<size_t>(dw) ||
+        y0_.size() < static_cast<size_t>(dh)) {
+        return;
+    }
     uint8_t* yp = frame.i420.data();
     uint8_t* up = yp + static_cast<size_t>(dw) * dh;
     uint8_t* vp = up + static_cast<size_t>(cw) * (dh / 2);
@@ -190,8 +225,12 @@ void DesktopCapturer::convert_rows(const uint8_t* src, int src_pitch,
     const int32_t* c1 = x1_.data();
 
     for (int dy = dy0; dy < dy1; ++dy) {
-        const int r0 = y0_[dy];
-        const int nr = y1_[dy] - r0;
+        int r0 = y0_[dy];
+        if (r0 < 0) r0 = 0;
+        if (r0 > source_height_ - 1) r0 = source_height_ - 1;
+        int nr = y1_[dy] - r0;
+        if (nr < 1) nr = 1;
+        if (r0 + nr > source_height_) nr = source_height_ - r0;
         if (static_cast<int>(rows.size()) < nr) {
             rows.resize(nr);
         }
@@ -205,9 +244,14 @@ void DesktopCapturer::convert_rows(const uint8_t* src, int src_pitch,
         uint8_t* yrow = yp + static_cast<size_t>(dy) * dw;
         for (int dx = 0; dx < dw; ++dx) {
             int b = 0, g = 0, r = 0;
+            int begin = c0[dx];
+            int end = c1[dx];
+            if (begin < 0) begin = 0;
+            if (begin > source_width_ - 1) begin = source_width_ - 1;
+            if (end > source_width_) end = source_width_;
             for (int k = 0; k < nr; ++k) {
                 const uint32_t* row = reinterpret_cast<const uint32_t*>(rows[k]);
-                for (int sx = c0[dx], end = c1[dx]; sx < end; ++sx) {
+                for (int sx = begin; sx < end; ++sx) {
                     const uint32_t p = row[sx];
                     b += p & 255;
                     g += (p >> 8) & 255;
@@ -323,6 +367,29 @@ bool DesktopCapturer::try_recover_dxgi() {
     return ok;
 }
 
+void DesktopCapturer::on_desktop_switched() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    source_width_ = 0;
+    source_height_ = 0;
+    encode_width_ = 0;
+    encode_height_ = 0;
+    logged_no_desktop_ = false;
+    next_dxgi_retry_ms_ = 0;  // a desktop hop is exactly when recovery is due
+    staging_.Reset();
+    duplication_.Reset();
+    if (!(init_d3d() && init_duplication(0))) {
+        use_bitblt_ = true;
+        source_width_ = GetSystemMetrics(SM_CXSCREEN);
+        source_height_ = GetSystemMetrics(SM_CYSCREEN);
+        apply_encode_size();
+    }
+    if (!use_bitblt_) {
+        mlog::info("Capture rebuilt on the new desktop (" +
+                   std::to_string(source_width_) + "x" +
+                   std::to_string(source_height_) + ")");
+    }
+}
+
 bool DesktopCapturer::capture_frame(CapturedFrame& frame, DWORD wait_ms) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (use_bitblt_) {
@@ -335,6 +402,14 @@ bool DesktopCapturer::capture_frame(CapturedFrame& frame, DWORD wait_ms) {
 }
 
 bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_ms) {
+    if (source_width_ < kMinEncodeDimension ||
+        source_height_ < kMinEncodeDimension) {
+        if (!logged_no_desktop_) {
+            logged_no_desktop_ = true;
+            mlog::warn("No desktop to capture yet, waiting");
+        }
+        return false;
+    }
     DXGI_OUTDUPL_FRAME_INFO frame_info{};
     Microsoft::WRL::ComPtr<IDXGIResource> frame_resource;
 
@@ -378,7 +453,7 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
                 frame.source_height = source_height_;
                 frame.width = encode_width_;
                 frame.height = encode_height_;
-                frame.is_keyframe = frame_info.AccumulatedFrames > 0;
+                frame.is_keyframe = false;  // filled in by the encoder
                 frame.timestamp_us = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
@@ -403,9 +478,15 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
 bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
     int src_w = GetSystemMetrics(SM_CXSCREEN);
     int src_h = GetSystemMetrics(SM_CYSCREEN);
-    if (src_w <= 0 || src_h <= 0) {
+    if (src_w < kMinEncodeDimension || src_h < kMinEncodeDimension) {
+        if (!logged_no_desktop_) {
+            logged_no_desktop_ = true;
+            mlog::warn("No desktop to capture yet (" + std::to_string(src_w) + "x" +
+                       std::to_string(src_h) + "), waiting");
+        }
         return false;
     }
+    logged_no_desktop_ = false;
     if (src_w != source_width_ || src_h != source_height_) {
         source_width_ = src_w;
         source_height_ = src_h;
@@ -444,7 +525,8 @@ bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
     frame.source_height = src_h;
     frame.width = encode_width_;
     frame.height = encode_height_;
-    frame.is_keyframe = true;
+    // The encoder fills this in: only it knows whether it emitted an IDR.
+    frame.is_keyframe = false;
     frame.i420.resize(static_cast<size_t>(frame.width) * frame.height * 3 / 2);
     convert_to_i420(static_cast<const uint8_t*>(pixels), src_w * 4, frame);
 

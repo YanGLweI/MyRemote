@@ -18,6 +18,9 @@ struct ConfigUi {
     std::string secret_key;
     std::string device_name;
     std::string control_password;
+    // Not editable here: the controller's quality preset owns the cap, but a
+    // save has to carry it through or it silently resets to the default.
+    int max_encode_width = 1920;
     std::string config_path;  // shown read-only; where Save writes to
     SaveMode save_mode = SaveMode::SaveOnly;
     bool saved = false;  // true when the user pressed Save

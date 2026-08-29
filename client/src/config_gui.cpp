@@ -344,6 +344,7 @@ void on_save(HWND hwnd) {
     disk.secret_key = cfg->secret_key;
     disk.device_name = cfg->device_name;
     disk.control_password = cfg->control_password;
+    disk.max_encode_width = cfg->max_encode_width;
     if (!config::ClientConfig::save(disk, cfg->config_path)) {
         set_status(hwnd, L"保存失败：无法写入 " + wide(cfg->config_path) +
                          L"（权限不足或被占用？）");

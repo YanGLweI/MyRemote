@@ -68,6 +68,12 @@ void configure_pipeline(int fps, int bitrate_kbps, int max_encode_width) {
     ec.max_encode_width = max_encode_width;
     g_capturer->configure(ec);
     g_capturer->encode_size(&ec.width, &ec.height);
+    if (ec.width <= 0 || ec.height <= 0) {
+        // No desktop yet (logon screen / detached session); the pipeline is
+        // reconfigured as soon as frames become available.
+        mlog::info("No desktop to encode yet, pipeline not configured");
+        return;
+    }
     g_encoder->initialize(ec);
 }
 
@@ -88,6 +94,7 @@ gui::ConfigUi make_ui(const config::ClientConfig& c) {
     ui.secret_key = c.secret_key;
     ui.device_name = c.device_name;
     ui.control_password = c.control_password;
+    ui.max_encode_width = c.max_encode_width;
     ui.config_path = g_config_path;
     return ui;
 }
@@ -402,7 +409,7 @@ void stream_loop() {
     LARGE_INTEGER freq_q;
     QueryPerformanceFrequency(&freq_q);
     const double us_per_tick = 1e6 / static_cast<double>(freq_q.QuadPart);
-    LARGE_INTEGER t0{}, t1{};
+    LARGE_INTEGER t0{}, t1{}, loop_start{};
 
     uint64_t win_start_ms = GetTickCount64();
     uint64_t cap_us = 0, enc_us = 0, send_us = 0;
@@ -446,6 +453,7 @@ void stream_loop() {
 
         int fps = g_state.target_fps.load();
         if (fps <= 0) fps = 30;
+        QueryPerformanceCounter(&loop_start);
 
         QueryPerformanceCounter(&t0);
         bool captured = g_capturer->capture_frame(frame, 1000 / fps);
@@ -497,6 +505,16 @@ void stream_loop() {
                                std::to_string(frame.source_height));
                 }
             }
+        }
+        // Neither the BitBlt fallback nor the "no desktop yet" early-out ever
+        // blocks, so the frame budget has to be honoured here; AcquireNextFrame
+        // already consumed it on the duplication path.
+        QueryPerformanceCounter(&t1);
+        const int budget_ms = 1000 / fps;
+        double spent_ms =
+            (t1.QuadPart - loop_start.QuadPart) * us_per_tick / 1000.0;
+        if (budget_ms > 0 && spent_ms < budget_ms) {
+            Sleep(static_cast<DWORD>(budget_ms - spent_ms));
         }
         log_window();
     }
@@ -614,6 +632,17 @@ void request_autostart_install() {
                   SW_HIDE);
 }
 
+// Without this an access violation is indistinguishable from a machine that
+// was never reachable: the process just stops existing.
+LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
+    char line[160];
+    snprintf(line, sizeof(line), "UNHANDLED EXCEPTION code=0x%08lX at %p",
+             static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+             info->ExceptionRecord->ExceptionAddress);
+    mlog::error(line);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
@@ -699,6 +728,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     }
 
     mlog::init(dir + "/" + "agent.log");
+    SetUnhandledExceptionFilter(crash_filter);
     mlog::info("MyRemote agent starting");
     if (elevation_declined) {
         mlog::warn("UAC prompt dismissed; continuing without admin rights");
