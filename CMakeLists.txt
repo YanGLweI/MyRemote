@@ -94,7 +94,9 @@ if(BUILD_SERVER)
         server/src/tunnel_manager.cpp
         server/src/display_renderer.cpp
         server/src/input_gateway.cpp
-        server/src/device_list.cpp
+        server/src/device_panel.cpp
+        server/src/device_list_model.cpp
+        server/src/device_row_delegate.cpp
         server/src/remote_controller.cpp
         server/src/frame_pipeline.cpp
         server/src/h264_decoder.cpp
@@ -104,7 +106,9 @@ if(BUILD_SERVER)
         server/include/sessions_area.hpp
         server/include/session_view.hpp
         server/include/session_toolbar.hpp
-        server/include/device_list.hpp
+        server/include/device_panel.hpp
+        server/include/device_list_model.hpp
+        server/include/device_row_delegate.hpp
         server/include/display_renderer.hpp
         server/include/input_gateway.hpp
         server/include/remote_controller.hpp

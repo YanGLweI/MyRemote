@@ -9,7 +9,7 @@
 #include "config.hpp"
 #include "tunnel_manager.hpp"
 
-class DeviceListWidget;
+class DevicePanel;
 class QPushButton;
 class SessionsArea;
 
@@ -34,14 +34,15 @@ private slots:
     void on_zoom_changed(bool on);
 
 private:
-    // One roster record in, one row + one tab header out: the remark always
-    // wins over the hostname, and the state drives marker and colour.
+    // One roster record in, one row + one tab header out.
     void publish_row(const TunnelManager::DeviceInfo& info);
+    void prompt_remark(const QString& device_id);
+    QString remark_of(const std::string& device_id) const;
     QString display_name(const TunnelManager::DeviceInfo& info) const;
 
     std::unique_ptr<TunnelManager> tunnels_;
     QWidget* side_panel_ = nullptr;
-    DeviceListWidget* device_list_ = nullptr;
+    DevicePanel* device_list_ = nullptr;
     SessionsArea* sessions_ = nullptr;
     QPushButton* disconnect_button_ = nullptr;
     QPushButton* remark_button_ = nullptr;

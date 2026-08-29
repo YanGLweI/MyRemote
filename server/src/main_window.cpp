@@ -11,35 +11,14 @@
 #include <cstdlib>
 #include <string>
 
-#include "device_list.hpp"
+#include "device_list_model.hpp"
+#include "device_panel.hpp"
 #include "log.hpp"
 #include "sessions_area.hpp"
 
-namespace {
-
-// A limited agent's SendInput is dropped by UIPI on elevated windows, which
-// looks exactly like a dead session; flag those devices up front.
-QString badge_text(const TunnelManager::DeviceInfo& info) {
-    QString badges;
-    if (info.flags & proto::kFlagServiceHost) {
-        badges += QStringLiteral("〔服务〕");
-    }
-    if (info.flags & proto::kFlagLogonScreen) {
-        badges += QStringLiteral("〔登录界面〕");
-    } else if (info.elevation_known && !(info.flags & proto::kFlagConsoleOwner)) {
-        badges += QStringLiteral("〔非控制台〕");
-    }
-    if (info.elevation_known && !info.elevated) {
-        badges += QStringLiteral("〔受限〕");
-    }
-    return badges;
-}
-
-}  // namespace
-
 MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("MyRemote Control Center"));
+    setWindowTitle(QStringLiteral("MyRemote 控制中心"));
     resize(1100, 700);
 
     tunnels_ = std::make_unique<TunnelManager>(cfg.secret_key, cfg.max_connections);
@@ -54,13 +33,16 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
 
     side_panel_ = new QWidget();
     auto* side_layout = new QVBoxLayout(side_panel_);
-    side_layout->setContentsMargins(0, 0, 0, 0);
-    device_list_ = new DeviceListWidget();
+    side_layout->setContentsMargins(8, 8, 8, 8);
+    side_layout->setSpacing(6);
+    device_list_ = new DevicePanel();
     remark_button_ = new QPushButton(QStringLiteral("设置备注"));
     remark_button_->setEnabled(false);
     disconnect_button_ = new QPushButton(QStringLiteral("断开所选"));
+    disconnect_button_->setEnabled(false);
     disconnect_button_->setToolTip(QStringLiteral(
-        "关掉这些设备的会话标签并切断它们的隧道；对端会自动重连回来。"));
+        "切断这些设备的隧道；对端会自动重连回来。\n"
+        "要结束会话标签，请关掉标签本身。"));
     side_layout->addWidget(device_list_, 1);
     side_layout->addWidget(remark_button_);
     side_layout->addWidget(disconnect_button_);
@@ -79,25 +61,28 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
 
     statusBar()->showMessage(QStringLiteral("就绪"), 0);
 
-    connect(device_list_, &DeviceListWidget::remote_control_requested, this,
+    connect(device_list_, &DevicePanel::remote_control_requested, this,
             &MainWindow::on_control_requested);
-    connect(device_list_, &DeviceListWidget::selection_changed, this,
-            [this](QString id) { remark_button_->setEnabled(!id.isEmpty()); });
+    connect(device_list_, &DevicePanel::remark_requested, this,
+            &MainWindow::prompt_remark);
+    connect(device_list_, &DevicePanel::disconnect_requested, this,
+            [this](QStringList ids) {
+                for (const QString& id : ids) {
+                    tunnels_->disconnect_device(id.toStdString());
+                }
+            });
+    connect(device_list_, &DevicePanel::selection_changed, this, [this](QString id) {
+        remark_button_->setEnabled(!id.isEmpty());
+        disconnect_button_->setEnabled(!device_list_->selected_device_ids().empty());
+    });
     connect(sessions_, &SessionsArea::note, this,
             [this](QString text) { statusBar()->showMessage(text, 8000); });
     connect(sessions_, &SessionsArea::zoom_changed, this,
             &MainWindow::on_zoom_changed);
     connect(remark_button_, &QPushButton::clicked, this, [this]() {
         auto id = device_list_->selected_device_id();
-        if (!id.has_value()) return;
-        bool ok = false;
-        QString cur = settings_.value(QString::fromStdString(*id)).toString();
-        QString text = QInputDialog::getText(this, QStringLiteral("设置备注"),
-                                             QStringLiteral("这台设备的备注："),
-                                             QLineEdit::Normal, cur, &ok);
-        if (ok) {
-            settings_.setValue(QString::fromStdString(*id), text);
-            on_refresh_remark(QString::fromStdString(*id));
+        if (id.has_value()) {
+            prompt_remark(QString::fromStdString(*id));
         }
     });
     connect(disconnect_button_, &QPushButton::clicked, this, [this]() {
@@ -128,18 +113,31 @@ MainWindow::~MainWindow() {
     }
 }
 
+QString MainWindow::remark_of(const std::string& device_id) const {
+    return settings_.value(QString::fromStdString(device_id)).toString();
+}
+
 QString MainWindow::display_name(const TunnelManager::DeviceInfo& info) const {
-    QString remark =
-        settings_.value(QString::fromStdString(info.device_id)).toString();
-    QString name = remark.isEmpty() ? QString::fromStdString(info.device_name)
-                                    : remark;
-    return name + QStringLiteral(" ") + badge_text(info);
+    return DeviceListModel::display_name(info, remark_of(info.device_id));
 }
 
 void MainWindow::publish_row(const TunnelManager::DeviceInfo& info) {
-    const QString name = display_name(info);
-    device_list_->upsert_device(info);
-    sessions_->update_session(info, name);
+    device_list_->upsert(info, remark_of(info.device_id));
+    sessions_->update_session(info, display_name(info));
+}
+
+void MainWindow::prompt_remark(const QString& device_id) {
+    bool ok = false;
+    const QString current = settings_.value(device_id).toString();
+    const QString text =
+        QInputDialog::getText(this, QStringLiteral("设置备注"),
+                              QStringLiteral("这台设备的备注："), QLineEdit::Normal,
+                              current, &ok);
+    if (!ok) {
+        return;
+    }
+    settings_.setValue(device_id, text);
+    on_refresh_remark(device_id);
 }
 
 void MainWindow::on_device_registered(QString device_id, QString, int, int) {
