@@ -19,6 +19,14 @@ constexpr wchar_t kAppFolder[] = L"MyRemote";
 }  // namespace
 
 void attach_parent_console() {
+    // A GUI-subsystem exe usually arrives with no standard handles at all, so
+    // borrow the console it was started from. If the caller already handed us
+    // one - including a redirected file or pipe - writing there is the whole
+    // point, and reopening CONOUT$ would throw that redirect away.
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) {
+        return;
+    }
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
         return;
     }
@@ -232,6 +240,47 @@ DWORD resolve_console_session(bool verbose) {
         CloseHandle(snapshot);
     }
     return session;
+}
+
+const wchar_t* const kAutostartTaskName = L"MyRemote Agent";
+
+int run_command(const std::wstring& command_line) {
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring mutable_line = command_line;
+    if (!CreateProcessW(nullptr, mutable_line.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, 15000);
+    DWORD code = static_cast<DWORD>(-1);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+// Logon-time autostart must run elevated: a Run-key agent starts with a
+// filtered token and can then never drive elevated windows remotely.
+bool set_autostart(bool enable) {
+    std::wstring path = exe_path_wide();
+    std::wstring action = enable
+                              ? L" /Create /F /SC ONLOGON /RL HIGHEST /TR \"\\\"" +
+                                    path + L"\\\" --background\\\"\""
+                              : L" /Delete /F";
+    int code = run_command(L"schtasks" + action + L" /TN \"" +
+                           kAutostartTaskName + L"\"");
+
+    // Retire the legacy Run key so it cannot start a second, limited agent.
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
+                      KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueW(key, L"MyRemoteAgent");
+        RegCloseKey(key);
+    }
+    return code == 0;
 }
 
 DesktopFollower::~DesktopFollower() {

@@ -46,6 +46,16 @@ AgentPaths resolve_paths(const std::string& cli_override);
 // "not decided yet" rather than as a usable session.
 DWORD resolve_console_session(bool verbose = false);
 
+// Runs a console command to completion; returns its exit code (-1 on failure).
+int run_command(const std::wstring& command_line);
+
+// A highest-privilege logon task, i.e. one whose agent can drive elevated
+// windows. Kept as the explicit fallback for machines where an SCM service is
+// not allowed; it cannot do anything before someone logs in, unlike the
+// service.
+bool set_autostart(bool enable);
+extern const wchar_t* const kAutostartTaskName;
+
 // Follows the desktop the keyboard and mouse are really delivered to, which is
 // how a host reaches the logon screen (Winlogon) and the UAC consent
 // (SAC-Desktop) without ever taking the monitor away from a local user.

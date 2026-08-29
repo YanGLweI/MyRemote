@@ -59,6 +59,7 @@ if(BUILD_CLIENT)
     add_executable(agent WIN32
         client/src/main.cpp
         client/src/desktop.cpp
+        client/src/service.cpp
         client/src/config_gui.cpp
         client/src/tray_icon.cpp
         client/resources/agent.rc

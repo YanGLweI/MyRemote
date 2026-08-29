@@ -27,6 +27,7 @@
 #include "input_simulator.hpp"
 #include "log.hpp"
 #include "messages.hpp"
+#include "service.hpp"
 #include "tray_icon.hpp"
 #include "video_encoder.hpp"
 
@@ -192,24 +193,6 @@ bool retire_limited_instances() {
     return killed;
 }
 
-// Runs a console command to completion; returns its exit code (-1 on failure).
-int run_command(const std::wstring& command_line) {
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring mutable_line = command_line;
-    if (!CreateProcessW(nullptr, mutable_line.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        return -1;
-    }
-    WaitForSingleObject(pi.hProcess, 15000);
-    DWORD code = static_cast<DWORD>(-1);
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return static_cast<int>(code);
-}
-
 // Closing an RDP client detaches the session from any display: the desktop
 // still exists but renders nowhere, so the stream is black and input lands on
 // nothing. Putting the session back on the console restores both.
@@ -220,8 +203,8 @@ void attach_to_console() {
     }
     DWORD session_id = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
-    int code = run_command(L"tscon " + std::to_wstring(session_id) +
-                           L" /dest:console");
+    int code = win32util::run_command(L"tscon " + std::to_wstring(session_id) +
+                                      L" /dest:console");
     mlog::info("tscon " + std::to_string(session_id) +
                " /dest:console finished with code " + std::to_string(code));
 }
@@ -526,6 +509,16 @@ struct Args {
     bool uninstall_autostart = false;
     bool takeover = false;
     bool no_elevate = false;
+    bool service = false;
+    bool session_host = false;
+    bool no_tray = false;
+    bool follow_desktop = false;
+    bool force = false;
+    bool install_service = false;
+    bool uninstall_service = false;
+    bool start_service = false;
+    bool stop_service = false;
+    bool service_state = false;
     std::string ip_override;
     int port_override = 0;
     std::string config_path;
@@ -534,8 +527,21 @@ struct Args {
 Args parse_command_line() {
     Args args;
     std::string cmd = GetCommandLineA();
+    // Boundary-aware: "--service" must not match "--service-state".
     auto has_flag = [&cmd](const std::string& flag) {
-        return cmd.find(flag) != std::string::npos;
+        size_t pos = 0;
+        while (true) {
+            pos = cmd.find(flag, pos);
+            if (pos == std::string::npos) {
+                return false;
+            }
+            size_t after = pos + flag.size();
+            if (after >= cmd.size() || cmd[after] == ' ' || cmd[after] == '\t' ||
+                cmd[after] == '=') {
+                return true;
+            }
+            pos = after;
+        }
     };
     auto get_value = [&cmd](const std::string& flag) -> std::string {
         size_t pos = 0;
@@ -564,6 +570,24 @@ Args parse_command_line() {
     args.uninstall_autostart = has_flag("--uninstall-autostart");
     args.takeover = has_flag("--takeover");
     args.no_elevate = has_flag("--no-elevate");
+    args.service = has_flag("--service");
+    args.session_host = has_flag("--session-host");
+    args.no_tray = has_flag("--no-tray");
+    args.follow_desktop = has_flag("--follow-desktop");
+    args.force = has_flag("--force");
+    args.install_service = has_flag("--install-service");
+    args.uninstall_service = has_flag("--uninstall-service");
+    args.start_service = has_flag("--start-service");
+    args.stop_service = has_flag("--stop-service");
+    args.service_state = has_flag("--service-state");
+    if (args.session_host) {
+        // Spawned by the service: nobody is watching this machine, and a
+        // window on the secure desktop is visible to whoever walks past it.
+        args.background = true;
+        args.no_elevate = true;
+        args.no_tray = true;
+        args.follow_desktop = true;
+    }
     args.ip_override = get_value("--ip");
     std::string port = get_value("--port");
     if (!port.empty()) {
@@ -577,40 +601,11 @@ Args parse_command_line() {
 
 namespace {
 
-constexpr wchar_t kAutostartTaskName[] = L"MyRemote Agent";
-
-}  // namespace
-
-// Logon-time autostart must run elevated: a Run-key agent starts with a
-// filtered token and can then never drive elevated windows remotely.
-bool set_autostart(bool enable) {
-    wchar_t path[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring action = enable
-                              ? L" /Create /F /SC ONLOGON /RL HIGHEST /TR \"\\\"" +
-                                    std::wstring(path) + L"\\\" --background\\\"\""
-                              : L" /Delete /F";
-    int code = run_command(L"schtasks" + action + L" /TN \"" +
-                           kAutostartTaskName + L"\"");
-
-    // Retire the legacy Run key so it cannot start a second, limited agent.
-    HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
-                      KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-        RegDeleteValueW(key, L"MyRemoteAgent");
-        RegCloseKey(key);
-    }
-    return code == 0;
-}
-
-namespace {
-
 // A filtered token cannot register a highest-privilege logon task, so hand the
 // job to a one-shot elevated sibling when needed.
 void request_autostart_install() {
     if (g_elevated) {
-        bool ok = set_autostart(true);
+        bool ok = win32util::set_autostart(true);
         MessageBoxW(nullptr,
                     ok ? L"已安装开机自启：登录时以管理员权限运行。"
                        : L"开机自启安装失败：需要管理员权限。",
@@ -637,20 +632,77 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// One-shot command-line operations: nothing here starts the agent itself.
+int run_service_cli(const Args& args) {
+    if (args.install_autostart || args.uninstall_autostart) {
+        bool enable = args.install_autostart;
+        bool ok = win32util::set_autostart(enable);
+        printf("MyRemote autostart %s: %s\n", enable ? "install" : "remove",
+               ok ? "ok" : "FAILED");
+        if (!ok && enable) {
+            printf("Hint: the logon task needs highest privileges; run this from "
+                   "an elevated prompt.\n");
+        }
+        return ok ? 0 : 1;
+    }
+    if (args.service_state) {
+        printf("%s", svc::query().c_str());
+        return 0;
+    }
+
+    const bool install = args.install_service;
+    const bool remove = args.uninstall_service;
+    const bool stop = args.stop_service;
+    const char* verb = install ? "install" : remove ? "uninstall"
+                       : stop   ? "stop"
+                                : "start";
+    const wchar_t* flag = install ? L"--install-service"
+                        : remove  ? L"--uninstall-service"
+                        : stop    ? L"--stop-service"
+                                  : L"--start-service";
+    if (!g_elevated) {
+        // Every one of these is refused to a filtered token.
+        std::wstring params = flag;
+        params += L" --no-elevate";
+        if (start_elevated_agent(params, SW_HIDE)) {
+            printf("MyRemoteAgent %s: administrator approval requested.\n", verb);
+            printf("Run \"agent.exe --service-state\" afterwards to check.\n");
+            return 0;
+        }
+        printf("MyRemoteAgent %s: FAILED - administrator rights are required.\n",
+               verb);
+        return 1;
+    }
+
+    std::wstring why;
+    bool ok = install ? svc::install_or_update(&why)
+              : remove ? svc::uninstall(&why)
+              : stop   ? svc::stop(&why)
+                       : svc::start(&why);
+    printf("MyRemoteAgent %s: %s%s%s\n", verb, ok ? "ok" : "FAILED",
+           ok ? "" : " - ", ok ? "" : win32util::wide_to_utf8(why.c_str()).c_str());
+    if (remove && ok) {
+        printf("The configuration in %%ProgramData%%\\MyRemote is kept.\n"
+               "Fallback without a service: agent.exe --install-autostart\n");
+    }
+    return ok ? 0 : 1;
+}
+
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     Args args = parse_command_line();
-    if (args.install_autostart || args.uninstall_autostart) {
-        bool enable = args.install_autostart;
-        bool ok = set_autostart(enable);
-        printf("MyRemote autostart %s: %s\n", enable ? "install" : "remove",
-               ok ? "ok" : "FAILED");
-        if (!ok && enable) {
-            printf("Hint: run \"agent.exe --install-autostart\" from an "
-                   "elevated prompt so the agent can control elevated windows.\n");
-        }
-        return ok ? 0 : 1;
+    // The service dispatcher and the install CLI must be reached before the
+    // single-instance mutex and the auto-elevation block: the mutex is
+    // session-local, and elevation is meaningless under the SCM.
+    if (args.service) {
+        return svc::run_as_service();
+    }
+    if (args.install_service || args.uninstall_service || args.start_service ||
+        args.stop_service || args.service_state || args.install_autostart ||
+        args.uninstall_autostart) {
+        win32util::attach_parent_console();
+        return run_service_cli(args);
     }
 
     // Physical-pixel metrics everywhere (capture/encoder/screen size).
