@@ -52,8 +52,8 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
     auto* splitter = new QSplitter(Qt::Horizontal);
     root_layout->addWidget(splitter);
 
-    auto* side_panel = new QWidget();
-    auto* side_layout = new QVBoxLayout(side_panel);
+    side_panel_ = new QWidget();
+    auto* side_layout = new QVBoxLayout(side_panel_);
     side_layout->setContentsMargins(0, 0, 0, 0);
     device_list_ = new DeviceListWidget();
     remark_button_ = new QPushButton(QStringLiteral("设置备注"));
@@ -65,8 +65,13 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
     side_layout->addWidget(remark_button_);
     side_layout->addWidget(disconnect_button_);
 
-    sessions_ = new SessionsArea(*tunnels_);
-    splitter->addWidget(side_panel);
+    const QString configured_release =
+        settings_.value(QStringLiteral("input/release_key")).toString();
+    if (!configured_release.isEmpty()) {
+        release_key_ = QKeySequence(configured_release);
+    }
+    sessions_ = new SessionsArea(*tunnels_, release_key_);
+    splitter->addWidget(side_panel_);
     splitter->addWidget(sessions_);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
@@ -80,16 +85,18 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
             [this](QString id) { remark_button_->setEnabled(!id.isEmpty()); });
     connect(sessions_, &SessionsArea::note, this,
             [this](QString text) { statusBar()->showMessage(text, 8000); });
+    connect(sessions_, &SessionsArea::zoom_changed, this,
+            &MainWindow::on_zoom_changed);
     connect(remark_button_, &QPushButton::clicked, this, [this]() {
         auto id = device_list_->selected_device_id();
         if (!id.has_value()) return;
         bool ok = false;
-        QString cur = remarks_.value(QString::fromStdString(*id)).toString();
+        QString cur = settings_.value(QString::fromStdString(*id)).toString();
         QString text = QInputDialog::getText(this, QStringLiteral("设置备注"),
                                              QStringLiteral("这台设备的备注："),
                                              QLineEdit::Normal, cur, &ok);
         if (ok) {
-            remarks_.setValue(QString::fromStdString(*id), text);
+            settings_.setValue(QString::fromStdString(*id), text);
             on_refresh_remark(QString::fromStdString(*id));
         }
     });
@@ -122,7 +129,8 @@ MainWindow::~MainWindow() {
 }
 
 QString MainWindow::display_name(const TunnelManager::DeviceInfo& info) const {
-    QString remark = remarks_.value(QString::fromStdString(info.device_id)).toString();
+    QString remark =
+        settings_.value(QString::fromStdString(info.device_id)).toString();
     QString name = remark.isEmpty() ? QString::fromStdString(info.device_name)
                                     : remark;
     return name + QStringLiteral(" ") + badge_text(info);
@@ -170,4 +178,19 @@ void MainWindow::on_control_requested(QString device_id) {
         return;
     }
     sessions_->open_session(info, display_name(info));
+}
+
+void MainWindow::on_zoom_changed(bool on) {
+    if (zoomed_ == on) {
+        return;  // the zoom moving between tabs must not lose the window geom
+    }
+    zoomed_ = on;
+    // Deliberately keeps the tab strip and the session toolbar on screen: the
+    // old fullscreen hid the only buttons that could leave it.
+    side_panel_->setVisible(!on);
+    if (on) {
+        showFullScreen();
+    } else {
+        showNormal();
+    }
 }

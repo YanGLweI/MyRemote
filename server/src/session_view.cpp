@@ -5,12 +5,14 @@
 #include <QVBoxLayout>
 
 #include "display_renderer.hpp"
+#include "input_gateway.hpp"
 #include "log.hpp"
 #include "session_toolbar.hpp"
 #include "tunnel_manager.hpp"
 
 SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
-                         int default_quality_index, QWidget* parent)
+                         int default_quality_index, const QKeySequence& release_key,
+                         QWidget* parent)
     : QWidget(parent), device_id_(device_id), tunnels_(tunnels) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -20,6 +22,10 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
     renderer_ = new DisplayRenderer(this);
     layout->addWidget(toolbar_);
     layout->addWidget(renderer_, 1);
+
+    gateway_ = new InputGateway(renderer_, this);
+    gateway_->set_release_key(release_key);
+    renderer_->installEventFilter(gateway_);
 
     controller_ = std::make_unique<RemoteController>(tunnels_, *renderer_);
     toolbar_->set_quality_index(default_quality_index);
@@ -37,8 +43,12 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
             &RemoteController::on_mouse_button);
     connect(renderer_, &DisplayRenderer::mouse_wheelled, controller_.get(),
             &RemoteController::on_mouse_wheel);
-    connect(renderer_, &DisplayRenderer::key_changed, controller_.get(),
+    connect(gateway_, &InputGateway::key_changed, controller_.get(),
             &RemoteController::on_key);
+    connect(gateway_, &InputGateway::capture_changed, toolbar_,
+            &SessionToolbar::set_capture);
+    connect(gateway_, &InputGateway::escape_released, this,
+            &SessionView::escape_released);
     connect(controller_.get(), &RemoteController::fps_updated, toolbar_,
             [this](int net, int dec) { toolbar_->set_fps(net, dec); });
     connect(controller_.get(), &RemoteController::control_started, this,
@@ -60,6 +70,8 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
         controller_->apply_quality(p.fps, p.bitrate_kbps, p.max_encode_width);
     });
     connect(toolbar_, &SessionToolbar::stop_requested, this, [this] {
+        // Flushes any key still held down while the tunnel is still open.
+        gateway_->set_captured(false);
         controller_->stop_control();
     });
     connect(toolbar_, &SessionToolbar::start_requested, this,
@@ -67,12 +79,16 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
     connect(toolbar_, &SessionToolbar::logon_requested, this, [this] {
         controller_->lock_workstation();
     });
+    connect(toolbar_, &SessionToolbar::fullscreen_toggled, this,
+            &SessionView::zoom_requested);
 }
 
 SessionView::~SessionView() {
-    // End the session first so the decode thread is joined while the renderer
-    // it paints into is still alive, then drop the controller before Qt starts
-    // destroying child widgets.
+    // Hand back the keyboard first so any key still physically held is released
+    // on the far side while its session is still open, then end the session so
+    // the decode thread is joined while the renderer it paints into is alive,
+    // then drop the controller before Qt starts destroying child widgets.
+    gateway_->set_captured(false);
     controller_->stop_control();
     controller_.reset();
 }
@@ -104,17 +120,16 @@ void SessionView::set_header(const QString& device_name, const QString& detail,
     refresh_buttons();
 }
 
+void SessionView::set_zoomed(bool zoomed) { toolbar_->set_zoomed(zoomed); }
+
 void SessionView::refresh_buttons() {
     const bool streaming = controller_->is_controlling();
+    if (!streaming) {
+        gateway_->set_captured(false);
+    }
     toolbar_->set_streaming(streaming);
     toolbar_->set_supports_logon(streaming &&
                                  controller_->controlled_supports_logon());
 }
 
 int SessionView::quality_index() const { return toolbar_->quality_index(); }
-
-bool SessionView::streaming() const { return controller_->is_controlling(); }
-
-bool SessionView::supports_logon() const {
-    return controller_->controlled_supports_logon();
-}

@@ -93,6 +93,7 @@ if(BUILD_SERVER)
         server/src/listener.cpp
         server/src/tunnel_manager.cpp
         server/src/display_renderer.cpp
+        server/src/input_gateway.cpp
         server/src/device_list.cpp
         server/src/remote_controller.cpp
         server/src/frame_pipeline.cpp
@@ -105,6 +106,7 @@ if(BUILD_SERVER)
         server/include/session_toolbar.hpp
         server/include/device_list.hpp
         server/include/display_renderer.hpp
+        server/include/input_gateway.hpp
         server/include/remote_controller.hpp
         server/include/frame_pipeline.hpp
     )

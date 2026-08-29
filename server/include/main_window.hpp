@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QKeySequence>
 #include <QMainWindow>
 #include <QSettings>
 
@@ -28,6 +29,9 @@ private slots:
     void on_device_state_changed(QString device_id, int state);
     void on_refresh_remark(QString device_id);
     void on_control_requested(QString device_id);
+    // The sessions area decides which tab is zoomed; the window is the only
+    // thing that can hide the roster and change its own state.
+    void on_zoom_changed(bool on);
 
 private:
     // One roster record in, one row + one tab header out: the remark always
@@ -36,9 +40,12 @@ private:
     QString display_name(const TunnelManager::DeviceInfo& info) const;
 
     std::unique_ptr<TunnelManager> tunnels_;
+    QWidget* side_panel_ = nullptr;
     DeviceListWidget* device_list_ = nullptr;
     SessionsArea* sessions_ = nullptr;
     QPushButton* disconnect_button_ = nullptr;
     QPushButton* remark_button_ = nullptr;
-    QSettings remarks_{"MyRemote", "control_server"};
+    QKeySequence release_key_{QStringLiteral("Ctrl+Alt+Shift+R")};
+    bool zoomed_ = false;
+    QSettings settings_{"MyRemote", "control_server"};
 };

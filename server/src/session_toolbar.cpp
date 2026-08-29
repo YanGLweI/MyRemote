@@ -13,12 +13,19 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     row->setContentsMargins(8, 4, 8, 4);
     row->setSpacing(8);
 
-    title_ = new QLabel(QStringLiteral("Remote session"));
+    title_ = new QLabel(QStringLiteral("会话"));
     QFont bold = title_->font();
     bold.setBold(true);
     title_->setFont(bold);
     detail_ = new QLabel();
     state_ = new QLabel();
+    capture_ = new QLabel();
+    capture_->setText(QStringLiteral("  键盘 · 本地"));
+    capture_->setToolTip(QStringLiteral(
+        "在远程画面里点一下即可开始输入键盘；连按两次 Esc 交还。\n"
+        "也可以按释放热键（默认 Ctrl+Alt+Shift+R）交还。\n"
+        "Alt+F4 与 Win 始终留在本机：Windows 在外壳层优先处理 Win 和\n"
+        "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
     fps_ = new QLabel(QStringLiteral("NET -- | DEC --"));
 
     quality_ = new QComboBox();
@@ -37,17 +44,27 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
 
     stop_button_ = new QPushButton(QStringLiteral("断开"));
 
+    fullscreen_button_ = new QPushButton(QStringLiteral("全屏"));
+    fullscreen_button_->setCheckable(true);
+    fullscreen_button_->setToolTip(QStringLiteral(
+        "让这台设备铺满整个窗口。标签栏和这一条工具栏都会留在画面上方，\n"
+        "出口一直在屏幕上。"));
+
     row->addWidget(title_);
     row->addWidget(detail_);
     row->addWidget(state_);
+    row->addWidget(capture_);
     row->addStretch(1);
     row->addWidget(fps_);
     row->addWidget(quality_);
     row->addWidget(logon_button_);
+    row->addWidget(fullscreen_button_);
     row->addWidget(stop_button_);
 
     connect(quality_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int idx) { emit quality_selected(idx); });
+    connect(fullscreen_button_, &QPushButton::clicked, this,
+            [this](bool on) { emit fullscreen_toggled(on); });
     connect(stop_button_, &QPushButton::clicked, this, [this]() {
         if (streaming_) {
             emit stop_requested();
@@ -75,6 +92,7 @@ void SessionToolbar::set_streaming(bool on) {
     // One button, two honest labels: what it says is what it does.
     stop_button_->setText(on ? QStringLiteral("断开")
                              : QStringLiteral("重新连接"));
+    capture_->setVisible(on);
     if (!on) {
         fps_->setText(QStringLiteral("NET -- | DEC --"));
     }
@@ -82,6 +100,23 @@ void SessionToolbar::set_streaming(bool on) {
 
 void SessionToolbar::set_supports_logon(bool on) {
     logon_button_->setEnabled(on && streaming_);
+}
+
+void SessionToolbar::set_capture(bool captured) {
+    capture_->setText(captured ? QStringLiteral("  键盘 · 远程")
+                              : QStringLiteral("  键盘 · 本地"));
+    capture_->setStyleSheet(captured ? QStringLiteral("color: #3E9B6E;")
+                                     : QStringLiteral("color: #98A2AD;"));
+}
+
+void SessionToolbar::set_zoomed(bool zoomed) {
+    // The window decides the state as much as the button does, so the checked
+    // flag is set rather than toggled here.
+    fullscreen_button_->blockSignals(true);
+    fullscreen_button_->setChecked(zoomed);
+    fullscreen_button_->blockSignals(false);
+    fullscreen_button_->setText(zoomed ? QStringLiteral("退出全屏")
+                                       : QStringLiteral("全屏"));
 }
 
 void SessionToolbar::set_fps(int net_fps, int decoded_fps) {

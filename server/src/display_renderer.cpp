@@ -1,114 +1,8 @@
 #include "display_renderer.hpp"
 
-#include <windows.h>
-
-#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
-
-namespace {
-
-struct QtVkMap {
-    int qt_key;
-    WORD vk;
-};
-
-// Used only when the platform event carries no usable native VK (IME keys,
-// synthetic events). Letters/digits match ASCII already, so they are omitted.
-constexpr QtVkMap kQtToVk[] = {
-    {Qt::Key_Escape, VK_ESCAPE},
-    {Qt::Key_Tab, VK_TAB},
-    {Qt::Key_Backtab, VK_TAB},
-    {Qt::Key_Backspace, VK_BACK},
-    {Qt::Key_Return, VK_RETURN},
-    {Qt::Key_Enter, VK_RETURN},  // numpad enter
-    {Qt::Key_Insert, VK_INSERT},
-    {Qt::Key_Delete, VK_DELETE},
-    {Qt::Key_Pause, VK_PAUSE},
-    {Qt::Key_Print, VK_SNAPSHOT},
-    {Qt::Key_Home, VK_HOME},
-    {Qt::Key_End, VK_END},
-    {Qt::Key_Left, VK_LEFT},
-    {Qt::Key_Up, VK_UP},
-    {Qt::Key_Right, VK_RIGHT},
-    {Qt::Key_Down, VK_DOWN},
-    {Qt::Key_PageUp, VK_PRIOR},
-    {Qt::Key_PageDown, VK_NEXT},
-    {Qt::Key_Shift, VK_SHIFT},
-    {Qt::Key_Control, VK_CONTROL},
-    {Qt::Key_Meta, VK_LWIN},
-    {Qt::Key_Alt, VK_MENU},
-    {Qt::Key_AltGr, VK_RMENU},
-    {Qt::Key_CapsLock, VK_CAPITAL},
-    {Qt::Key_NumLock, VK_NUMLOCK},
-    {Qt::Key_ScrollLock, VK_SCROLL},
-    {Qt::Key_Clear, VK_CLEAR},
-    {Qt::Key_Super_L, VK_LWIN},
-    {Qt::Key_Super_R, VK_RWIN},
-    {Qt::Key_Menu, VK_APPS},
-    {Qt::Key_Help, VK_HELP},
-};
-
-bool is_extended_vk(WORD vk) {
-    switch (vk) {
-        case VK_INSERT:
-        case VK_DELETE:
-        case VK_HOME:
-        case VK_END:
-        case VK_PRIOR:
-        case VK_NEXT:
-        case VK_LEFT:
-        case VK_UP:
-        case VK_RIGHT:
-        case VK_DOWN:
-        case VK_NUMLOCK:
-        case VK_SNAPSHOT:
-        case VK_RCONTROL:   // 0xA3
-        case VK_RMENU:      // 0xA5
-        case VK_LWIN:
-        case VK_RWIN:
-        case VK_DIVIDE:
-        case VK_CANCEL:
-        case VK_PAUSE:
-            return true;
-        default:
-            return false;
-    }
-}
-
-// Resolves the physical Win32 virtual key for a Qt key event.
-WORD map_to_vk(const QKeyEvent* event, bool& extended) {
-    WORD vk = 0;
-    const quint32 native = event->nativeVirtualKey();
-    if (native != 0 && native != VK_PROCESSKEY && native <= 0xFE) {
-        vk = static_cast<WORD>(native);
-    }
-    if (vk == 0) {
-        const int key = event->key();
-        if (key >= Qt::Key_F1 && key <= Qt::Key_F24) {
-            vk = static_cast<WORD>(VK_F1 + (key - Qt::Key_F1));
-        }
-        for (const auto& m : kQtToVk) {
-            if (m.qt_key == key) {
-                vk = m.vk;
-                break;
-            }
-        }
-        if (vk == 0 && key > 0 && key <= 0xFF) {
-            // Latin-1 printable: base VK; the physical Shift/Ctrl presses are
-            // forwarded separately, so the remote produces the right glyph.
-            const SHORT scan = VkKeyScanW(static_cast<WCHAR>(key));
-            if (scan != -1) {
-                vk = static_cast<WORD>(LOBYTE(scan));
-            }
-        }
-    }
-    extended = vk != 0 && is_extended_vk(vk);
-    return vk;
-}
-
-}  // namespace
 
 DisplayRenderer::DisplayRenderer(QWidget* parent) : QWidget(parent) {
     setMinimumSize(320, 240);
@@ -172,15 +66,27 @@ void DisplayRenderer::paintEvent(QPaintEvent*) {
     }
     if (frame.isNull()) {
         painter.setPen(QColor(120, 120, 120));
-        painter.drawText(rect(), Qt::AlignCenter,
-                         QStringLiteral("No active session\nDouble-click a device to start"));
+        painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("等待远程画面…"));
+    } else {
+        QRect target = remote_rect();
+        if (target.isEmpty()) {
+            target = rect();
+        }
+        painter.drawImage(target, frame);
+    }
+    if (hint_.isEmpty()) {
         return;
     }
-    QRect target = remote_rect();
-    if (target.isEmpty()) {
-        target = rect();
-    }
-    painter.drawImage(target, frame);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QFontMetrics fm(painter.font());
+    const int chip_h = fm.height() + 10;
+    const QRect chip((width() - fm.horizontalAdvance(hint_) - 20) / 2, 10,
+                     fm.horizontalAdvance(hint_) + 20, chip_h);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(12, 14, 16, 210));
+    painter.drawRoundedRect(chip, 4, 4);
+    painter.setPen(QColor(232, 236, 240));
+    painter.drawText(chip, Qt::AlignCenter, hint_);
 }
 
 void DisplayRenderer::mouseMoveEvent(QMouseEvent* event) {
@@ -207,20 +113,10 @@ void DisplayRenderer::wheelEvent(QWheelEvent* event) {
     emit mouse_wheelled(event->angleDelta().y());
 }
 
-void DisplayRenderer::keyPressEvent(QKeyEvent* event) {
-    bool extended = false;
-    WORD vk = map_to_vk(event, extended);
-    if (vk != 0) {
-        emit key_changed(vk, true, extended);
+void DisplayRenderer::set_hint(QString text) {
+    if (hint_ == text) {
+        return;
     }
-    event->accept();
-}
-
-void DisplayRenderer::keyReleaseEvent(QKeyEvent* event) {
-    bool extended = false;
-    WORD vk = map_to_vk(event, extended);
-    if (vk != 0) {
-        emit key_changed(vk, false, extended);
-    }
-    event->accept();
+    hint_ = std::move(text);
+    update();
 }

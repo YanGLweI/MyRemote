@@ -4,8 +4,8 @@
 
 #include <mutex>
 
-// Shows the remote desktop and captures local input, mapping widget
-// coordinates to the remote resolution.
+// Shows the remote desktop and maps pointer input onto the remote resolution.
+// Keyboard decisions live in InputGateway, which watches this widget.
 class DisplayRenderer : public QWidget {
     Q_OBJECT
 
@@ -21,12 +21,13 @@ public slots:
     void set_frame(QImage frame);
     void repaint_frame();
     void clear_frame();
+    // A caption over the picture; empty hides it.
+    void set_hint(QString text);
 
 signals:
     void mouse_moved(int x, int y);       // remote pixel coords
     void mouse_button_changed(int button, bool pressed);
     void mouse_wheelled(int delta);
-    void key_changed(int vk, bool pressed, bool extended);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -34,8 +35,6 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
-    void keyPressEvent(QKeyEvent* event) override;
-    void keyReleaseEvent(QKeyEvent* event) override;
 
 private:
     QPoint map_to_remote(const QPoint& widget_pos) const;
@@ -43,6 +42,7 @@ private:
 
     mutable std::mutex mutex_;
     QImage current_;
+    QString hint_;
     int remote_w_ = 0;
     int remote_h_ = 0;
 };

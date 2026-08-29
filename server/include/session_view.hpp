@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QKeySequence>
 #include <QWidget>
 
 #include <memory>
@@ -8,6 +9,7 @@
 #include "remote_controller.hpp"
 
 class DisplayRenderer;
+class InputGateway;
 class SessionToolbar;
 class TunnelManager;
 
@@ -19,7 +21,8 @@ class SessionView : public QWidget {
 
 public:
     SessionView(std::string device_id, TunnelManager& tunnels,
-                int default_quality_index, QWidget* parent = nullptr);
+                int default_quality_index, const QKeySequence& release_key,
+                QWidget* parent = nullptr);
     ~SessionView() override;
 
     const std::string& device_id() const { return device_id_; }
@@ -30,14 +33,17 @@ public:
     void suspend();
     void set_header(const QString& device_name, const QString& detail,
                     const QString& state_text, bool live);
+    // Set by the area, which owns the window-level half of fullscreen.
+    void set_zoomed(bool zoomed);
     // Lets the window remember what the operator last chose.
     int quality_index() const;
-    bool streaming() const;
-    bool supports_logon() const;
 
 signals:
-    void closed(QString device_id);
     void note(QString text);
+    void zoom_requested(bool on);
+    // The operator asked for the keyboard back; the tab bar is the useful place
+    // for focus once the picture no longer wants keystrokes.
+    void escape_released();
 
 private:
     void refresh_buttons();
@@ -46,6 +52,7 @@ private:
     TunnelManager& tunnels_;
     SessionToolbar* toolbar_ = nullptr;
     DisplayRenderer* renderer_ = nullptr;
+    InputGateway* gateway_ = nullptr;
     // Owned here rather than as a Qt child so the destructor can stop the
     // decode thread before the widget it paints into is torn down.
     std::unique_ptr<RemoteController> controller_;
