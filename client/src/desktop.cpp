@@ -173,49 +173,73 @@ AgentPaths resolve_paths(const std::string& cli_override) {
     return paths;
 }
 
-DWORD resolve_console_session(bool verbose) {
-    DWORD session = WTSGetActiveConsoleSessionId();
-    if (verbose) {
-        mlog::info("WTSGetActiveConsoleSessionId -> " + std::to_string(session));
-    }
-    if (session != 0xFFFFFFFF && session != 0) {
-        return session;
-    }
-
-    // The console id alone is not enough on every SKU: fast user switching and
-    // detached sessions leave it at 0 while a live session clearly owns the
-    // desktop, so fall back to enumerating.
+bool console_session(DWORD* out, std::string* how, std::string* table) {
+    // The station name is the only identifier that survives an RDP login: once
+    // the console session is detached, WTSGetActiveConsoleSessionId() reports
+    // 0xFFFFFFFF while "Console" still names the session owning the physical
+    // display. Getting this wrong moves the host into somebody's RDP session.
+    struct Row {
+        DWORD id;
+        std::wstring station;
+        WTS_CONNECTSTATE_CLASS state;
+    };
+    std::vector<Row> rows;
     PWTS_SESSION_INFOW response = nullptr;
     DWORD count = 0;
-    DWORD best_active = 0xFFFFFFFF;
-    DWORD best_connected = 0xFFFFFFFF;
     if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &response, &count)) {
         for (DWORD i = 0; i < count; ++i) {
-            DWORD id = response[i].SessionId;
-            if (id == 0) {
-                continue;  // session 0 is services, never the interactive desktop
-            }
-            if (response[i].State == WTSActive && id > best_active) {
-                best_active = id;
-            } else if (response[i].State == WTSConnected && id > best_connected) {
-                best_connected = id;
-            }
+            // pWinStationName points into the block WTSFreeMemory releases.
+            rows.push_back({response[i].SessionId,
+                            response[i].pWinStationName ? response[i].pWinStationName
+                                                        : L"",
+                            response[i].State});
         }
         WTSFreeMemory(response);
     }
-    if (verbose) {
-        mlog::info("enumerated sessions: active=" + std::to_string(best_active) +
-                   " connected=" + std::to_string(best_connected));
-    }
-    if (best_active != 0xFFFFFFFF) {
-        return best_active;
-    }
-    if (best_connected != 0xFFFFFFFF) {
-        return best_connected;
+    if (table) {
+        for (const Row& r : rows) {
+            char line[96];
+            snprintf(line, sizeof(line), "%s%lu %ls(%d)", table->empty() ? "" : "; ",
+                     r.id, r.station.c_str(), static_cast<int>(r.state));
+            *table += line;
+        }
+        if (table->empty()) {
+            *table = "no sessions enumerated";
+        }
     }
 
-    // Nothing reports itself as active: the machine is at the logon screen, and
-    // the session hosting LogonUI is the one owning a non-zero winlogon.exe.
+    // An RDP station is never the physical console, whatever else claims it.
+    auto is_remote = [&](DWORD id) {
+        for (const Row& r : rows) {
+            if (r.id == id) {
+                return _wcsnicmp(r.station.c_str(), L"RDP-", 4) == 0;
+            }
+        }
+        return false;
+    };
+
+    for (const Row& r : rows) {
+        if (r.id != 0 && _wcsicmp(r.station.c_str(), L"Console") == 0) {
+            *out = r.id;
+            if (how) {
+                *how = "console station";
+            }
+            return true;
+        }
+    }
+
+    // No station literally named "Console": multi-session images (AVD, Windows
+    // 365) have none at all, and neither does a failed enumeration.
+    DWORD attached = WTSGetActiveConsoleSessionId();
+    if (attached != 0 && attached != 0xFFFFFFFF && !is_remote(attached)) {
+        *out = attached;
+        if (how) {
+            *how = "attached console";
+        }
+        return true;
+    }
+
+    // Last resort: LogonUI lives in the session owning a non-zero winlogon.exe.
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W entry{};
@@ -226,20 +250,20 @@ DWORD resolve_console_session(bool verbose) {
                     continue;
                 }
                 DWORD id = 0;
-                if (ProcessIdToSessionId(entry.th32ProcessID, &id) && id != 0) {
+                if (ProcessIdToSessionId(entry.th32ProcessID, &id) && id != 0 &&
+                    !is_remote(id)) {
                     CloseHandle(snapshot);
-                    if (verbose) {
-                        mlog::info("winlogon.exe pid=" +
-                                   std::to_string(entry.th32ProcessID) + " owns session " +
-                                   std::to_string(id));
+                    *out = id;
+                    if (how) {
+                        *how = "winlogon owner";
                     }
-                    return id;
+                    return true;
                 }
             } while (Process32NextW(snapshot, &entry));
         }
         CloseHandle(snapshot);
     }
-    return session;
+    return false;
 }
 
 const wchar_t* const kAutostartTaskName = L"MyRemote Agent";

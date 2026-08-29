@@ -41,10 +41,14 @@ struct AgentPaths {
 // directory so a build-tree agent keeps working with a local config.json.
 AgentPaths resolve_paths(const std::string& cli_override);
 
-// The session that currently owns the physical console. Returns
-// 0xFFFFFFFF when there is none; may return 0, which the caller must treat as
-// "not decided yet" rather than as a usable session.
-DWORD resolve_console_session(bool verbose = false);
+// The session that owns the physical console, even while it is disconnected.
+// Returns false when that cannot be proven: callers must then leave the host
+// where it is rather than move it somewhere plausible-but-wrong. A session on
+// an "RDP-*" station is never accepted.
+// "how" receives which tier decided; "table" receives "1 Console(0); ..." for
+// the command line, so a remote machine can be diagnosed without a debugger.
+bool console_session(DWORD* out, std::string* how = nullptr,
+                     std::string* table = nullptr);
 
 // Name of the desktop currently receiving keyboard and mouse input:
 // "Default", "Winlogon", "SAC-Desktop", ... Empty when it cannot be read.

@@ -19,8 +19,6 @@ constexpr wchar_t kHostParams[] = L" --session-host --background --no-elevate";
 // unless UNICODE is defined, and every call here is the explicit W variant.
 constexpr wchar_t kSeTcbName[] = L"SeTcbPrivilege";
 constexpr wchar_t kSeDebugName[] = L"SeDebugPrivilege";
-// "The service has already been started or stopped"; not exported by every SDK.
-constexpr DWORD kAlreadyStopped = 1056;
 
 // One host at a time: two of them would mean two tunnels registering the same
 // device id, and the controller retires the older one on every registration.
@@ -164,32 +162,52 @@ void shutdown_host() {
     g_host_session = 0xFFFFFFFF;
 }
 
+// How long a console handover has to look stable before we act on it, and how
+// young a host has to be for us to leave it alone. A session-change storm
+// (mstsc connecting fires five of them inside two seconds) must never be able
+// to terminate a healthy host: that kills the only outbound tunnel.
+constexpr ULONGLONG kSettleMs = 5000;
+constexpr ULONGLONG kMinHostAgeMs = 15000;
+
 void supervise() {
     ULONGLONG last_launch_ms = 0;
     int fast_failures = 0;
     DWORD backoff_ms = 2000;
+    DWORD pending = 0xFFFFFFFF;
+    ULONGLONG pending_ms = 0;
 
     while (WaitForSingleObject(g_stop_event, 0) != WAIT_OBJECT_0) {
-        DWORD want = win32util::resolve_console_session(false);
+        DWORD want = 0xFFFFFFFF;
+        std::string how;
+        bool resolved = win32util::console_session(&want, &how);
         bool host_dead = g_host && WaitForSingleObject(g_host, 0) == WAIT_OBJECT_0;
+        ULONGLONG now = GetTickCount64();
 
-        if (g_host && (host_dead || want != g_host_session)) {
-            if (!host_dead) {
-                mlog::info("Console session moved to " + std::to_string(want) +
-                           "; restarting the host");
-                TerminateProcess(g_host, 0);
-                WaitForSingleObject(g_host, 2000);
-            } else {
-                DWORD code = 0;
-                GetExitCodeProcess(g_host, &code);
-                mlog::info("Session host exited with code " + std::to_string(code));
-            }
+        if (g_host && host_dead) {
+            DWORD code = 0;
+            GetExitCodeProcess(g_host, &code);
+            mlog::info("Session host exited with code " + std::to_string(code));
             shutdown_host();
+        } else if (g_host && resolved && want != g_host_session) {
+            // Kept across iterations and deliberately not re-armed by a wake-up,
+            // so consecutive SESSIONCHANGE events cannot shorten the settle.
+            if (want != pending) {
+                pending = want;
+                pending_ms = now;
+            } else if (now - pending_ms >= kSettleMs &&
+                       now - last_launch_ms >= kMinHostAgeMs) {
+                mlog::info("Console session moved to " + std::to_string(want) +
+                           " (" + how + "); restarting the host");
+                TerminateProcess(g_host, 0);
+                pending = 0xFFFFFFFF;
+                shutdown_host();
+            }
+        } else {
+            pending = 0xFFFFFFFF;
         }
 
         if (!g_host && host_dead) {
-            ULONGLONG now = GetTickCount64();
-            if (now - last_launch_ms < 15000) {
+            if (now - last_launch_ms < kMinHostAgeMs) {
                 ++fast_failures;
             } else {
                 fast_failures = 0;
@@ -202,12 +220,18 @@ void supervise() {
             }
         }
 
-        // Session 0 is services and 0xFFFFFFFF means nothing owns the console;
-        // both are "wait for a session change" rather than "launch something".
-        if (!g_host && want != 0 && want != 0xFFFFFFFF) {
+        if (!g_host && resolved && want != 0) {
             g_host = launch_host(want);
             g_host_session = want;
             last_launch_ms = GetTickCount64();
+            if (!g_host) {
+                // CreateProcessAsUser fails as ERROR_FILE_NOT_FOUND when the
+                // desktop it was told to start on cannot be opened.
+                DWORD err = GetLastError();
+                mlog::error("Launching a session host in session " +
+                            std::to_string(want) + " failed (last error " +
+                            std::to_string(err) + "); retrying");
+            }
         }
 
         HANDLE waits[3] = {g_stop_event, g_wakeup_event, g_host};
@@ -239,7 +263,18 @@ DWORD WINAPI ctrl_handler(DWORD control, DWORD event_type, LPVOID event_data,
             }
             mlog::info("Session change event " + std::to_string(event_type) +
                        " session " + std::to_string(session));
-            SetEvent(g_wakeup_event);
+            // Only these can move the console. Logon, lock and unlock are
+            // handled inside the host by its desktop follower; waking the
+            // supervisor for them just fed the restart storm.
+            const bool may_move_console =
+                event_type == WTS_CONSOLE_CONNECT ||
+                event_type == WTS_CONSOLE_DISCONNECT ||
+                event_type == WTS_REMOTE_CONNECT ||
+                event_type == WTS_REMOTE_DISCONNECT ||
+                event_type == WTS_SESSION_LOGOFF;
+            if (may_move_console) {
+                SetEvent(g_wakeup_event);
+            }
             return NO_ERROR;
         }
         case SERVICE_CONTROL_INTERROGATE:
@@ -316,6 +351,16 @@ bool wait_for_state(SC_HANDLE handle, DWORD target, DWORD timeout_ms,
     return false;
 }
 
+// ControlService always marshals its SERVICE_STATUS out parameter: passing
+// nullptr fails the call with ERROR_INVALID_ADDRESS and the service is never
+// stopped. Returns the error code so callers can accept the ones that mean
+// "already stopped".
+DWORD request_stop(SC_HANDLE service) {
+    SERVICE_STATUS status{};
+    return ControlService(service, SERVICE_CONTROL_STOP, &status) ? ERROR_SUCCESS
+                                                                  : GetLastError();
+}
+
 void apply_service_config(SC_HANDLE handle) {
     SERVICE_DESCRIPTIONW description{};
     description.lpDescription = const_cast<LPWSTR>(
@@ -323,8 +368,13 @@ void apply_service_config(SC_HANDLE handle) {
         L"logon screen and in every session.");
     ChangeServiceConfig2W(handle, SERVICE_CONFIG_DESCRIPTION, &description);
 
+    // Not delayed: the delay costs 1-2 minutes of an unreachable machine
+    // right after power-on, which is exactly when a remote logon is needed.
+    // Started before the network is up, the host just retries from its 1s
+    // backoff. Written as FALSE rather than omitted because the flag persists
+    // on an already-registered service.
     SERVICE_DELAYED_AUTO_START_INFO delayed{};
-    delayed.fDelayedAutostart = TRUE;
+    delayed.fDelayedAutostart = FALSE;
     ChangeServiceConfig2W(handle, SERVICE_CONFIG_DELAYED_AUTO_START_INFO,
                           &delayed);
 
@@ -469,7 +519,7 @@ bool uninstall(std::wstring* why) {
     if (!service) {
         return false;
     }
-    ControlService(service.get(), SERVICE_CONTROL_STOP, nullptr);
+    request_stop(service.get());
     wait_for_state(service.get(), SERVICE_STOPPED, 5000, nullptr);
     if (!DeleteService(service.get())) {
         if (why) {
@@ -502,10 +552,11 @@ bool stop(std::wstring* why) {
     if (!service) {
         return false;
     }
-    if (!ControlService(service.get(), SERVICE_CONTROL_STOP, nullptr) &&
-        GetLastError() != kAlreadyStopped) {
+    const DWORD err = request_stop(service.get());
+    if (err != ERROR_SUCCESS && err != ERROR_SERVICE_NOT_ACTIVE) {
         if (why) {
-            *why = L"ControlService(STOP) failed";
+            // 5 = not allowed to stop it, 1052 = STOP is not accepted.
+            *why = L"ControlService(STOP) failed, error " + std::to_wstring(err);
         }
         return false;
     }
@@ -559,8 +610,15 @@ std::string query() {
                                : std::to_string(config->dwStartType)) +
                "\n";
     }
-    out += "  console session: " +
-           std::to_string(win32util::resolve_console_session(false)) + "\n";
+    DWORD console = 0xFFFFFFFF;
+    std::string how;
+    std::string stations;
+    if (win32util::console_session(&console, &how, &stations)) {
+        out += "  console session: " + std::to_string(console) + " (" + how + ")\n";
+    } else {
+        out += "  console session: unresolved - the host stays where it is\n";
+    }
+    out += "  stations: " + stations + "\n";
     // Same resolution order the host itself used, otherwise the status file is
     // looked for in the wrong place on a build-tree install.
     std::string log_dir = win32util::resolve_paths(std::string()).log_dir;
