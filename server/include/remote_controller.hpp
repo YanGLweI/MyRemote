@@ -59,9 +59,10 @@ signals:
     void control_started(QString device_id);
     void control_stopped();
     void control_denied(QString device_id);
-    // fps is what actually reached the screen in the last second. latency_ms is
-    // how old that picture was when it became one, and is -1 while nothing can be
-    // said: before the clocks are tied, or while the far side sends no frames.
+    // fps is what actually reached the screen in the last second; it is 0 while
+    // the far desktop is quiet, because the capture produces nothing to send.
+    // latency_ms is the last round trip to the agent, or -1 while none has been
+    // measured: a session that just started, or an agent too old to answer.
     void stats_updated(int fps, int latency_ms);
     // One-line explanation for the status bar: what auto-resume is doing, or
     // why it stopped trying.
@@ -77,9 +78,8 @@ public slots:
     void on_key(int vk, bool pressed, bool extended);
     void on_auth_result(QString device_id, bool ok);
     // Arrives on a session thread, so it is delivered here on the GUI thread: the
-    // clock state below is plain members on purpose.
-    void on_clock_pong(QString device_id, quint64 t0_us, quint64 t3_us,
-                       quint64 agent_recv_us, quint64 agent_send_us);
+    // round-trip state below is plain members on purpose.
+    void on_pong(QString device_id, quint64 t0_us, quint64 t3_us);
 
 private:
     bool do_start(const std::string& device_id);
@@ -89,12 +89,9 @@ private:
     // Re-authenticate and restart streaming on the armed device, if the retry
     // budget still allows it.
     void resume();
-    // Ask the far side what its clock says, unless it has already proved it does
-    // not answer.
-    void ask_clock();
-    // Milliseconds the last second of pictures spent getting here, or -1 when
-    // there is nothing honest to say.
-    int latency_ms();
+    // Ask the far side to bounce a stamp back, unless it has already proved it
+    // does not answer.
+    void ping();
 
     TunnelManager& tunnels_;
     DisplayRenderer& renderer_;
@@ -113,10 +110,8 @@ private:
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
     uint16_t max_encode_width_ = 0;
-    // Tied by the Ping/Pong exchange: "agent clock minus ours". A frame's capture
-    // stamp is only meaningful once that difference is known.
-    int64_t clock_offset_us_ = 0;
-    bool clock_synced_ = false;
+    // Smoothed round trip to the controlled agent, -1 until it answers once.
+    int rtt_ms_ = -1;
     uint64_t ping_sent_us_ = 0;
     // An agent too old to answer must not be asked forever, and each unanswered
     // Ping costs its log a warning line.

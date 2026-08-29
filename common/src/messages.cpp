@@ -225,19 +225,15 @@ bool parse_ping_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us) {
     return read_u64(payload, offset, t0_us);
 }
 
-std::vector<uint8_t> make_pong_payload(const ClockEcho& echo) {
+std::vector<uint8_t> make_pong_payload(uint64_t t0_us) {
     std::vector<uint8_t> payload;
-    put_u64(payload, echo.t0_us);
-    put_u64(payload, echo.agent_recv_us);
-    put_u64(payload, echo.agent_send_us);
+    put_u64(payload, t0_us);
     return payload;
 }
 
-bool parse_pong_payload(const std::vector<uint8_t>& payload, ClockEcho& echo) {
+bool parse_pong_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us) {
     size_t offset = 0;
-    return read_u64(payload, offset, echo.t0_us) &&
-           read_u64(payload, offset, echo.agent_recv_us) &&
-           read_u64(payload, offset, echo.agent_send_us);
+    return read_u64(payload, offset, t0_us);
 }
 
 namespace {

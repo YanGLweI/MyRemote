@@ -29,12 +29,12 @@ enum class MessageType : uint8_t {
     StateReport     = 0x0D,  // C→S live capability + geometry [1B flags][2B w][2B h]
     LockWorkstation = 0x0F,  // S→C hand the machine back to its logon screen
     Encrypted       = 0x10,  // envelope: AES-GCM over [inner type][payload]
-    // A frame's capture stamp is in the agent's own steady clock, which means
-    // nothing on this machine until the two clocks are tied together. Ping and
-    // Pong do that: from t0..t3 we get a round trip and an offset, and with the
-    // offset the age of any frame can be stated in local time.
+    // One measurement of how long the far side takes to answer. The agent only
+    // echoes the stamp back, so nothing has to be compared between two machines'
+    // clocks: the time between our send and our receipt is the round trip, and it
+    // includes whatever the peer spent getting around to the reply.
     Ping            = 0x11,  // S→C [8B t0] our steady clock when it was sent
-    Pong            = 0x12,  // C→S [8B t0][8B agent at receipt][8B agent at send]
+    Pong            = 0x12,  // C→S [8B t0] unchanged
 };
 
 enum class RegisterStatus : uint8_t {
@@ -98,17 +98,9 @@ struct VideoFrameInfo {
     size_t size = 0;
 };
 
-// The four samples of one Ping/Pong exchange. t0 and t3 are this machine's
-// clock, t1 and t2 the agent's, so the pair yields both a round trip and the
-// offset between the two clocks.
-struct ClockEcho {
-    uint64_t t0_us = 0;
-    uint64_t agent_recv_us = 0;
-    uint64_t agent_send_us = 0;
-};
-
-// Both ends stamp frames and clock samples with this, and they must: the latency
-// arithmetic subtracts one from the other across a network.
+// Both ends stamp frames with this. It is per-machine on purpose: nothing is
+// ever subtracted across a network, which is why the round trip below is
+// measured with one clock instead of two.
 uint64_t steady_us();
 
 // Payload builders / parsers (all multi-byte integers are big-endian).
@@ -145,7 +137,7 @@ bool parse_video_frame_payload(const std::vector<uint8_t>& payload, VideoFrameIn
 
 std::vector<uint8_t> make_ping_payload(uint64_t t0_us);
 bool parse_ping_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us);
-std::vector<uint8_t> make_pong_payload(const ClockEcho& echo);
-bool parse_pong_payload(const std::vector<uint8_t>& payload, ClockEcho& echo);
+std::vector<uint8_t> make_pong_payload(uint64_t t0_us);
+bool parse_pong_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us);
 
 }  // namespace proto

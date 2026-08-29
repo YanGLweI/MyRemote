@@ -32,18 +32,6 @@ public:
     // Called from the tunnel session thread; keeps only the latest payload.
     void push(QByteArray payload);
 
-    // How old the pictures that finished decoding in the last window were, as
-    // the raw difference between our clock at decode and the agent's at capture.
-    // The window is summed rather than sampled: the newest frame of a second says
-    // more about when a frame happened to land than about how old they are.
-    struct LatencyWindow {
-        int64_t diff_sum_us = 0;
-        uint64_t frames = 0;
-    };
-    // Read once and cleared, so a desktop that has gone quiet reports no frames
-    // rather than repeating one stale answer.
-    LatencyWindow exchange_window();
-
     uint64_t exchange_decoded() { return decoded_.exchange(0); }
 
 signals:
@@ -64,7 +52,5 @@ private:
     bool quit_ = false;
     std::function<void()> on_stall_;
     std::atomic<uint64_t> decoded_{0};
-    std::mutex window_mutex_;
-    LatencyWindow window_;
     long long last_good_ms_ = 0;
 };

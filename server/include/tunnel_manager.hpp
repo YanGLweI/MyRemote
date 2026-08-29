@@ -99,12 +99,12 @@ signals:
     void device_state_changed(QString device_id, int state);
     void video_frame_received(QString device_id, QByteArray payload);
     void auth_result(QString device_id, bool ok);
-    // The four stamps of one clock exchange, in wire order: ours going out,
-    // ours coming back, and the agent's two. t3 is taken on the session thread
-    // on purpose - the queued hop to the GUI thread is scheduling, not delay on
-    // the wire, and counting it would inflate every reading.
-    void clock_pong(QString device_id, quint64 t0_us, quint64 t3_us,
-                    quint64 agent_recv_us, quint64 agent_send_us);
+    // One round trip. The agent echoes our own stamp back unchanged, so both
+    // samples are this machine's clock and nothing has to be compared across
+    // two machines. t3 is taken on the session thread on purpose - the queued
+    // hop to the GUI thread is scheduling, not delay on the wire, and counting
+    // it would inflate every reading.
+    void pong(QString device_id, quint64 t0_us, quint64 t3_us);
 
 private:
     void on_new_connection(SOCKET socket);

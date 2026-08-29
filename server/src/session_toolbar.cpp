@@ -91,9 +91,9 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     stats_ = new QLabel(QStringLiteral("帧率 -- · 延迟 --"));
     stats_->setToolTip(QStringLiteral(
         "帧率＝每秒真正解码并画到屏幕上的帧数；它低于画质档位的设定值，说明对端或链\n"
-        "路没发够，忽高忽低通常是本机解码跟不上。\n"
-        "延迟＝对端抓取屏幕到这幅画在本机解码完成所花的时间，含采集、编码、网络与\n"
-        "解码。显示 -- 表示还没和对方机器对好表，或这一秒没有新画面。"));
+        "路没发够。对端桌面静止时不产帧，显示 0 是正常的。\n"
+        "延迟＝本机到对端的一次网络往返，每秒测一次，与画面是否在动无关。它不含采集、\n"
+        "编码与解码，只反映链路。显示 -- 表示还没收到回答，或对端版本不认这个探测。"));
 
     actions->addWidget(title_, 1);
     actions->addWidget(quality_);
@@ -180,9 +180,13 @@ void SessionToolbar::set_stats(int fps, int latency_ms) {
     }
     // A negative latency means the reading is not available yet, which has to
     // look like an absence: a zero would read as a network nobody could build.
-    stats_->setText(latency_ms >= 0
-                      ? QStringLiteral("帧率 %1 · 延迟 %2ms").arg(fps).arg(latency_ms)
-                      : QStringLiteral("帧率 %1 · 延迟 --").arg(fps));
+    // Zero itself is real but rounds down, so it says what it means.
+    const QString rtt = latency_ms < 0
+                            ? QStringLiteral("--")
+                            : (latency_ms == 0
+                                   ? QStringLiteral("<1ms")
+                                   : QStringLiteral("%1ms").arg(latency_ms));
+    stats_->setText(QStringLiteral("帧率 %1 · 延迟 %2").arg(fps).arg(rtt));
 }
 
 void SessionToolbar::set_quality_index(int index) {

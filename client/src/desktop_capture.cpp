@@ -524,8 +524,8 @@ bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
     HGDIOBJ old = SelectObject(hdc_mem, bitmap);
     BitBlt(hdc_mem, 0, 0, src_w, src_h, hdc_screen, 0, 0, SRCCOPY);
 
-    // The same helper the clock exchange stamps with: the control centre
-    // subtracts one from the other to show a latency.
+    // Travels with the frame for ordering and diagnostics. The latency in the
+    // control centre's header is a network round trip and never touches this.
     frame.timestamp_us = proto::steady_us();
     frame.source_width = src_w;
     frame.source_height = src_h;

@@ -259,13 +259,14 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                                        static_cast<int>(frame.payload.size())));
                         break;
                     case proto::MessageType::Pong: {
-                        proto::ClockEcho echo;
-                        if (!proto::parse_pong_payload(frame.payload, echo)) {
+                        uint64_t t0_us = 0;
+                        if (!proto::parse_pong_payload(frame.payload, t0_us)) {
                             break;
                         }
-                        emit clock_pong(QString::fromStdString(session->device_id),
-                                        echo.t0_us, proto::steady_us(),
-                                        echo.agent_recv_us, echo.agent_send_us);
+                        // Stamped here, on the session thread: the queued hop to
+                        // the GUI thread is scheduling, not wire.
+                        emit pong(QString::fromStdString(session->device_id),
+                                  t0_us, proto::steady_us());
                         break;
                     }
                     case proto::MessageType::AuthResponse: {

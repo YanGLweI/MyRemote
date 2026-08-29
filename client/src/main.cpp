@@ -402,18 +402,16 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             break;
         }
         case proto::MessageType::Ping: {
-            // Nothing but clock readings go back. The control centre needs them
-            // because every frame's capture stamp is in *this* machine's steady
-            // clock, and only this machine can report that clock alongside a
-            // moment the control centre itself stamped.
-            proto::ClockEcho echo;
-            if (!proto::parse_ping_payload(payload, echo.t0_us)) {
+            // Pure echo: the stamp is the control centre's own clock reading, and
+            // nothing on this side is measured, compared, or acted upon. Carrying
+            // no agent-side sample is what lets the control centre time a round
+            // trip without needing our two clocks to agree about anything.
+            uint64_t t0_us = 0;
+            if (!proto::parse_ping_payload(payload, t0_us)) {
                 break;
             }
-            echo.agent_recv_us = proto::steady_us();
-            echo.agent_send_us = proto::steady_us();
             g_connection->send(proto::MessageType::Pong,
-                               proto::make_pong_payload(echo));
+                               proto::make_pong_payload(t0_us));
             break;
         }
         default:
