@@ -14,6 +14,18 @@ namespace {
 std::mutex g_mutex;
 std::ofstream g_file;
 
+std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) {
+        return {};
+    }
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                  static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                        &w[0], len);
+    return w;
+}
+
 std::string timestamp() {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
@@ -44,7 +56,7 @@ void write_line(const char* level, const std::string& message) {
 
 void init(const std::string& file_path) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_file.open(file_path, std::ios::app);
+    g_file.open(utf8_to_wide(file_path), std::ios::app);
 }
 
 void info(const std::string& message) { write_line("INFO", message); }

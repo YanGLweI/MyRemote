@@ -111,7 +111,7 @@ private:
 };
 
 std::string read_file(const std::string& path) {
-    std::ifstream file(path);
+    std::ifstream file(utf8_to_wide(path));
     if (!file.good()) {
         return {};
     }

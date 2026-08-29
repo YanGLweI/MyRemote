@@ -1,0 +1,77 @@
+#pragma once
+
+#include <windows.h>
+
+#include <string>
+
+// Shared Win32 plumbing for the two M14 process roles: the service (session 0,
+// supervisor only) and the console-session host (capture + input + tunnel).
+// Nothing in here may open a socket: keeping the tunnel in one process is what
+// guarantees one device row per machine.
+namespace win32util {
+
+// A GUI-subsystem exe has no console, so every CLI branch has to steal the
+// parent's to say anything at all.
+void attach_parent_console();
+
+// Adds one privilege to this process. Returns false when the privilege is held
+// but not assignable (ERROR_NOT_ALL_ASSIGNED), which is the common
+// "running as admin but not SYSTEM" case.
+bool enable_privilege(LPCWSTR name);
+
+bool process_is_system();
+
+// UTF-8 is the string encoding used across the codebase; the Win32 file APIs
+// are wide, so paths cross this boundary explicitly.
+std::string wide_to_utf8(const wchar_t* w);
+std::wstring utf8_to_wide(const std::string& s);
+std::wstring exe_path_wide();
+// UTF-8 directory that holds agent.exe, "." when it cannot be determined.
+std::string exe_dir();
+// %ProgramData%\MyRemote, the location a service-installed agent can read and
+// write even when the exe sits in a protected directory.
+std::wstring program_data_dir();
+
+struct AgentPaths {
+    std::string config;   // config.json to load
+    std::string log_dir;  // where agent.log / service.log / host.status go
+};
+
+// --config wins; then %ProgramData%\MyRemote once it exists; then the exe
+// directory so a build-tree agent keeps working with a local config.json.
+AgentPaths resolve_paths(const std::string& cli_override);
+
+// The session that currently owns the physical console. Returns
+// 0xFFFFFFFF when there is none; may return 0, which the caller must treat as
+// "not decided yet" rather than as a usable session.
+DWORD resolve_console_session(bool verbose = false);
+
+// Follows the desktop the keyboard and mouse are really delivered to, which is
+// how a host reaches the logon screen (Winlogon) and the UAC consent
+// (SAC-Desktop) without ever taking the monitor away from a local user.
+// Only one thread per process may own it: SetThreadDesktop is per-thread and
+// fails for any thread that has created a window or touched the old desktop's
+// GDI objects.
+class DesktopFollower {
+public:
+    DesktopFollower() = default;
+    ~DesktopFollower();
+
+    DesktopFollower(const DesktopFollower&) = delete;
+    DesktopFollower& operator=(const DesktopFollower&) = delete;
+
+    // Polls the input desktop and re-attaches this thread when its name
+    // changes. Returns false when the desktop could not be read or reached.
+    bool update(std::string* name, bool* changed);
+    const std::string& name() const { return name_; }
+    // True while the credential UI or a consent prompt owns the input.
+    bool on_secure_desktop() const { return on_secure_desktop_; }
+
+private:
+    HDESK held_ = nullptr;  // our own reference to the desktop we are on
+    std::string name_ = "Default";
+    bool on_secure_desktop_ = false;
+    bool logged_denial_ = false;
+};
+
+}  // namespace win32util

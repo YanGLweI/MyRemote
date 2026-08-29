@@ -58,6 +58,7 @@ set(WINDOWS_SYS_LIBS ws2_32 user32 gdi32 advapi32 wtsapi32)
 if(BUILD_CLIENT)
     add_executable(agent WIN32
         client/src/main.cpp
+        client/src/desktop.cpp
         client/src/config_gui.cpp
         client/src/tray_icon.cpp
         client/resources/agent.rc

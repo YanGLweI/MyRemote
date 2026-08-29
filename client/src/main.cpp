@@ -20,6 +20,7 @@
 #include "config_gui.hpp"
 #include "connection.hpp"
 #include "crypto.hpp"
+#include "desktop.hpp"
 #include "desktop_capture.hpp"
 #include "device_id.hpp"
 #include "heartbeat.hpp"
@@ -51,6 +52,7 @@ std::unique_ptr<HeartbeatKeeper> g_heartbeat;
 InputSimulator g_input;
 
 std::string g_config_path;
+std::string g_log_dir;
 HANDLE g_reload_event = nullptr;
 std::atomic<bool> g_config_dialog_open{false};
 std::atomic<int> g_max_encode_width{1920};
@@ -114,14 +116,6 @@ void open_config_dialog() {
             SetEvent(g_reload_event);
         }
     });
-}
-
-std::string exe_dir() {
-    char path[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, path, MAX_PATH);
-    std::string s(path);
-    size_t pos = s.find_last_of("\\/");
-    return pos == std::string::npos ? "." : s.substr(0, pos);
 }
 
 // UIPI silently drops SendInput aimed at elevated windows, so an agent that
@@ -678,9 +672,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         elevation_declined = true;
     }
 
-    std::string dir = exe_dir();
-    g_config_path =
-        args.config_path.empty() ? dir + "/config.json" : args.config_path;
+    win32util::AgentPaths paths = win32util::resolve_paths(args.config_path);
+    g_config_path = paths.config;
+    g_log_dir = paths.log_dir;
 
     // Exactly one agent process, acquired before any UI is shown. A takeover
     // instance retries because the limited agent it replaces is still exiting;
@@ -727,9 +721,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         freopen("CONOUT$", "w", stderr);
     }
 
-    mlog::init(dir + "/" + "agent.log");
+    mlog::init(g_log_dir + "\\" + "agent.log");
     SetUnhandledExceptionFilter(crash_filter);
     mlog::info("MyRemote agent starting");
+    mlog::info("Config file: " + g_config_path);
     if (elevation_declined) {
         mlog::warn("UAC prompt dismissed; continuing without admin rights");
     }
