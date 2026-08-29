@@ -138,14 +138,15 @@ std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbp
 
 bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fps,
                                 uint16_t& bitrate_kbps,
-                                uint16_t& max_encode_width) {
+                                std::optional<uint16_t>& max_encode_width) {
     size_t offset = 0;
     if (payload.empty()) return false;
     fps = payload[0];
     offset = 1;
-    max_encode_width = 0;
+    max_encode_width.reset();
     if (!read_u16(payload, offset, bitrate_kbps)) return false;
-    read_u16(payload, offset, max_encode_width);  // optional: 0 = device default
+    uint16_t width = 0;
+    if (read_u16(payload, offset, width)) max_encode_width = width;
     return true;
 }
 

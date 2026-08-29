@@ -28,6 +28,12 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
 
     controller_ = std::make_unique<RemoteController>(tunnels_, *renderer_);
     toolbar_->set_quality_index(default_quality_index);
+    // The first StartStream must carry the preset the picker already shows,
+    // not the controller's private defaults.
+    if (default_quality_index >= 0 && default_quality_index < kQualityPresetCount) {
+        const QualityPreset& p = kQualityPresets[default_quality_index];
+        controller_->apply_quality(p.fps, p.bitrate_kbps, p.max_encode_width);
+    }
     toolbar_->set_title(QString::fromStdString(device_id), QString());
     // After the title: the same hotkey has to reach the thing that acts on it
     // and the sentence that names it.

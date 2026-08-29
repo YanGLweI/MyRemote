@@ -117,9 +117,13 @@ std::vector<uint8_t> make_heartbeat_payload();
 
 std::vector<uint8_t> make_start_stream_payload(uint8_t fps, uint16_t bitrate_kbps,
                                                uint16_t max_encode_width = 0);
+// The width cap is optional on the wire: an old controller sends three bytes and
+// carries no width at all, while a new one can deliberately send 0 to mean
+// "encode at the desktop's native size". parse reports absence as an empty
+// optional so the two cases cannot be confused.
 bool parse_start_stream_payload(const std::vector<uint8_t>& payload, uint8_t& fps,
                                 uint16_t& bitrate_kbps,
-                                uint16_t& max_encode_width);
+                                std::optional<uint16_t>& max_encode_width);
 
 std::vector<uint8_t> make_display_changed_payload(uint16_t width, uint16_t height);
 bool parse_display_changed_payload(const std::vector<uint8_t>& payload,

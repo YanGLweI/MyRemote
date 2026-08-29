@@ -342,13 +342,13 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
         case proto::MessageType::StartStream: {
             uint8_t fps = 30;
             uint16_t bitrate = 2048;
-            uint16_t width_cap = 0;
+            std::optional<uint16_t> wire_cap;
             if (proto::parse_start_stream_payload(payload, fps, bitrate,
-                                                  width_cap)) {
-                if (width_cap == 0) {
-                    // Older control centers omit the cap: keep the configured one.
-                    width_cap = static_cast<uint16_t>(g_max_encode_width.load());
-                }
+                                                  wire_cap)) {
+                // Only an absent field (old control center) falls back to the
+                // configured cap; an explicit 0 means "native desktop size".
+                uint16_t width_cap = wire_cap.value_or(
+                    static_cast<uint16_t>(g_max_encode_width.load()));
                 int old_fps = g_state.target_fps.exchange(fps);
                 int old_br = g_state.target_bitrate_kbps.exchange(bitrate);
                 int old_width = g_max_encode_width.exchange(width_cap);
