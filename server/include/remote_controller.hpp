@@ -112,8 +112,10 @@ private:
     uint16_t max_encode_width_ = 0;
     // Smoothed round trip to the controlled agent, -1 until it answers once.
     int rtt_ms_ = -1;
+    // The stamp of the one Ping we are waiting on; 0 means none is in flight.
     uint64_t ping_sent_us_ = 0;
     // An agent too old to answer must not be asked forever, and each unanswered
     // Ping costs its log a warning line.
     int ping_unanswered_ = 0;
+    int ping_retry_tick_ = 0;
 };

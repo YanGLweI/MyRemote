@@ -20,9 +20,14 @@ namespace {
 // An agent that has never answered will not start answering: it is older than
 // this message. Asking again would also cost its log a warning every second.
 constexpr int kPingGiveUp = 5;
-// A round trip outside this bound means a clock jumped (sleep, boot, an NTP
-// correction) or the peer stamped something other than what we sent.
-constexpr int64_t kRttCeilingUs = 2000000;
+// Only one Ping is ever outstanding, so a reply may take as long as the machine
+// needs - being late is not a reason to throw the measurement away. Past this
+// long the Ping counts as lost, and an answer that arrives any later has nothing
+// left to be compared against.
+constexpr int64_t kPingTimeoutUs = 3000000;
+// How often to keep probing once the budget is spent: enough to notice a peer
+// that starts answering, slow enough not to matter to one that never will.
+constexpr int kPingSlowRetry = 10;
 
 }  // namespace
 
@@ -317,11 +322,28 @@ void RemoteController::on_auth_result(QString device_id, bool ok) {
 
 void RemoteController::ping() {
     const std::string id = controlled_device();
-    if (id.empty() || ping_unanswered_ >= kPingGiveUp) {
+    if (id.empty()) {
         return;
     }
-    ping_sent_us_ = proto::steady_us();
-    ++ping_unanswered_;
+    const uint64_t now = proto::steady_us();
+    if (ping_sent_us_ != 0) {
+        // One Ping in flight: the answer to it is still owed.
+        const int64_t age = static_cast<int64_t>(now) -
+                            static_cast<int64_t>(ping_sent_us_);
+        if (age < kPingTimeoutUs) {
+            return;
+        }
+        ++ping_unanswered_;
+        // Past the budget the peer is almost certainly older than this message, so
+        // stop probing every second - but go on probing. A reply that was merely
+        // stuck behind a busy thread must not cost the reading for the rest of the
+        // session, which is what a permanent give-up did.
+        if (ping_unanswered_ >= kPingGiveUp &&
+            ++ping_retry_tick_ % kPingSlowRetry != 0) {
+            return;
+        }
+    }
+    ping_sent_us_ = now;
     tunnels_.send_to_device(id, proto::MessageType::Ping,
                             proto::make_ping_payload(ping_sent_us_));
 }
@@ -329,10 +351,11 @@ void RemoteController::ping() {
 void RemoteController::on_pong(QString device_id, quint64 t0_us, quint64 t3_us) {
     const std::string id = device_id.toStdString();
     if (id.empty() || id != controlled_device() || t0_us != ping_sent_us_) {
-        return;  // the answer to a Ping this controller has already superseded
+        return;  // the answer to a Ping already written off as lost
     }
     const int64_t rtt_us = static_cast<int64_t>(t3_us) - static_cast<int64_t>(t0_us);
-    if (rtt_us < 0 || rtt_us > kRttCeilingUs) {
+    ping_sent_us_ = 0;  // whichever way this goes, the slot is free again
+    if (rtt_us < 0 || rtt_us >= kPingTimeoutUs) {
         return;  // a clock moved mid-exchange; learn nothing
     }
     ping_unanswered_ = 0;
