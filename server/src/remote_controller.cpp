@@ -8,9 +8,9 @@
 #include "tunnel_manager.hpp"
 
 const QualityPreset kQualityPresets[] = {
-    {"流畅", "30fps · 1.5M · 长边 1280", 30, 1500, 1280},
-    {"均衡", "30fps · 2M · 长边 1920", 30, 2048, 1920},
-    {"清晰", "60fps · 6M · 设备原生分辨率", 60, 6000, 0},
+    {"流畅", "30fps · 1.5M · 720p", 30, 1500, 1280},
+    {"均衡", "30fps · 2M · 1080p", 30, 2048, 1920},
+    {"清晰", "60fps · 6M · 原画", 60, 6000, 0},
 };
 const int kQualityPresetCount =
     static_cast<int>(sizeof(kQualityPresets) / sizeof(kQualityPresets[0]));
