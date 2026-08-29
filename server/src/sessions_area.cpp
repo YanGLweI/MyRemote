@@ -20,6 +20,11 @@ QWidget* make_empty_page() {
         QStringLiteral("双击左侧设备开始远程控制\n\n"
                        "关掉标签才会断开；键盘要先点一下画面才会送到对端。"));
     hint->setAlignment(Qt::AlignCenter);
+    // Unwrapped, the longest line of this hint would set the minimum width of
+    // the whole right pane for the life of the window.
+    hint->setWordWrap(true);
+    hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    hint->setMinimumWidth(0);
     hint->setStyleSheet(QStringLiteral("color: gray;"));
     box->addWidget(hint);
     return page;

@@ -61,6 +61,38 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     row->addWidget(fullscreen_button_);
     row->addWidget(stop_button_);
 
+    // Text that changes size at runtime must never drive the layout. A QLabel's
+    // minimumSizeHint is its own text width, so an unbounded NET/DEC counter
+    // raises this tab's minimum width once per second and the splitter pays for
+    // it out of the roster: that reads as the whole window shaking.
+    const auto reserve = [](QWidget* w, const QString& widest) {
+        w->setFixedWidth(w->fontMetrics().horizontalAdvance(widest) + 8);
+    };
+    const auto reserve_button = [](QPushButton* b, const QString& widest) {
+        const QString current = b->text();
+        b->setText(widest);
+        const int width = b->sizeHint().width();
+        b->setText(current);
+        b->setMinimumWidth(width);
+    };
+    reserve(fps_, QStringLiteral("NET 100 | DEC 100"));
+    fps_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    reserve(state_, QStringLiteral("  重连中"));
+    reserve(capture_, capture_->text());
+    reserve_button(stop_button_, QStringLiteral("重新连接"));
+    reserve_button(fullscreen_button_, QStringLiteral("退出全屏"));
+
+    // The machine's name and address are the parts worth clipping: they carry no
+    // action, and the full text is in the tooltip.
+    title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    title_->setMinimumWidth(title_->fontMetrics().horizontalAdvance(QStringLiteral("MM")));
+    detail_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    detail_->setMinimumWidth(0);
+
+    quality_->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    quality_->setMinimumContentsLength(10);
+
     connect(quality_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int idx) { emit quality_selected(idx); });
     connect(fullscreen_button_, &QPushButton::clicked, this,
@@ -78,7 +110,9 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
 
 void SessionToolbar::set_title(const QString& device_name, const QString& detail) {
     title_->setText(device_name);
+    title_->setToolTip(device_name);
     detail_->setText(detail.isEmpty() ? QString() : QStringLiteral("  %1").arg(detail));
+    detail_->setToolTip(detail);
 }
 
 void SessionToolbar::set_state_text(const QString& text, bool live) {
