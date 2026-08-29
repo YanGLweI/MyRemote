@@ -121,13 +121,14 @@ QString stylesheet() {
         "  border-color: @LINE@; }"
 
         // A styled QComboBox keeps a white popup unless its item view is named
-        // too, and its arrow container has to be flattened explicitly.
+        // too. Naming ::drop-down is not free, though: once that subcontrol has a
+        // rule, Qt stops drawing the native arrow and the picker looks like an
+        // empty box - so the arrow container is left to the style, which colours
+        // it from the palette we already set.
         "QComboBox { background: @RAISE@; color: @TEXT@; border: 1px solid @LINE@;"
         "  border-radius: 4px; padding: 3px 8px; }"
         "QComboBox:hover { border-color: @MUTED@; }"
-        "QComboBox::drop-down { subcontrol-origin: padding;"
-        "  subcontrol-position: center right; width: 16px; border-left: 1px"
-        "  solid @LINE@; }"
+        "QComboBox:focus { border-color: @ACCENT@; }"
         "QComboBox QAbstractItemView { background: @SURF@; color: @TEXT@;"
         "  border: 1px solid @LINE@; selection-background-color: @HOVER@;"
         "  selection-color: @TEXT@; outline: none; }"
