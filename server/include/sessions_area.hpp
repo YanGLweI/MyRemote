@@ -31,11 +31,15 @@ public:
     // The window owns this hotkey. Live tabs hear about it at once, and tabs
     // opened afterwards are born with it.
     void set_release_key(const QKeySequence& key);
+    // Where a newly opened tab starts. Remembers the last choice the operator
+    // made, whichever tab they made it from.
+    void set_default_quality(int index);
     int session_count() const;
     void close_all();
 
 signals:
     void note(QString text);
+    void default_quality_changed(int index);
     // The window hides its roster and goes fullscreen for the current tab.
     void zoom_changed(bool on);
 

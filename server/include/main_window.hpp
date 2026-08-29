@@ -30,6 +30,10 @@ public:
                         QWidget* parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    // The last moment the window is still the shape it will be remembered for.
+    void closeEvent(QCloseEvent* event) override;
+
 private slots:
     void on_device_registered(QString device_id, QString device_name, int width,
                               int height);
@@ -47,11 +51,15 @@ private:
     // The whole of the settings page's aftermath: hand the hotkey to the live
     // sessions, move the running record, and put the file back on disk.
     void prompt_settings();
+    // Put the window back the shape the operator left it: geometry, both
+    // dividers, whether the log was open, where the quality picker started.
+    void restore_layout();
     QString remark_of(const std::string& device_id) const;
     QString display_name(const TunnelManager::DeviceInfo& info) const;
 
     std::unique_ptr<TunnelManager> tunnels_;
     QSplitter* stack_ = nullptr;
+    QSplitter* work_splitter_ = nullptr;
     LogDrawer* log_drawer_ = nullptr;
     // Not a QPushButton: a push button's margins are ~20px taller than the
     // status bar and would raise the window's minimum height.

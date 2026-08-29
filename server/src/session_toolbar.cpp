@@ -208,5 +208,3 @@ void SessionToolbar::set_quality_index(int index) {
         quality_->setCurrentIndex(index);
     }
 }
-
-int SessionToolbar::quality_index() const { return quality_->currentIndex(); }

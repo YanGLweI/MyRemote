@@ -72,6 +72,7 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
         }
         const QualityPreset& p = kQualityPresets[idx];
         controller_->apply_quality(p.fps, p.bitrate_kbps, p.max_encode_width);
+        emit quality_changed(idx);
     });
     connect(toolbar_, &SessionToolbar::stop_requested, this, [this] {
         // Flushes any key still held down while the tunnel is still open.
@@ -140,5 +141,3 @@ void SessionView::refresh_buttons() {
     toolbar_->set_supports_logon(streaming &&
                                  controller_->controlled_supports_logon());
 }
-
-int SessionView::quality_index() const { return toolbar_->quality_index(); }

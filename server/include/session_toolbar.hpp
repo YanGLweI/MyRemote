@@ -31,7 +31,6 @@ public:
     void set_zoomed(bool zoomed);
     void set_stats(int fps, int latency_ms);
     void set_quality_index(int index);
-    int quality_index() const;
 
 signals:
     void quality_selected(int index);

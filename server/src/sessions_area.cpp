@@ -95,11 +95,6 @@ void SessionsArea::refresh_zoom() {
 }
 
 void SessionsArea::close_tab(int index) {
-    auto* page = qobject_cast<SessionView*>(tabs_->widget(index));
-    if (page) {
-        // The next tab opened starts where this one left off.
-        default_quality_ = page->quality_index();
-    }
     QWidget* widget = tabs_->widget(index);
     tabs_->removeTab(index);
     // Re-point the zoom before the page goes away, so closing the fullscreen
@@ -149,6 +144,8 @@ void SessionsArea::open_session(const TunnelManager::DeviceInfo& info,
     auto* view =
         new SessionView(info.device_id, tunnels_, default_quality_, release_key_);
     connect(view, &SessionView::note, this, &SessionsArea::note);
+    connect(view, &SessionView::quality_changed, this,
+            [this](int index) { set_default_quality(index); });
     connect(view, &SessionView::zoom_requested, this, [this, view](bool on) {
         if (on) {
             zoom_wanted_ = true;
@@ -204,6 +201,14 @@ void SessionsArea::suspend_session(const std::string& device_id) {
     if (auto* view = qobject_cast<SessionView*>(tabs_->widget(index))) {
         view->suspend();
     }
+}
+
+void SessionsArea::set_default_quality(int index) {
+    if (index == default_quality_) {
+        return;
+    }
+    default_quality_ = index;
+    emit default_quality_changed(index);
 }
 
 void SessionsArea::set_release_key(const QKeySequence& key) {

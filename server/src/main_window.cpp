@@ -1,5 +1,6 @@
 #include "main_window.hpp"
 
+#include <QCloseEvent>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -21,10 +22,31 @@
 #include "sessions_area.hpp"
 #include "settings_dialog.hpp"
 
+namespace {
+
+// A splitter's panes, remembered as text: this Qt will not take a QList<int> as
+// a QVariant, and a string is legible in the registry when something looks wrong.
+QString sizes_to_text(const QList<int>& sizes) {
+    QStringList parts;
+    for (int size : sizes) {
+        parts << QString::number(size);
+    }
+    return parts.join(QLatin1Char(','));
+}
+
+QList<int> text_to_sizes(const QString& text) {
+    QList<int> sizes;
+    for (const QString& part : text.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        sizes << part.toInt();
+    }
+    return sizes;
+}
+
+}  // namespace
+
 MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
                        QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(QStringLiteral("MyRemote 控制中心"));
-    resize(1100, 700);
 
     tunnels_ = std::make_unique<TunnelManager>(cfg.secret_key, cfg.max_connections);
 
@@ -38,8 +60,8 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
     stack_ = new QSplitter(Qt::Vertical);
     root_layout->addWidget(stack_);
 
-    auto* splitter = new QSplitter(Qt::Horizontal);
-    stack_->addWidget(splitter);
+    work_splitter_ = new QSplitter(Qt::Horizontal);
+    stack_->addWidget(work_splitter_);
 
     side_panel_ = new QWidget();
     auto* side_layout = new QVBoxLayout(side_panel_);
@@ -64,15 +86,15 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
             settings_.value(QStringLiteral("input/release_key")).toString());
     }
     sessions_ = new SessionsArea(*tunnels_, release_key_);
-    splitter->addWidget(side_panel_);
-    splitter->addWidget(sessions_);
-    splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
+    work_splitter_->addWidget(side_panel_);
+    work_splitter_->addWidget(sessions_);
+    work_splitter_->setStretchFactor(0, 0);
+    work_splitter_->setStretchFactor(1, 1);
     // Now that nothing on the right forces a wide window any more, the divider
     // could be dragged until the roster was unreadable; keep it usable instead.
     side_panel_->setMinimumWidth(260);
-    splitter->setCollapsible(0, false);
-    splitter->setSizes({340, 760});
+    work_splitter_->setCollapsible(0, false);
+    work_splitter_->setSizes({340, 760});
 
     log_drawer_ = new LogDrawer(log_tail);
     log_drawer_->setMinimumHeight(120);
@@ -134,6 +156,9 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
     });
     connect(sessions_, &SessionsArea::note, this,
             [this](QString text) { statusBar()->showMessage(text, 8000); });
+    connect(sessions_, &SessionsArea::default_quality_changed, this, [this](int index) {
+        settings_.setValue(QStringLiteral("ui/default_quality"), index);
+    });
     connect(sessions_, &SessionsArea::zoom_changed, this,
             &MainWindow::on_zoom_changed);
     connect(remark_button_, &QPushButton::clicked, this, [this]() {
@@ -153,6 +178,8 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
     connect(tunnels_.get(), &TunnelManager::device_state_changed, this,
             &MainWindow::on_device_state_changed);
 
+    restore_layout();
+
     if (!tunnels_->start(cfg.bind_address, cfg.listening_port)) {
         QMessageBox::critical(this, QStringLiteral("MyRemote"),
                               QStringLiteral("监听端口 %1 失败")
@@ -169,6 +196,46 @@ MainWindow::~MainWindow() {
     if (tunnels_) {
         tunnels_->stop();
     }
+}
+
+void MainWindow::restore_layout() {
+    const QByteArray geometry =
+        settings_.value(QStringLiteral("ui/geometry")).toByteArray();
+    // Qt refuses a geometry that no longer lands on any screen, and then the
+    // window needs a size of its own rather than the one it was born with.
+    if (geometry.isEmpty() || !restoreGeometry(geometry)) {
+        resize(1100, 700);
+    }
+    // The drawer decides whether the lower half of the stack exists at all, so
+    // it has to be raised before either divider position means anything.
+    log_button_->setChecked(
+        settings_.value(QStringLiteral("ui/log_open"), false).toBool());
+    if (settings_.contains(QStringLiteral("ui/work_split"))) {
+        work_splitter_->setSizes(
+            text_to_sizes(settings_.value(QStringLiteral("ui/work_split")).toString()));
+    }
+    if (settings_.contains(QStringLiteral("ui/log_split"))) {
+        stack_->setSizes(
+            text_to_sizes(settings_.value(QStringLiteral("ui/log_split")).toString()));
+    }
+    if (settings_.contains(QStringLiteral("ui/default_quality"))) {
+        sessions_->set_default_quality(
+            settings_.value(QStringLiteral("ui/default_quality")).toInt());
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    // Fullscreen is a mood for this run, not a layout to remember: writing the
+    // geometry only while windowed keeps a session that ended in 全屏 from
+    // opening that way tomorrow.
+    if (!zoomed_) {
+        settings_.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+    }
+    settings_.setValue(QStringLiteral("ui/log_open"), log_button_->isChecked());
+    settings_.setValue(QStringLiteral("ui/work_split"),
+                       sizes_to_text(work_splitter_->sizes()));
+    settings_.setValue(QStringLiteral("ui/log_split"), sizes_to_text(stack_->sizes()));
+    QMainWindow::closeEvent(event);
 }
 
 QString MainWindow::remark_of(const std::string& device_id) const {

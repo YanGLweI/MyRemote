@@ -37,12 +37,13 @@ public:
     void set_zoomed(bool zoomed);
     // The window owns this hotkey and may change it while the session runs.
     void set_release_key(const QKeySequence& key);
-    // Lets the window remember what the operator last chose.
-    int quality_index() const;
 
 signals:
     void note(QString text);
     void zoom_requested(bool on);
+    // The operator moved the quality picker; the window keeps this as the
+    // starting point for the next machine.
+    void quality_changed(int index);
     // The operator asked for the keyboard back; the tab bar is the useful place
     // for focus once the picture no longer wants keystrokes.
     void escape_released();
