@@ -57,6 +57,10 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
     splitter->addWidget(sessions_);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
+    // Now that nothing on the right forces a wide window any more, the divider
+    // could be dragged until the roster was unreadable; keep it usable instead.
+    side_panel_->setMinimumWidth(260);
+    splitter->setCollapsible(0, false);
     splitter->setSizes({340, 760});
 
     statusBar()->showMessage(QStringLiteral("就绪"), 0);
