@@ -206,6 +206,15 @@ void SessionsArea::suspend_session(const std::string& device_id) {
     }
 }
 
+void SessionsArea::set_release_key(const QKeySequence& key) {
+    release_key_ = key;  // tabs opened from now on are born with it
+    for (int i = 0; i < tabs_->count(); ++i) {
+        if (auto* view = qobject_cast<SessionView*>(tabs_->widget(i))) {
+            view->set_release_key(key);
+        }
+    }
+}
+
 int SessionsArea::session_count() const { return tabs_->count(); }
 
 void SessionsArea::close_all() {

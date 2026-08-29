@@ -24,12 +24,14 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
     layout->addWidget(renderer_, 1);
 
     gateway_ = new InputGateway(renderer_, this);
-    gateway_->set_release_key(release_key);
     renderer_->installEventFilter(gateway_);
 
     controller_ = std::make_unique<RemoteController>(tunnels_, *renderer_);
     toolbar_->set_quality_index(default_quality_index);
     toolbar_->set_title(QString::fromStdString(device_id), QString());
+    // After the title: the same hotkey has to reach the thing that acts on it
+    // and the sentence that names it.
+    set_release_key(release_key);
 
     // Video frames arrive on the tunnel thread and may only be handed to the
     // decode queue, so this connection stays direct by design.
@@ -123,6 +125,11 @@ void SessionView::set_header(const QString& device_name, const QString& detail,
 }
 
 void SessionView::set_zoomed(bool zoomed) { toolbar_->set_zoomed(zoomed); }
+
+void SessionView::set_release_key(const QKeySequence& key) {
+    gateway_->set_release_key(key);
+    toolbar_->set_release_key(key);
+}
 
 void SessionView::refresh_buttons() {
     const bool streaming = controller_->is_controlling();

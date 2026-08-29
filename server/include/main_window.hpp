@@ -44,6 +44,9 @@ private:
     // One roster record in, one row + one tab header out.
     void publish_row(const TunnelManager::DeviceInfo& info);
     void prompt_remark(const QString& device_id);
+    // The whole of the settings page's aftermath: hand the hotkey to the live
+    // sessions, move the running record, and put the file back on disk.
+    void prompt_settings();
     QString remark_of(const std::string& device_id) const;
     QString display_name(const TunnelManager::DeviceInfo& info) const;
 
@@ -53,6 +56,7 @@ private:
     // Not a QPushButton: a push button's margins are ~20px taller than the
     // status bar and would raise the window's minimum height.
     QToolButton* log_button_ = nullptr;
+    QToolButton* settings_button_ = nullptr;
     QWidget* side_panel_ = nullptr;
     DevicePanel* device_list_ = nullptr;
     SessionsArea* sessions_ = nullptr;

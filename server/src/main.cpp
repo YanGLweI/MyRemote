@@ -10,6 +10,7 @@
 
 #include "app_paths.hpp"
 #include "config.hpp"
+#include "i18n.hpp"
 #include "log.hpp"
 #include "log_tail.hpp"
 #include "main_window.hpp"
@@ -18,6 +19,9 @@
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     QApplication app(__argc, __argv);
     QApplication::setApplicationName(QStringLiteral("MyRemote Control Center"));
+    // Before the first dialog is built: translators are consulted per string,
+    // at the moment the widget asks.
+    i18n::install_button_translator(app);
     // Before any widget exists: the style and font are fixed at first polish.
     theme::apply(app);
 

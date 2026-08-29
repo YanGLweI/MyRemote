@@ -81,11 +81,7 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     state_ = new QLabel();
     capture_ = new QLabel();
     capture_->setText(QStringLiteral("键盘 · 本地"));
-    capture_->setToolTip(QStringLiteral(
-        "在远程画面里点一下即可开始输入键盘；连按两次 Esc 交还。\n"
-        "也可以按释放热键（默认 Ctrl+Alt+Shift+R）交还。\n"
-        "Alt+F4 与 Win 始终留在本机：Windows 在外壳层优先处理 Win 和\n"
-        "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
+    refresh_capture_tip();
     detail_ = new ElidedLabel();
     detail_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     stats_ = new QLabel(QStringLiteral("帧率 -- · 延迟 --"));
@@ -153,6 +149,24 @@ void SessionToolbar::set_streaming(bool on) {
 
 void SessionToolbar::set_supports_logon(bool on) {
     logon_button_->setEnabled(on && streaming_);
+}
+
+void SessionToolbar::refresh_capture_tip() {
+    const QString combo = release_key_.toString();
+    const QString hotkey =
+        combo.isEmpty()
+            ? QStringLiteral("释放热键没有设置，交还键盘只能连按两次 Esc。\n")
+            : QStringLiteral("也可以按释放热键（%1）交还。\n").arg(combo);
+    capture_->setToolTip(
+        QStringLiteral("在远程画面里点一下即可开始输入键盘；连按两次 Esc 交还。\n") +
+        hotkey +
+        QStringLiteral("Alt+F4 与 Win 始终留在本机：Windows 在外壳层优先处理 Win 和\n"
+                       "Alt+Tab，这些键常常还没到本程序就被本地吃掉了。"));
+}
+
+void SessionToolbar::set_release_key(const QKeySequence& key) {
+    release_key_ = key;
+    refresh_capture_tip();
 }
 
 void SessionToolbar::set_capture(bool captured) {

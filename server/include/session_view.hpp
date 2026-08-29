@@ -35,6 +35,8 @@ public:
                     const QString& state_text, bool live);
     // Set by the area, which owns the window-level half of fullscreen.
     void set_zoomed(bool zoomed);
+    // The window owns this hotkey and may change it while the session runs.
+    void set_release_key(const QKeySequence& key);
     // Lets the window remember what the operator last chose.
     int quality_index() const;
 

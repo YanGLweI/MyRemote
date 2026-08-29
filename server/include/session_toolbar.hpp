@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QKeySequence>
 #include <QWidget>
 
 class QComboBox;
@@ -24,6 +25,9 @@ public:
     // Whether keystrokes are going to the far side. The picture cannot show it
     // and guessing is how a session starts typing into the wrong machine.
     void set_capture(bool captured);
+    // The sentence explaining how to hand the keyboard back names the hotkey,
+    // so it has to be rebuilt when the operator changes it.
+    void set_release_key(const QKeySequence& key);
     void set_zoomed(bool zoomed);
     void set_stats(int fps, int latency_ms);
     void set_quality_index(int index);
@@ -37,6 +41,8 @@ signals:
     void fullscreen_toggled(bool on);
 
 private:
+    void refresh_capture_tip();
+
     QLabel* title_ = nullptr;
     QLabel* detail_ = nullptr;
     QLabel* state_ = nullptr;
@@ -47,4 +53,6 @@ private:
     QPushButton* stop_button_ = nullptr;
     QLabel* stats_ = nullptr;
     bool streaming_ = false;
+    // Only ever read to word the tooltip; the gateway is what acts on it.
+    QKeySequence release_key_;
 };

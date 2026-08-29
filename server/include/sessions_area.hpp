@@ -28,6 +28,9 @@ public:
                         const QString& display_name);
     // Tunnel gone but the tab stays: stop decoding, keep auto-resume armed.
     void suspend_session(const std::string& device_id);
+    // The window owns this hotkey. Live tabs hear about it at once, and tabs
+    // opened afterwards are born with it.
+    void set_release_key(const QKeySequence& key);
     int session_count() const;
     void close_all();
 

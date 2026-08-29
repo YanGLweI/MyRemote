@@ -109,6 +109,10 @@ if(BUILD_SERVER)
         server/include/log_drawer.hpp
         server/src/app_paths.cpp
         server/include/app_paths.hpp
+        server/src/i18n.cpp
+        server/include/i18n.hpp
+        server/src/settings_dialog.cpp
+        server/include/settings_dialog.hpp
         server/src/frame_pipeline.cpp
         server/src/h264_decoder.cpp
         # Q_OBJECT headers must be listed so AUTOMOC generates their moc files
