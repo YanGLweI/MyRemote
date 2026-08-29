@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <cstdlib>
@@ -14,10 +15,12 @@
 #include "device_list_model.hpp"
 #include "device_panel.hpp"
 #include "log.hpp"
+#include "log_drawer.hpp"
+#include "log_tail.hpp"
 #include "sessions_area.hpp"
 
-MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
-    : QMainWindow(parent) {
+MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
+                       QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(QStringLiteral("MyRemote 控制中心"));
     resize(1100, 700);
 
@@ -25,11 +28,16 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
 
     auto* central = new QWidget();
     setCentralWidget(central);
-    auto* root_layout = new QHBoxLayout(central);
+    auto* root_layout = new QVBoxLayout(central);
     root_layout->setContentsMargins(0, 0, 0, 0);
 
+    // The roster and the sessions sit above the log rather than beside it: a
+    // stack trace read next to the picture it explains is the point.
+    stack_ = new QSplitter(Qt::Vertical);
+    root_layout->addWidget(stack_);
+
     auto* splitter = new QSplitter(Qt::Horizontal);
-    root_layout->addWidget(splitter);
+    stack_->addWidget(splitter);
 
     side_panel_ = new QWidget();
     auto* side_layout = new QVBoxLayout(side_panel_);
@@ -62,6 +70,36 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, QWidget* parent)
     side_panel_->setMinimumWidth(260);
     splitter->setCollapsible(0, false);
     splitter->setSizes({340, 760});
+
+    log_drawer_ = new LogDrawer(log_tail);
+    log_drawer_->setMinimumHeight(120);
+    log_drawer_->setVisible(false);
+    stack_->addWidget(log_drawer_);
+    stack_->setStretchFactor(0, 1);
+    stack_->setStretchFactor(1, 0);
+    stack_->setSizes({600, 220});
+
+    // A QToolButton, not a QPushButton: the push button's own margins are
+    // ~20px taller than the status bar and would raise the window's minimum
+    // height for an exit that is only ever a word to click.
+    log_button_ = new QToolButton();
+    log_button_->setText(QStringLiteral("事件日志"));
+    log_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    log_button_->setCheckable(true);
+    log_button_->setAutoRaise(true);
+    log_button_->setToolTip(QStringLiteral(
+        "这台控制中心自己的运行记录：注册、隧道、解码、以及会话为什么没了。\n"
+        "名字后面跟着的数字是警告和错误的条数。完整记录在日志文件里。"));
+    // The button's checked state is the only thing that decides visibility, so
+    // anything that wants the log gone (fullscreen) unchecks it rather than
+    // hiding the pane behind its back.
+    connect(log_button_, &QToolButton::toggled, this,
+            [this](bool on) { log_drawer_->setVisible(on); });
+    connect(log_drawer_, &LogDrawer::problem_count_changed, this, [this](int count) {
+        log_button_->setText(count > 0 ? QStringLiteral("事件日志 · %1").arg(count)
+                                       : QStringLiteral("事件日志"));
+    });
+    statusBar()->addPermanentWidget(log_button_);
 
     statusBar()->showMessage(QStringLiteral("就绪"), 0);
 
@@ -191,6 +229,7 @@ void MainWindow::on_zoom_changed(bool on) {
     // old fullscreen hid the only buttons that could leave it.
     side_panel_->setVisible(!on);
     if (on) {
+        log_button_->setChecked(false);  // the drawer's height belongs to the picture
         showFullScreen();
     } else {
         showNormal();

@@ -13,6 +13,7 @@ namespace mlog {
 namespace {
 std::mutex g_mutex;
 std::ofstream g_file;
+Sink g_sink;
 
 std::wstring utf8_to_wide(const std::string& s) {
     if (s.empty()) {
@@ -40,15 +41,32 @@ std::string timestamp() {
            std::to_string(ms.count());
 }
 
-void write_line(const char* level, const std::string& message) {
-    std::string line =
-        "[" + timestamp() + "] [" + level + "] " + message + "\n";
+const char* label(Level level) {
+    switch (level) {
+        case Level::Warn: return "WARN";
+        case Level::Error: return "ERROR";
+        default: return "INFO";
+    }
+}
+
+void write_line(Level level, const std::string& message) {
+    const std::string body =
+        "[" + timestamp() + "] [" + label(level) + "] " + message;
+    const std::string line = body + "\n";
+    Sink sink;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_file.is_open()) {
             g_file << line;
             g_file.flush();
         }
+        sink = g_sink;
+    }
+    // Outside the lock: the file must not wait on what a UI does with the line,
+    // and a sink that itself logs would otherwise deadlock on this same mutex.
+    // What it gets is exactly what the file got, so the two cannot disagree.
+    if (sink) {
+        sink(level, body);
     }
     OutputDebugStringA(line.c_str());
 }
@@ -59,8 +77,13 @@ void init(const std::string& file_path) {
     g_file.open(utf8_to_wide(file_path), std::ios::app);
 }
 
-void info(const std::string& message) { write_line("INFO", message); }
-void warn(const std::string& message) { write_line("WARN", message); }
-void error(const std::string& message) { write_line("ERROR", message); }
+void set_sink(Sink sink) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_sink = std::move(sink);
+}
+
+void info(const std::string& message) { write_line(Level::Info, message); }
+void warn(const std::string& message) { write_line(Level::Warn, message); }
+void error(const std::string& message) { write_line(Level::Error, message); }
 
 }  // namespace mlog

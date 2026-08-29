@@ -10,6 +10,7 @@
 
 #include "config.hpp"
 #include "log.hpp"
+#include "log_tail.hpp"
 #include "main_window.hpp"
 #include "theme.hpp"
 
@@ -33,12 +34,15 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     std::string dir = exe_dir();
     mlog::init(dir + "/" + "control_server.log");
+    // Before the first line, and declared before the window so it is destroyed
+    // after it: the tunnel threads are still logging while the window closes.
+    LogTail log_tail;
     mlog::info("Control center starting");
 
     config::ServerConfig cfg =
         config::ServerConfig::load(dir + "/server_config.json");
 
-    MainWindow window(cfg);
+    MainWindow window(cfg, log_tail);
     window.show();
     return app.exec();
 }

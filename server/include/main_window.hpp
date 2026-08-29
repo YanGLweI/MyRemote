@@ -10,7 +10,11 @@
 #include "tunnel_manager.hpp"
 
 class DevicePanel;
+class LogDrawer;
+class LogTail;
 class QPushButton;
+class QSplitter;
+class QToolButton;
 class SessionsArea;
 
 // The operator console: a device roster on the left, one closable tab per
@@ -20,7 +24,10 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    explicit MainWindow(const config::ServerConfig& cfg, QWidget* parent = nullptr);
+    // The log tail outlives the window: it is what the writer threads hand
+    // their lines to on the way out.
+    explicit MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
+                        QWidget* parent = nullptr);
     ~MainWindow() override;
 
 private slots:
@@ -41,6 +48,11 @@ private:
     QString display_name(const TunnelManager::DeviceInfo& info) const;
 
     std::unique_ptr<TunnelManager> tunnels_;
+    QSplitter* stack_ = nullptr;
+    LogDrawer* log_drawer_ = nullptr;
+    // Not a QPushButton: a push button's margins are ~20px taller than the
+    // status bar and would raise the window's minimum height.
+    QToolButton* log_button_ = nullptr;
     QWidget* side_panel_ = nullptr;
     DevicePanel* device_list_ = nullptr;
     SessionsArea* sessions_ = nullptr;

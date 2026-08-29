@@ -103,6 +103,10 @@ if(BUILD_SERVER)
         server/src/icon_factory.cpp
         server/include/icon_factory.hpp
         server/src/remote_controller.cpp
+        server/src/log_tail.cpp
+        server/include/log_tail.hpp
+        server/src/log_drawer.cpp
+        server/include/log_drawer.hpp
         server/src/frame_pipeline.cpp
         server/src/h264_decoder.cpp
         # Q_OBJECT headers must be listed so AUTOMOC generates their moc files
