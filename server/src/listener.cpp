@@ -1,5 +1,7 @@
 #include "listener.hpp"
 
+#include <windows.h>
+
 #include <ws2tcpip.h>
 
 #include <mutex>
@@ -30,9 +32,14 @@ bool Listener::start(const std::string& bind_address, int port) {
         return false;
     }
 
-    BOOL reuse = TRUE;
-    setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR,
-               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    // SO_REUSEADDR on Windows does not mean "let a lingering socket go": it
+    // allows binding *over a live listener*, which is precisely how two control
+    // centres could both take 7500 and quietly fight over the same agents.
+    // Exclusive is the promise the single-instance guard is trying to make, and
+    // it also stops an unrelated process from taking the port.
+    BOOL exclusive = TRUE;
+    setsockopt(listen_socket_, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+               reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -46,9 +53,25 @@ bool Listener::start(const std::string& bind_address, int port) {
         return false;
     }
 
-    if (bind(listen_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
-        SOCKET_ERROR) {
-        mlog::error("bind() failed: " + std::to_string(WSAGetLastError()));
+    // The price of exclusive addressing is that a socket left behind by an
+    // instance that just died still holds the port for a moment. Retrying is
+    // cheaper than the guard showing up as "the control centre never starts
+    // again after a crash".
+    int bound = SOCKET_ERROR;
+    int bind_error = 0;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        bound = bind(listen_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        if (bound != SOCKET_ERROR) {
+            break;
+        }
+        bind_error = WSAGetLastError();
+        if (bind_error != WSAEADDRINUSE && bind_error != WSAEACCES) {
+            break;
+        }
+        Sleep(500);
+    }
+    if (bound == SOCKET_ERROR) {
+        mlog::error("bind() failed: " + std::to_string(bind_error));
         closesocket(listen_socket_);
         listen_socket_ = INVALID_SOCKET;
         return false;

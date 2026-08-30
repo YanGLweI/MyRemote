@@ -7,6 +7,7 @@
 #include <QApplication>
 
 #include <cstdio>
+#include <cwchar>
 #include <string>
 
 #include "app_paths.hpp"
@@ -35,6 +36,81 @@ void attach_parent_console() {
     freopen("CONOUT$", "w", stderr);
 }
 
+// A zh-CN console is not UTF-8, so printf-ing Chinese lands as mojibake. Write
+// the wide string straight to the console when stdout is one, and only encode
+// to UTF-8 when it is a redirected file or pipe - where UTF-8 is the point.
+void print_line(const wchar_t* text) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out == nullptr || out == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    const size_t chars = wcslen(text);
+    DWORD written = 0;
+    DWORD mode = 0;
+    if (GetConsoleMode(out, &mode)) {
+        WriteConsoleW(out, text, static_cast<DWORD>(chars), &written, nullptr);
+        return;
+    }
+    std::string utf8;
+    utf8.resize(static_cast<size_t>(WideCharToMultiByte(
+        CP_UTF8, 0, text, static_cast<int>(chars), nullptr, 0, nullptr, nullptr)));
+    WideCharToMultiByte(CP_UTF8, 0, text, static_cast<int>(chars),
+                        utf8.data(), static_cast<int>(utf8.size()), nullptr, nullptr);
+    WriteFile(out, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+}
+
+// Held for the whole process on purpose: the name existing *is* the lock, so
+// closing the handle would release it while we are still listening.
+HANDLE g_instance_lock = nullptr;
+
+BOOL CALLBACK raise_running_window(HWND hwnd, LPARAM lparam) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId() || pid == 0) {
+        return TRUE;
+    }
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) {
+        return TRUE;  // a dialog belongs to that other window; raising it is not the point
+    }
+    if (!IsWindowVisible(hwnd)) {
+        return TRUE;
+    }
+    wchar_t title[128] = {};
+    if (GetWindowTextW(hwnd, title, 128) <= 0 ||
+        wcscmp(title, app::kWindowTitle) != 0) {
+        return TRUE;
+    }
+    if (IsIconic(hwnd)) {
+        ShowWindow(hwnd, SW_RESTORE);
+    }
+    if (!SetForegroundWindow(hwnd)) {
+        // The foreground lock is allowed to refuse us; this is the documented
+        // way round it, and it beats relaxing the lock for every process.
+        SwitchToThisWindow(hwnd, TRUE);
+    }
+    *reinterpret_cast<bool*>(lparam) = true;
+    return FALSE;
+}
+
+// False means somebody else already holds this machine's control centre.
+bool acquire_instance_lock() {
+    // Global\, not session-local: what is being protected is the TCP listen
+    // port, and that is machine-wide. A per-session name would let the operator
+    // at the console and one inside RDP each bind 7500 - the exact bug.
+    g_instance_lock = CreateMutexW(
+        nullptr, TRUE, L"Global\\MyRemoteControlCenter_SingleInstance");
+    if (!g_instance_lock) {
+        // Creating under Global\ can be refused; failing to guard is better
+        // than refusing to start, so fall back to the bare name.
+        g_instance_lock = CreateMutexW(
+            nullptr, TRUE, L"MyRemoteControlCenter_SingleInstance");
+        if (!g_instance_lock) {
+            return true;
+        }
+    }
+    return GetLastError() != ERROR_ALREADY_EXISTS;
+}
+
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
@@ -46,6 +122,23 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             printf("MyRemote control server %s\n", MYREMOTE_VERSION);
             return 0;
         }
+    }
+    // Before QApplication: a second launch must not paint a window that then
+    // discovers the port is taken, and --force is the developer's way to run two
+    // builds against two ports (server_config.json sits next to each exe).
+    bool forced = false;
+    for (int i = 1; i < __argc; ++i) {
+        if (std::string("--force") == __argv[i]) {
+            forced = true;
+        }
+    }
+    if (!forced && !acquire_instance_lock()) {
+        attach_parent_console();
+        bool raised = false;
+        EnumWindows(raise_running_window, reinterpret_cast<LPARAM>(&raised));
+        print_line(raised ? L"已有控制中心在运行，已把它切到前台。\n"
+                          : L"已有控制中心在运行，这个端口归它。\n");
+        return 0;
     }
     QApplication app(__argc, __argv);
     QApplication::setApplicationName(QStringLiteral("MyRemote Control Center"));

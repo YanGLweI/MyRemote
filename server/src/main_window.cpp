@@ -46,7 +46,7 @@ QList<int> text_to_sizes(const QString& text) {
 
 MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
                        QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("MyRemote 控制中心"));
+    setWindowTitle(QString::fromWCharArray(app::kWindowTitle));
 
     tunnels_ = std::make_unique<TunnelManager>(cfg.secret_key, cfg.max_connections);
 
@@ -182,7 +182,9 @@ MainWindow::MainWindow(const config::ServerConfig& cfg, LogTail& log_tail,
 
     if (!tunnels_->start(cfg.bind_address, cfg.listening_port)) {
         QMessageBox::critical(this, QStringLiteral("MyRemote"),
-                              QStringLiteral("监听端口 %1 失败")
+                              QStringLiteral("监听端口 %1 失败：这个端口已被别的程序占着"
+                                             "（多半是另一份控制中心还在运行）。\n"
+                                             "关掉它再启动，或在「设置」里换一个端口。")
                                   .arg(cfg.listening_port));
         std::exit(1);
     }
