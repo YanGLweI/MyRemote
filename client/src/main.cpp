@@ -6,6 +6,7 @@
 
 #include <tlhelp32.h>
 #include <wtsapi32.h>
+#include <winternl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "auto_reconnect.hpp"
 #include "config.hpp"
@@ -253,6 +255,44 @@ DWORD hosted_agent_pid() {
     return sscanf(text, "pid=%lu", &pid) == 1 ? static_cast<DWORD>(pid) : 0;
 }
 
+// The tray proxy (M19) shares this image path but must never be a takeover
+// target: the sweep below would otherwise kill the operator's tray on every
+// elevated double-click. Identify it by its command line.
+#ifndef ProcessCommandLineInformation
+#define ProcessCommandLineInformation static_cast<PROCESSINFOCLASS>(60)
+#endif
+bool process_is_tray_proxy(DWORD pid) {
+    using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS,
+                                                         PVOID, ULONG, PULONG);
+    static auto* nt_query = reinterpret_cast<NtQueryInformationProcessFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess"));
+    if (!nt_query) {
+        return false;
+    }
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) {
+        return false;
+    }
+    std::wstring cmd;
+    ULONG need = 0;
+    std::vector<unsigned char> buffer(512);
+    NTSTATUS st = nt_query(proc, ProcessCommandLineInformation, buffer.data(),
+                           static_cast<ULONG>(buffer.size()), &need);
+    if (st == static_cast<NTSTATUS>(0xC0000004L) && need > buffer.size()) {
+        buffer.resize(need);
+        st = nt_query(proc, ProcessCommandLineInformation, buffer.data(), need,
+                      &need);
+    }
+    if (st >= 0) {
+        const auto* us = reinterpret_cast<const UNICODE_STRING*>(buffer.data());
+        if (us->Buffer && us->Length) {
+            cmd.assign(us->Buffer, us->Length / sizeof(wchar_t));
+        }
+    }
+    CloseHandle(proc);
+    return cmd.find(L"--tray-proxy") != std::wstring::npos;
+}
+
 // Any second copy of this exact image in this session would fight for the
 // tunnel and the single-instance mutex. The scan is deliberately limited to
 // the caller's own session: the service and its host share one image path, and
@@ -280,6 +320,9 @@ bool retire_same_path_instances(DWORD skip_pid = 0) {
         DWORD other_session = 0;
         if (!ProcessIdToSessionId(entry.th32ProcessID, &other_session) ||
             other_session != own_session) {
+            continue;
+        }
+        if (process_is_tray_proxy(entry.th32ProcessID)) {
             continue;
         }
         HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
@@ -1068,7 +1111,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                     PostMessageW(h, TrayIcon::WM_SHOW_CONFIG, 0, 0);
                 } else {
                     MessageBoxW(nullptr,
-                                L"MyRemote Agent 已在运行（见系统托盘图标）。",
+                                L"MyRemote Agent 已在运行，但当前看不到它的托盘图标"
+                                L"（可能被隐藏了）。请从开始菜单打开"
+                                L"“配置界面”，勾回“显示托盘图标”。",
                                 L"MyRemote", MB_OK | MB_ICONINFORMATION);
                 }
             }

@@ -49,6 +49,9 @@ private:
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM);
     void Run(HANDLE ready_event);
     void ShowMenu();
+    // NIM_ADD returns FALSE while the shell is absent (boot, explorer restart);
+    // the icon then has to be re-added later or the machine looks tray-less.
+    void AddIcon(HWND hwnd);
 
     std::atomic<HWND> hwnd_{nullptr};
     NOTIFYICONDATAW nid_{};
@@ -56,4 +59,6 @@ private:
     std::thread thread_;
     HANDLE ready_event_ = nullptr;
     std::atomic<bool> stopped_{false};
+    bool icon_added_ = false;
+    UINT wm_taskbar_created_ = 0;
 };

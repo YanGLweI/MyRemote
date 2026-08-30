@@ -12,6 +12,7 @@ constexpr int kAgentIconId = 101;
 constexpr UINT WM_TRAY_CALLBACK = WM_APP + 2;
 constexpr UINT WM_TRAY_SET_TIP = WM_APP + 3;
 constexpr UINT WM_TRAY_STOP = WM_APP + 4;
+constexpr UINT_PTR kAddIconRetryTimer = 1;
 constexpr size_t kTipCapacity = 127;
 
 LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -27,6 +28,19 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 LRESULT TrayIcon::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (wm_taskbar_created_ && msg == wm_taskbar_created_) {
+        // explorer just (re)started; its notification area is empty, so an icon
+        // we added earlier is gone and has to be registered again.
+        icon_added_ = false;
+        AddIcon(hwnd);
+        return 0;
+    }
+    if (msg == WM_TIMER && wp == kAddIconRetryTimer) {
+        if (!icon_added_) {
+            AddIcon(hwnd);
+        }
+        return 0;
+    }
     switch (msg) {
         case WM_SHOW_CONFIG:
             if (actions_.open_config) actions_.open_config();
@@ -65,6 +79,7 @@ LRESULT TrayIcon::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 void TrayIcon::Run(HANDLE ready_event) {
     HINSTANCE hinst = GetModuleHandleW(nullptr);
+    wm_taskbar_created_ = RegisterWindowMessageW(L"TaskbarCreated");
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
@@ -89,7 +104,7 @@ void TrayIcon::Run(HANDLE ready_event) {
                          ? icon
                          : LoadIconW(nullptr, MAKEINTRESOURCEW(32512));  // IDI_APPLICATION
         wcscpy_s(nid_.szTip, L"MyRemote Agent");
-        Shell_NotifyIconW(NIM_ADD, &nid_);
+        AddIcon(hwnd);
     }
     SetEvent(ready_event);
     if (!hwnd) {
@@ -104,6 +119,18 @@ void TrayIcon::Run(HANDLE ready_event) {
     Shell_NotifyIconW(NIM_DELETE, &nid_);
     DestroyWindow(hwnd);
     hwnd_.store(nullptr);
+}
+
+void TrayIcon::AddIcon(HWND hwnd) {
+    if (Shell_NotifyIconW(NIM_ADD, &nid_)) {
+        icon_added_ = true;
+        KillTimer(hwnd, kAddIconRetryTimer);
+        return;
+    }
+    // FALSE while no shell owns the notification area (pre-logon boot, or the
+    // instant between explorer crashing and restarting). A one-shot add would
+    // leave the machine looking tray-less until the next process start.
+    SetTimer(hwnd, kAddIconRetryTimer, 1000, nullptr);
 }
 
 bool TrayIcon::start(Actions actions) {
