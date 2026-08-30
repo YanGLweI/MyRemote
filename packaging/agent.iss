@@ -23,6 +23,8 @@ VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName=MyRemote
 DefaultDirName={sd}\MyRemote\Agent
+; 与控制端同一个开始菜单组（见 server.iss）。
+DefaultGroupName=MyRemote
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}
 OutputBaseFilename=MyRemote-Agent-v{#MyAppVersion}-setup
@@ -109,14 +111,14 @@ begin
     '连到哪台控制端', '全部留空也可以：装完第一次运行会弹出配置界面。',
     '填写任意一项就会写入配置文件，留空的项用默认值。' + #13#10 +
     '接入密钥必须与控制端「设置」里那一条完全一致，否则会被拒绝接入。');
-  ConnectPage.Add('控制端地址（IP 或主机名）:', False);
-  ConnectPage.Add('端口（默认 7500）:', False);
-  ConnectPage.Add('接入密钥:', False);
+  ConnectPage.Add('控制端地址（IP 或主机名）：', False);
+  ConnectPage.Add('端口（默认 7500）：', False);
+  ConnectPage.Add('接入密钥：', False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  IP, Port, Key: String;
+  IP, Port, Key, Text: String;
 begin
   if CurStep <> ssPostInstall then
     Exit;
@@ -130,9 +132,13 @@ begin
   if FileExists(ProgramDataConfig) then begin
     // agent 找配置的顺序是 ProgramData 优先（client/src/desktop.cpp 的 resolve_paths），
     // 写 {app}\config.json 会被无视，所以这里只提醒、不假装成功。
-    MsgBox('检测到已有 %ProgramData%\MyRemote\config.json，agent 会优先读它，' +
-      '安装器没有覆盖这个文件。' + #13#10 + #13#10 +
-      '要改连接信息，请编辑那个文件，或先用配置界面保存。', mbInformation, MB_OK);
+    // 静默安装（尤其是被 sc.exe 一次性服务拉起来跑的那种）绝不能弹窗：
+    // session 0 里没有前台，弹窗会把安装器永久挂住。
+    Log('A config already exists in %ProgramData%\MyRemote; it was left untouched.');
+    if not WizardSilent then
+      MsgBox('检测到已有 %ProgramData%\MyRemote\config.json，agent 会优先读它，' +
+        '安装器没有覆盖这个文件。' + #13#10 + #13#10 +
+        '要改连接信息，请编辑那个文件，或先用配置界面保存。', mbInformation, MB_OK);
     Exit;
   end;
 
@@ -141,9 +147,17 @@ begin
   if Key = '' then
     Key := 'default_secret_key_12345';
   // 字段顺序与 deploy\config.json 一致；common/src/config.cpp 是逐键扫描，顺序不影响读取。
-  // 写成 UTF-8：配置界面写的也是 UTF-8。整条语句必须留在一行里——Inno 的脚本解析器
-  // 把"行首是 ["当成 section 头，数组字面量换行会被读成非法段名。
-  SaveStringsToUTF8File(AppConfig, ['{', '  "server_ip": "' + JsonEsc(IP) + '",', '  "server_port": ' + Port + ',', '  "secret_key": "' + JsonEsc(Key) + '",', '  "device_name": "",', '  "control_password": ""', '}'], False);
+  // 写成不带 BOM：SaveStringsToUTF8File 总会加一个 BOM，而这个文件应该和
+  // deploy\config.json、配置界面写出来的那份逐字节可比。这里的值全是 ASCII
+  // （device_name 固定留空），所以过一遍 AnsiString 不会丢字——以后要加中文字段，
+  // 必须先换回带 BOM 的 UTF-8 写法并确认解析器读得动。
+  Text := '{' + #13#10 +
+    '  "server_ip": "' + JsonEsc(IP) + '",' + #13#10 +
+    '  "server_port": ' + Port + ',' + #13#10 +
+    '  "secret_key": "' + JsonEsc(Key) + '",' + #13#10 +
+    '  "device_name": "",' + #13#10 +
+    '  "control_password": ""' + #13#10 + '}' + #13#10;
+  SaveStringToFile(AppConfig, Text, False);
   ConfigWritten := True;
 end;
 

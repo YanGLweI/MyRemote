@@ -27,6 +27,8 @@ VersionInfoProductName=MyRemote
 ; 配置文件和日志都写在 exe 旁边（server/src/app_paths.cpp:20），装进 {autopf}
 ; 会让非提权运行的设置页保存失败，所以默认目录固定在一个可写位置。
 DefaultDirName={sd}\MyRemote\Server
+; 开始菜单固定用 MyRemote 这一个组：两端都装时是同一个文件夹，而不是两个以全名命名的长文件夹。
+DefaultGroupName=MyRemote
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}
 OutputBaseFilename=MyRemote-Server-v{#MyAppVersion}-setup
@@ -49,10 +51,15 @@ Name: "firewall"; Description: "在 Windows 防火墙里放行本程序入站连
 [Files]
 Source: "..\build\bin\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\bin\Release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
-; Qt 插件目录整体带上。DestDir 必须是 {app} + recursesubdirs，才能保住 platforms\
-; 这一层目录名；少了它启动就是"找不到 Qt platform plugin windows"。
-; 不主动裁剪：省几 MB 换来一次"缺插件"排查不值。
-Source: "..\build\bin\Release\{platforms,styles,imageformats,tls,networkinformation,generic}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; Qt 插件目录逐个写死。曾经写成 "{platforms,styles,...}\*" 的花括号展开：编译不报错，
+; 但一条都没匹配上，装出来的控制端缺 platforms\qwindows.dll 根本起不来。
+; 也不再写 skipifsourcedoesntexist——缺目录就该编译失败，而不是悄悄少装。
+Source: "..\build\bin\Release\platforms\*"; DestDir: "{app}\platforms"; Flags: ignoreversion
+Source: "..\build\bin\Release\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion
+Source: "..\build\bin\Release\imageformats\*"; DestDir: "{app}\imageformats"; Flags: ignoreversion
+Source: "..\build\bin\Release\tls\*"; DestDir: "{app}\tls"; Flags: ignoreversion
+Source: "..\build\bin\Release\networkinformation\*"; DestDir: "{app}\networkinformation"; Flags: ignoreversion
+Source: "..\build\bin\Release\generic\*"; DestDir: "{app}\generic"; Flags: ignoreversion
 ; 只在没有的时候放模板：操作者改过端口/密钥之后，重装不该把它冲掉。
 Source: "..\deploy\server_config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion

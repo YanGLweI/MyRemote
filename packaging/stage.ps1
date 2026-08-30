@@ -47,6 +47,13 @@ foreach ($f in 'control_server.exe', 'agent.exe', 'Qt6Core.dll', 'platforms\qwin
         throw "缺少 build\bin\Release\$f —— 去掉 -SkipBuild 重跑（windeployqt 那一步）"
     }
 }
+# server.iss 里每个插件目录都是一条 [Files]，缺任何一个都会让控制端起不来
+# （没有 platforms\qwindows.dll 就是一句"找不到 Qt platform plugin"）。
+foreach ($d in 'platforms', 'styles', 'imageformats', 'tls') {
+    if (-not (Test-Path (Join-Path $bin $d))) {
+        throw "缺少 build\bin\Release\$d\ —— windeployqt 没跑全，不能出包"
+    }
+}
 foreach ($n in 'agent', 'control_server') {
     $pv = (Get-Item (Join-Path $bin "$n.exe")).VersionInfo.ProductVersion
     if ($pv -ne $ver) { throw "$n.exe ProductVersion='$pv'，应为 $ver（版本资源没进去？）" }
