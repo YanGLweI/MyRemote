@@ -78,7 +78,7 @@ cmake --build build --config Release
 - **控制端装在 `C:\MyRemote\Server`，不要装进 `Program Files`。** `server_config.json` 和日志都写在 exe 旁边，设置页每次保存都要重写它；非提权进程写不进受保护目录，表现就是状态栏那句"设置没能写进文件"。
 - 控制端安装版加一条**按程序**放行的入站防火墙规则（不按端口，所以以后改监听端口不用回来补规则），卸载时删掉。被控端**只出站**，不需要任何放行；用绿色版则要自己放行 TCP 7500。
 - 被控端安装版默认勾选"安装并启动系统服务"——这是唯一能在无人登录时工作的形态。不想装服务就取消勾选，或用绿色版里的 `install-service.bat`。
-- 卸载只删程序与服务，**保留 `%ProgramData%\MyRemote\`** 下的 `config.json` 与日志：误删不丢现场，重装即恢复。
+- 卸载删掉自己装进去的文件与服务，**配置和日志都留在原地**：`%ProgramData%\MyRemote\` 整目录不动，运行期写出来的 `config.json` / `agent.log` / `host.status` 因为不是安装器放进去的，也照样留在安装目录里。误删不丢现场，重装即恢复。
 - 包**没有代码签名**，首次运行会吃 SmartScreen：点"更多信息 → 仍要运行"。
 
 远程批量推送（不依赖 WinRM，走管理共享即可）：
@@ -88,7 +88,7 @@ MyRemote-Agent-v1.0.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
   /TASKS=service /SERVERIP=10.0.0.5 /SERVERPORT=7500 /SECRETKEY=与控制端一致的串
 ```
 
-三个参数都是选填：**一个都不填**就不写配置，第一次运行会弹出配置界面；**填了任意一项**就把整份 `config.json` 写到 exe 旁边——除非 `%ProgramData%\MyRemote\config.json` 已经存在（agent 优先读它），那种情况安装器只往安装日志里记一行、不动那个文件。卸载：`unins000.exe /VERYSILENT`。
+三个参数都是选填：**一个都不填**就什么都不写（实测退出码 0、目录里没有 `config.json`、已有服务没被碰），之后再填有两个入口——开始菜单的"配置界面"快捷方式，或直接双击 `agent.exe`（前台启动先弹配置窗，保存后才开始连；静默安装不会弹这个窗）。**填了任意一项**就把整份 `config.json` 写到 exe 旁边——除非 `%ProgramData%\MyRemote\config.json` 已经存在（agent 优先读它），那种情况安装器只往安装日志里记一行、不动那个文件，因此**换控制端地址要改那个文件而不是重推包**。卸载：`unins000.exe /VERYSILENT`。
 
 现场先跑这两条：`agent.exe --version` / `control_server.exe --version` 报版本号，`agent.exe --service-state` 打印服务状态、会话解析结果与宿主实时状态。
 
