@@ -64,6 +64,14 @@
   - 暴露面按原样写进 README 已知限制，不粉饰：托盘里"打开配置"＝ **SYSTEM 替你写**服务器地址与控制密码；托盘是 SYSTEM 画在用户桌面上的 UI，同一会话任何进程都能伪造一枚一模一样的图标和菜单，所以它是现场信息与操作入口，**不是"这台正被谁控制"的权威凭据**。真正的用户态托盘留给 M19。
   - M18-6 交付：`SHA256SUMS.txt` 用 LF（`Set-Content` 每行带 `\r`，`sha256sum -c` 会把 `\r` 当成文件名的一部分，四条全报 No such file——校验值没错却没法用），本地 `sha256sum -c` 四条全 OK。递出去之前先自己过一遍：两个 zip 用 bsdtar 解开、解出来的 exe 各有 1 个图标组且 `ProductVersion=1.0.1`、真实控制台下 `--version` 各答一行且退 0（PowerShell 的管道里 GUI 子系统不写 stdout，`--version` 为空**不是**缺陷）、`platforms\qwindows.dll` 与 `styles\` 都在。五个文件落在 `D:\IT-share\MyRemote-v1.0.1\`，落地后重新 `sha256sum -c` 四条全 OK。**没覆盖到的是安装器本身**：那一步要有人坐在键盘前点 UAC，交给用户亲手装、亲手测。不打 tag、**不发版**，v1.0.0 的四个资产一字未动。
 
+- [x] **M19** 托盘回到操作者所在的会话（v1.0.1 托盘"RDP 看不见、重启不出现"的三件事）
+  - 用户实测撞出三件事，根子是同一架构边界加一个真 bug：① 托盘窗口活在物理控制台会话，Windows 通知区按会话隔离，RDP 里永远看不见（日志实锤：宿主 20:34:49 收到"勾回+保存"并成功重建图标，但重建在锁着的控制台会话，RDP 会话里什么都没有）；② 重启后服务自启但托盘不出现——开机时 explorer 还没起，`Shell_NotifyIconW(NIM_ADD)` 返回值被忽略、静默丢弃，登录后没人补加（这条坐控制台也中）；③ 托盘隐藏时第二个 agent 找不到托盘窗仍弹"已在运行（见系统托盘图标）"——假话。
+  - M19-1 `9d81b01` 托盘地基：`tray_icon.cpp` 注册 `TaskbarCreated` 广播并在 NIM_ADD 失败时 1s 重试，修掉重启/explorer 崩溃后图标不重现；`retire_same_path_instances` 读对方命令行、跳过 `--tray-proxy`（代理与 agent 同映像，否则提权双击的清扫会杀掉操作者的托盘）；假话文案改指向开始菜单"配置界面"。
+  - M19-2 `81905f9` 代理骨架：`--tray-proxy` 新 CLI 模式，在自动提权/单实例互斥/服务让位**之前**短路（它不是 agent 实例）；图标画在自己会话，菜单动作经命名管道回宿主；管道断=宿主没了→删图标退出；无宿主时短重试后 exit 1（负向路径已验：`proxy-exit=1`、日志不撒谎）。配置窗加 `save_via` 钩子，代理把 Save 交给宿主写（用户 IL 未必写得了 agent 目录），现有调用方钩子为空、行为不变。
+  - M19-3 `80202f3` 宿主侧：服务态宿主不再自己画托盘，改由 `tray_proxies.cpp` 在每个**有人登录**的会话（控制台+RDP）用该会话用户令牌（`WTSQueryUserToken`+`CreateEnvironmentBlock`+`CreateProcessAsUserW` 到 `Winsta0\Default`）拉一个用户态代理；会话断开 2s 后收掉、登录再拉。管道 DACL=SYSTEM+管理员+该会话用户。命令经同一批原子落地：pause/resume 翻隧道、hide 写 `tray_icon=false`、quit 先删全图标再停服务、save_config 用新 `ClientConfig::from_json` 解析由宿主写盘。宿主以 `state` 行广播 paused/registered/tray_icon/server/name，代理画 tooltip；`host.status` 增加 `proxies=`，`--service-state` 从此能看见哪几个会话有图标。便携模式一字未动。
+  - M19-4 文档+出包：README/release-notes 托盘小节改写为"每会话一个用户态代理"，暴露面改写（代理是用户 IL，暂停/退出/改配置的权力属于该会话登录用户，管道 DACL 即边界）；版本抬到 **1.0.2** 出四包交用户实测，**不发版**。
+  - **待一次提权装机验证**（代理必须以 SYSTEM 宿主才能 `WTSQueryUserToken`，非提权验不了）：RDP 会话装完 1.0.2 立即有图标；`--service-state` 的 `proxies=` 含该会话；暂停/恢复、隐藏/勾回、退出/双击恢复都在 RDP 里可见；重启+登录后图标自动出现；taskkill 代理 1s 内补拉；宿主退出代理自删。
+
 ## 后续可选优化
 
 - [ ] GPU 缩放 + GPU H.264 编码（提升弱机帧率/降低延迟；独立解码线程已完成）
