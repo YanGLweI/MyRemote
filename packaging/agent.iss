@@ -35,6 +35,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
+; 不写这行，"程序和功能"里就是一块空白磁贴——面板不会去读 exe 自己的图标。
+UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 
 [Languages]
@@ -44,6 +46,7 @@ Name: "zh"; MessagesFile: "lang\ChineseSimplified.isl"
 ; 服务是推荐形态：LocalSystem + 自启，登录界面也能连（M14/M15 的全部意义）。
 ; 不勾就是便携用法：登录后由人（或计划任务）把它跑起来。
 Name: "service"; Description: "安装并启动系统服务 {#MyServiceName}（开机自启，登录界面也能连）"; GroupDescription: "运行方式:"
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "..\build\bin\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,6 +55,10 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; 而不是弹配置界面——"没有配置"才是要弹界面的信号（client/src/main.cpp 的默认路径）。
 
 [Icons]
+; 桌面这条**不带参数**：前台启动会先弹配置窗、点"保存并运行"才建隧道，所以从托盘
+; "退出"之后双击它就能把客户端重新跑起来。带 --config-ui 只会开一个编辑器然后退出，
+; 那是开始菜单那条的职责。图标继承 agent.exe 自带的那个（client/resources/agent.rc）。
+Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{group}\{#MyAppName} 配置界面"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--config-ui"; WorkingDir: "{app}"
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 

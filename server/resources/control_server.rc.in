@@ -1,0 +1,5 @@
+// Both ends of one product, so both carry the same icon. rc.exe resolves a
+// bare filename against this file's own directory but a path containing ".."
+// only against its working directory, which is the build tree -- so the icon
+// arrives as an absolute path substituted by CMake's configure_file.
+101 ICON "@MYREMOTE_APP_ICON@"

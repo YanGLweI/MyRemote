@@ -39,6 +39,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
+; 不写这行，"程序和功能"里就是一块空白磁贴——面板不会去读 exe 自己的图标。
+UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 
 [Languages]

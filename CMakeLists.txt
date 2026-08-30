@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyRemoteControl VERSION 1.0.0 LANGUAGES CXX)
+project(MyRemoteControl VERSION 1.0.1 LANGUAGES CXX)
 enable_language(RC)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -104,7 +104,12 @@ if(BUILD_SERVER)
     set(MYREMOTE_FILE_DESCRIPTION "MyRemote 远程控制管理台")
     configure_file("${CMAKE_SOURCE_DIR}/packaging/version.rc.in"
                    "${CMAKE_BINARY_DIR}/generated/version_control_server.rc" @ONLY)
+    # 图标只有 agent 那一份：两端是同一个产品的两端。
+    set(MYREMOTE_APP_ICON "${CMAKE_SOURCE_DIR}/client/resources/app.ico")
+    configure_file("${CMAKE_SOURCE_DIR}/server/resources/control_server.rc.in"
+                   "${CMAKE_BINARY_DIR}/generated/control_server.rc" @ONLY)
     add_executable(control_server WIN32
+        "${CMAKE_BINARY_DIR}/generated/control_server.rc"
         "${CMAKE_BINARY_DIR}/generated/version_control_server.rc"
         server/src/main.cpp
         server/src/main_window.cpp

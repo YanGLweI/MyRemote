@@ -58,6 +58,25 @@ foreach ($n in 'agent', 'control_server') {
     $pv = (Get-Item (Join-Path $bin "$n.exe")).VersionInfo.ProductVersion
     if ($pv -ne $ver) { throw "$n.exe ProductVersion='$pv'，应为 $ver（版本资源没进去？）" }
 }
+# 图标：属性页与"程序和功能"都只认 exe 里的图标组，看不到资源就等于一块空白。
+# 数图标用 ExtractIconExW 的 count 形态（两个句柄数组传 NULL、请求 0 个）——它不分配、
+# 不需要 DestroyIcon，只回数量。别拿 .ico 的帧数当判据（那是 6），也别写死数字：
+# 两个 exe 各应有 1 个图标组，所以真正的判据是"都不为 0 且彼此相等"。
+if (-not ('MyRemoteStage.IconProbe' -as [type])) {
+    Add-Type -Namespace MyRemoteStage -Name IconProbe -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern uint ExtractIconExW(string file, int index, System.IntPtr[] large, System.IntPtr[] small, uint count);
+public static uint Count(string file) { return ExtractIconExW(file, -1, null, null, 0); }
+'@
+}
+$iconCount = @{}
+foreach ($n in 'agent', 'control_server') {
+    $iconCount[$n] = [MyRemoteStage.IconProbe]::Count((Join-Path $bin "$n.exe"))
+    if ($iconCount[$n] -lt 1) { throw "$n.exe 里没有图标资源（Explorer 与'程序和功能'会显示通用图标）" }
+}
+if ($iconCount['agent'] -ne $iconCount['control_server']) {
+    throw "两端图标数不一致：agent=$($iconCount['agent']) control_server=$($iconCount['control_server'])"
+}
 
 # ---- 摆便携版目录 ----
 $serverDir = Join-Path $pkg 'server-portable'
