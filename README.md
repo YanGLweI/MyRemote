@@ -66,6 +66,32 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
 cmake --build build --config Release
 ```
 
+## 安装与部署
+
+正式版发四个包（`SHA256SUMS.txt` 是它们的 SHA-256）：
+
+| 给谁 | 安装版 | 绿色版 |
+| --- | --- | --- |
+| 控制端（服务端，运维坐的那台） | `MyRemote-Server-v1.0.0-setup.exe` | `MyRemote-Server-v1.0.0-portable.zip` |
+| 被控端（客户端，要被远控的机器） | `MyRemote-Agent-v1.0.0-setup.exe` | `MyRemote-Agent-v1.0.0-portable.zip` |
+
+- **控制端装在 `C:\MyRemote\Server`，不要装进 `Program Files`。** `server_config.json` 和日志都写在 exe 旁边，设置页每次保存都要重写它；非提权进程写不进受保护目录，表现就是状态栏那句"设置没能写进文件"。
+- 控制端安装版加一条**按程序**放行的入站防火墙规则（不按端口，所以以后改监听端口不用回来补规则），卸载时删掉。被控端**只出站**，不需要任何放行；用绿色版则要自己放行 TCP 7500。
+- 被控端安装版默认勾选"安装并启动系统服务"——这是唯一能在无人登录时工作的形态。不想装服务就取消勾选，或用绿色版里的 `install-service.bat`。
+- 卸载只删程序与服务，**保留 `%ProgramData%\MyRemote\`** 下的 `config.json` 与日志：误删不丢现场，重装即恢复。
+- 包**没有代码签名**，首次运行会吃 SmartScreen：点"更多信息 → 仍要运行"。
+
+远程批量推送（不依赖 WinRM，走管理共享即可）：
+
+```bat
+MyRemote-Agent-v1.0.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
+  /TASKS=service /SERVERIP=10.0.0.5 /SERVERPORT=7500 /SECRETKEY=与控制端一致的串
+```
+
+三个参数都是选填：**一个都不填**就不写配置，第一次运行会弹出配置界面；**填了任意一项**就把整份 `config.json` 写到 exe 旁边——除非 `%ProgramData%\MyRemote\config.json` 已经存在（agent 优先读它），那种情况安装器只往安装日志里记一行、不动那个文件。卸载：`unins000.exe /VERYSILENT`。
+
+现场先跑这两条：`agent.exe --version` / `control_server.exe --version` 报版本号，`agent.exe --service-state` 打印服务状态、会话解析结果与宿主实时状态。
+
 ## 使用
 
 1. 服务端：将 `deploy/server_config.json` 放到 `control_server.exe` 同目录（可省略，使用默认端口 7500 / 默认密钥），运行。控制端窗口右下角的“设置”能改同一份文件里的监听端口、绑定地址、最大接入数与日志文件——**日志文件立刻生效，其余三项要重启控制端**；连接密钥只在这份文件里改（改它会让所有已注册设备一起失效，不该做成一个按钮）。

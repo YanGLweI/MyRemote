@@ -259,11 +259,34 @@ cmake .. \
 ### Server Installation
 
 1. Copy `control_server.exe` to desired location
-2. Ensure Qt DLLs are available:
-   - qt6core.dll
-   - qt6widgets.dll  
-   - qt6network.dll
-   - Or deploy statically linked version
+2. Ensure Qt runtime is available:
+   - `Qt6Core.dll`, `Qt6Gui.dll`, `Qt6Widgets.dll`, `Qt6Network.dll`
+   - plus the plugin directories `platforms\`, `styles\`, `imageformats\`,
+     `tls\`, `networkinformation\`, `generic\`. `platforms\qwindows.dll` is the
+     one whose absence produces "找不到 Qt platform plugin" and no window.
+   `build.bat` runs `windeployqt --release` for this; do not hand-pick DLLs.
+
+### Packaging (installer + portable)
+
+`packaging/stage.ps1` produces the four shippable artifacts into
+`build/package/dist/` (git-ignored) plus `SHA256SUMS.txt`:
+
+```powershell
+winget install --id JRSoftware.InnoSetup -e   # one time; ISCC.exe
+powershell -File packaging\stage.ps1          # build.bat + windeployqt + package
+powershell -File packaging\stage.ps1 -SkipBuild
+```
+
+It fails before producing anything if `CMakeLists.txt`'s `PROJECT_VERSION` and
+`common.iss`'s `MyAppVersion` disagree, if the Qt runtime is not deployed next to
+`control_server.exe`, or if either exe's `ProductVersion` is not that version.
+The zips are written with `%SystemRoot%\System32\tar.exe` (bsdtar) rather than
+`Compress-Archive`, because the latter writes backslash entry separators that
+non-Explorer extractors turn into file names like `platforms\qwindows.dll`.
+
+The wizard language file is `packaging/lang/ChineseSimplified.isl`, pinned to
+issrc tag `is-6_7_3` with its checksum in `packaging/lang/SOURCES.md`; it is not
+part of the Inno Setup installer itself, so a fresh machine needs this copy.
 
 ### Environment Variables (Optional)
 
@@ -278,6 +301,10 @@ control_server.exe
 ```
 
 ## Continuous Integration
+
+> **本仓库没有 `.github/workflows/`。** 正式版是本地构建（`packaging\stage.ps1`）后用
+> `gh release create` 发布的。下面这段只是一个示例：在 runner 上要现编 vcpkg 的
+> OpenSSL/OpenH264（约 20 分钟）并装指定版本的 Qt，不是已经跑起来的流水线。
 
 ### GitHub Actions Example (`.github/workflows/build.yml`)
 
