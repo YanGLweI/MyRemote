@@ -52,6 +52,16 @@ AgentPaths resolve_paths(const std::string& cli_override);
 bool console_session(DWORD* out, std::string* how = nullptr,
                      std::string* table = nullptr);
 
+// Every session a person could currently be sitting in (console or RDP), for
+// the M19 tray proxies: one icon per logged-in session. "active" is the WTS
+// connect state; a disconnected RDP session is not active and gets no proxy.
+struct SessionInfo {
+    DWORD id = 0;
+    std::string user;  // empty when nobody is logged into it
+    bool active = false;
+};
+std::vector<SessionInfo> list_sessions();
+
 // Name of the desktop currently receiving keyboard and mouse input:
 // "Default", "Winlogon", "SAC-Desktop", ... Empty when it cannot be read.
 // Read-only: unlike DesktopFollower this never re-attaches the calling thread.

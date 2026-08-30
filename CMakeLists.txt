@@ -78,6 +78,7 @@ if(BUILD_CLIENT)
         client/src/config_gui.cpp
         client/src/tray_icon.cpp
         client/src/tray_proxy.cpp
+        client/src/tray_proxies.cpp
         client/resources/agent.rc
         "${CMAKE_BINARY_DIR}/generated/version_agent.rc"
         client/src/connection.cpp
@@ -90,7 +91,7 @@ if(BUILD_CLIENT)
     target_link_libraries(agent PRIVATE
         common_lib
         ${WINDOWS_SYS_LIBS}
-        iphlpapi shell32
+        iphlpapi shell32 userenv
         d3d11 dxgi dwmapi
         openh264
     )

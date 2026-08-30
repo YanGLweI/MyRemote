@@ -267,6 +267,34 @@ bool console_session(DWORD* out, std::string* how, std::string* table) {
     return false;
 }
 
+std::vector<SessionInfo> list_sessions() {
+    std::vector<SessionInfo> out;
+    PWTS_SESSION_INFOW response = nullptr;
+    DWORD count = 0;
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &response,
+                               &count)) {
+        return out;
+    }
+    for (DWORD i = 0; i < count; ++i) {
+        SessionInfo info;
+        info.id = response[i].SessionId;
+        info.active = response[i].State == WTSActive;
+        LPWSTR name = nullptr;
+        DWORD bytes = 0;
+        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, info.id,
+                                        WTSUserName, &name, &bytes) &&
+            name) {
+            info.user = wide_to_utf8(name);
+        }
+        if (name) {
+            WTSFreeMemory(name);
+        }
+        out.push_back(std::move(info));
+    }
+    WTSFreeMemory(response);
+    return out;
+}
+
 const wchar_t* const kAutostartTaskName = L"MyRemote Agent";
 
 int run_command(const std::wstring& command_line) {

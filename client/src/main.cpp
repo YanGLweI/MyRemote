@@ -34,6 +34,7 @@
 #include "service.hpp"
 #include "tray_icon.hpp"
 #include "tray_proxy.hpp"
+#include "tray_proxies.hpp"
 #include "video_encoder.hpp"
 
 namespace {
@@ -623,15 +624,17 @@ void write_host_status(const std::string& desktop) {
     }
     DWORD session_id = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    const std::string proxies = trayproxies::proxy_sessions();
     char line[256];
     snprintf(line, sizeof(line),
-             "pid=%lu session=%lu desktop=%s capture=%s size=%dx%d registered=%d paused=%d\n",
+             "pid=%lu session=%lu desktop=%s capture=%s size=%dx%d registered=%d paused=%d proxies=%s\n",
              static_cast<unsigned long>(GetCurrentProcessId()),
              static_cast<unsigned long>(session_id),
              desktop.empty() ? "unknown" : desktop.c_str(),
              g_capturer && g_capturer->using_bitblt_fallback() ? "bitblt" : "dxgi",
              width, height, g_state.registered.load() ? 1 : 0,
-             g_paused.load() ? 1 : 0);
+             g_paused.load() ? 1 : 0,
+             proxies.empty() ? "none" : proxies.c_str());
     std::wstring path = win32util::utf8_to_wide(g_log_dir + "\\host.status");
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1215,15 +1218,15 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     g_reload_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_input_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    // 托盘是"坐在机器前的人"手里唯一的控制点。便携形态一直有；装了服务的机器过去
-    // 什么痕迹都没有。宿主进程起在 Winsta0\Default，锁屏与登录界面时这个图标自然
-    // 看不见，所以不需要为它切换桌面（那才是真正会漏窗口的做法）。
+    // 便携形态的托盘一直在进程里；服务态从 M19 起不再由宿主自己画——图标改由
+    // 每个登录会话里一个用户态代理进程来画（RDP 与控制台都看得见），命令经命名
+    // 管道回到这里。所以进程内托盘只对便携形态生效。
     TrayIcon tray;
     TrayIcon::Actions tray_actions;
     bool tray_visible = false;
     std::wstring last_tip;
     const bool tray_possible =
-        !args.no_tray && (!args.background || g_session_host);
+        !args.no_tray && !args.background && !g_session_host;
     auto show_tray = [&]() {
         tray_visible = tray.start(tray_actions);
         if (!tray_visible) {
@@ -1249,24 +1252,35 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         tray_actions.paused = [] { return g_paused.load(); };
         tray_actions.config_pointless_now = [] { return g_secure_desktop.load(); };
         tray_actions.hide_icon = [] { g_hide_tray.store(true); };
-        if (g_session_host) {
-            // 服务态的"退出"= 整个客户端连服务一起停，StartType 保持 AUTO_START。
-            // 这里只能立个牌子：删图标、停服务都由主循环去做（见下面的
-            // g_quit_requested 分支），顺序错了就会留一个点不动的幽灵图标。
-            tray_actions.quit = [] { g_quit_requested.store(true); };
-            tray_actions.quit_text = L"退出（同时停止服务，下次开机自动回来）";
-            // 不挂这两项：登录计划任务会跟服务抢同一个设备号（--install-service
-            // 专门把它删掉），而 SYSTEM 本来就没有"提权重启"可做。
-        } else {
-            tray_actions.quit = [] { g_state.running.store(false); };
-            tray_actions.install_autostart = request_autostart_install;
-            if (!g_elevated) {
-                tray_actions.elevate = relaunch_elevated;
-            }
+        tray_actions.quit = [] { g_state.running.store(false); };
+        tray_actions.install_autostart = request_autostart_install;
+        if (!g_elevated) {
+            tray_actions.elevate = relaunch_elevated;
         }
         if (cfg.tray_icon) {
             show_tray();
         }
+    }
+    if (g_session_host && !args.no_tray) {
+        trayproxies::CommandSink sink;
+        sink.pause = [] {
+            g_paused.store(true);
+            mlog::info("Remote control paused from a session tray; dropping the tunnel");
+        };
+        sink.resume = [] {
+            g_paused.store(false);
+            mlog::info("Remote control resumed from a session tray");
+        };
+        sink.hide = [] { g_hide_tray.store(true); };
+        sink.quit = [] { g_quit_requested.store(true); };
+        sink.save_config = [](const std::string& json) {
+            // The proxy runs user-IL and may not be able to write the agent
+            // directory; the host writes on its behalf and the mtime poll
+            // below picks the change up as a normal hot reload.
+            return config::ClientConfig::save(
+                config::ClientConfig::from_json(json), g_config_path);
+        };
+        trayproxies::start(std::move(sink), g_config_path);
     }
 
     g_capturer = std::make_unique<DesktopCapturer>();
@@ -1364,8 +1378,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
         if (g_quit_requested.exchange(false)) {
             // 先删图标再停服务：停服务会让监管把我们收掉，图标要是还挂着，
-            // 机器上就留下一个点不动的幽灵。
+            // 机器上就留下一个点不动的幽灵。服务态的图标在各会话代理里。
             tray.stop();
+            trayproxies::stop();
             std::wstring why;
             if (svc::stop(&why)) {
                 mlog::info("Service stopped from the tray; it starts again on next boot");
@@ -1427,6 +1442,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             tray.set_tooltip(tip);
             last_tip = tip;
         }
+        trayproxies::broadcast_state(
+            g_paused.load(), g_state.registered.load(), cfg.tray_icon,
+            cfg.server_ip + ":" + std::to_string(cfg.server_port),
+            cfg.device_name.empty() ? device::default_device_name()
+                                    : cfg.device_name);
     }
 
     g_state.running.store(false);
@@ -1434,6 +1454,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     g_heartbeat.reset();
     g_connection.reset();
     tray.stop();
+    trayproxies::stop();
     mlog::info("MyRemote agent stopped");
     return 0;
 }

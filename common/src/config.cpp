@@ -144,9 +144,8 @@ std::string read_file(const std::string& path) {
 
 }  // namespace
 
-ClientConfig ClientConfig::load(const std::string& path) {
+ClientConfig ClientConfig::from_json(const std::string& text) {
     ClientConfig cfg;
-    std::string text = read_file(path);
     if (text.empty()) {
         return cfg;
     }
@@ -159,6 +158,10 @@ ClientConfig ClientConfig::load(const std::string& path) {
     json.get_int("max_encode_width", cfg.max_encode_width);
     json.get_bool("tray_icon", cfg.tray_icon);
     return cfg;
+}
+
+ClientConfig ClientConfig::load(const std::string& path) {
+    return from_json(read_file(path));
 }
 
 bool ClientConfig::save(const ClientConfig& cfg, const std::string& path) {

@@ -20,6 +20,9 @@ struct ClientConfig {
     bool tray_icon = true;
 
     static ClientConfig load(const std::string& path);
+    // Parses the same field set load() reads; empty/absent keys keep defaults.
+    // The tray proxy uses it to hand a config received over its pipe to save().
+    static ClientConfig from_json(const std::string& text);
     static bool save(const ClientConfig& cfg, const std::string& path);
 };
 
