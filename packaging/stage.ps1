@@ -134,7 +134,9 @@ $sums = Join-Path $dist 'SHA256SUMS.txt'
 $lines = foreach ($f in @($setupServer, $setupAgent, $zipServer, $zipAgent)) {
     '{0}  {1}' -f (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLower(), (Split-Path -Leaf $f)
 }
-Set-Content -LiteralPath $sums -Value $lines -Encoding ascii
+# LF，不是 CRLF：Set-Content 每行都带 \r，而 sha256sum -c 会把那个 \r 当成文件名的一部分，
+# 四条全部报 "No such file or directory"——校验值本身没错，却没法用。
+[IO.File]::WriteAllText($sums, ($lines -join "`n") + "`n", [Text.Encoding]::ASCII)
 
 ''
 "version      : $ver"
