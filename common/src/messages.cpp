@@ -237,6 +237,53 @@ bool parse_pong_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us) {
     return read_u64(payload, offset, t0_us);
 }
 
+std::vector<uint8_t> make_display_modes_payload(
+    uint16_t cur_w, uint16_t cur_h,
+    const std::vector<std::pair<uint16_t, uint16_t>>& modes) {
+    std::vector<uint8_t> payload;
+    put_u16(payload, cur_w);
+    put_u16(payload, cur_h);
+    const size_t n = modes.size() > 64 ? 64 : modes.size();
+    payload.push_back(static_cast<uint8_t>(n));
+    for (size_t i = 0; i < n; ++i) {
+        put_u16(payload, modes[i].first);
+        put_u16(payload, modes[i].second);
+    }
+    return payload;
+}
+
+bool parse_display_modes_payload(const std::vector<uint8_t>& payload, uint16_t& cur_w,
+                                 uint16_t& cur_h,
+                                 std::vector<std::pair<uint16_t, uint16_t>>& modes) {
+    modes.clear();
+    size_t offset = 0;
+    if (!read_u16(payload, offset, cur_w)) return false;
+    if (!read_u16(payload, offset, cur_h)) return false;
+    if (payload.size() - offset < 1) return false;
+    const uint8_t n = payload[offset++];
+    if (n > 64) return false;
+    for (uint8_t i = 0; i < n; ++i) {
+        uint16_t w = 0, h = 0;
+        if (!read_u16(payload, offset, w)) return false;
+        if (!read_u16(payload, offset, h)) return false;
+        modes.emplace_back(w, h);
+    }
+    return true;
+}
+
+std::vector<uint8_t> make_set_display_mode_payload(uint16_t width, uint16_t height) {
+    std::vector<uint8_t> payload;
+    put_u16(payload, width);
+    put_u16(payload, height);
+    return payload;
+}
+
+bool parse_set_display_mode_payload(const std::vector<uint8_t>& payload, uint16_t& width,
+                                    uint16_t& height) {
+    size_t offset = 0;
+    return read_u16(payload, offset, width) && read_u16(payload, offset, height);
+}
+
 namespace {
 void put_u8(std::vector<uint8_t>& out, uint8_t v) { out.push_back(v); }
 }

@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <string>
+#include <utility>
+#include <vector>
 
 // Shared Win32 plumbing for the two M14 process roles: the service (session 0,
 // supervisor only) and the console-session host (capture + input + tunnel).
@@ -54,6 +56,17 @@ bool console_session(DWORD* out, std::string* how = nullptr,
 // "Default", "Winlogon", "SAC-Desktop", ... Empty when it cannot be read.
 // Read-only: unlike DesktopFollower this never re-attaches the calling thread.
 std::string input_desktop_name();
+
+// Modes the primary display can do, as (width, height) pairs: deduplicated,
+// largest area first, capped at 64. Empty when enumeration fails.
+std::vector<std::pair<int, int>> list_display_modes();
+
+// Switches the primary display to the given mode for this session only: it is
+// applied with plain flags (never CDS_UPDATEREGISTRY), so nothing is written
+// and a reboot hands the machine back its own default. The mode is tested
+// (CDS_TEST) first. Returns the ChangeDisplaySettingsEx LONG code;
+// DISP_CHANGE_SUCCESSFUL == 0.
+LONG change_display_mode(int width, int height);
 
 // Runs a console command to completion; returns its exit code (-1 on failure).
 int run_command(const std::wstring& command_line);

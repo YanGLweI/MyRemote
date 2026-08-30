@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QObject>
+#include <QSize>
+#include <QVector>
 
 #include <cstdint>
 #include <mutex>
@@ -54,6 +56,9 @@ public:
     // service-hosted agent can follow what happens next.
     void lock_workstation();
     bool controlled_supports_logon() const;
+    // Asks the remote machine to switch its desktop to another display mode
+    // for the current session; the outcome arrives as a DisplayModes reply.
+    void set_display_mode(int width, int height);
 
 signals:
     void control_started(QString device_id);
@@ -67,6 +72,9 @@ signals:
     // One-line explanation for the status bar: what auto-resume is doing, or
     // why it stopped trying.
     void status_note(QString text);
+    // The agent's mode list with the mode it is currently in; empty list means
+    // an agent too old to answer, and the toolbar keeps showing "--".
+    void display_modes_ready(QVector<QSize> modes, QSize current);
 
 public slots:
     // Connected directly: runs on the tunnel session thread and only hands the
@@ -80,6 +88,7 @@ public slots:
     // Arrives on a session thread, so it is delivered here on the GUI thread: the
     // round-trip state below is plain members on purpose.
     void on_pong(QString device_id, quint64 t0_us, quint64 t3_us);
+    void on_display_modes(QString device_id, QByteArray payload);
 
 private:
     bool do_start(const std::string& device_id);
@@ -92,6 +101,7 @@ private:
     // Ask the far side to bounce a stamp back, unless it has already proved it
     // does not answer.
     void ping();
+    void query_display_modes();
 
     TunnelManager& tunnels_;
     DisplayRenderer& renderer_;
@@ -110,6 +120,10 @@ private:
     uint8_t fps_ = 30;
     uint16_t bitrate_kbps_ = 2048;
     uint16_t max_encode_width_ = 0;
+    // The mode a SetDisplayMode asked for, invalid while nothing is outstanding.
+    // The next DisplayModes reply is the acknowledgement: same current mode means
+    // the far side could not do it.
+    QSize pending_set_mode_;
     // Smoothed round trip to the controlled agent, -1 until it answers once.
     int rtt_ms_ = -1;
     // The stamp of the one Ping we are waiting on; 0 means none is in flight.

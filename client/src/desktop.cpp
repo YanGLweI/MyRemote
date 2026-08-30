@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 #include <wtsapi32.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -374,6 +375,48 @@ bool DesktopFollower::update(std::string* name, bool* changed) {
         *name = name_;
     }
     return attached;
+}
+
+std::vector<std::pair<int, int>> list_display_modes() {
+    std::vector<std::pair<int, int>> modes;
+    for (DWORD i = 0;; ++i) {
+        DEVMODEW dm{};
+        dm.dmSize = sizeof(dm);
+        if (!EnumDisplaySettingsW(nullptr, i, &dm)) {
+            break;
+        }
+        const auto mode = std::make_pair(static_cast<int>(dm.dmPelsWidth),
+                                         static_cast<int>(dm.dmPelsHeight));
+        if (std::find(modes.begin(), modes.end(), mode) == modes.end()) {
+            modes.push_back(mode);
+        }
+    }
+    std::sort(modes.begin(), modes.end(),
+              [](const auto& a, const auto& b) {
+                  return static_cast<long long>(a.first) * a.second >
+                         static_cast<long long>(b.first) * b.second;
+              });
+    if (modes.size() > 64) {
+        modes.resize(64);
+    }
+    return modes;
+}
+
+LONG change_display_mode(int width, int height) {
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT;
+    dm.dmPelsWidth = static_cast<DWORD>(width);
+    dm.dmPelsHeight = static_cast<DWORD>(height);
+    // CDS_TEST first: applying an untested mode can leave the console with a
+    // black screen for the fifteen-second revert window.
+    LONG result = ChangeDisplaySettingsExW(nullptr, &dm, nullptr, CDS_TEST, nullptr);
+    if (result == DISP_CHANGE_SUCCESSFUL) {
+        // Plain 0, never CDS_UPDATEREGISTRY: the operator asked for this
+        // session's desktop, not for the machine's boot profile.
+        result = ChangeDisplaySettingsExW(nullptr, &dm, nullptr, 0, nullptr);
+    }
+    return result;
 }
 
 }  // namespace win32util

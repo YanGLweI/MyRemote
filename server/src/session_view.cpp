@@ -80,6 +80,10 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
         controller_->apply_quality(p.fps, p.bitrate_kbps, p.max_encode_width);
         emit quality_changed(idx);
     });
+    connect(controller_.get(), &RemoteController::display_modes_ready, toolbar_,
+            &SessionToolbar::set_modes);
+    connect(toolbar_, &SessionToolbar::resolution_selected, this,
+            [this](int w, int h) { controller_->set_display_mode(w, h); });
     connect(toolbar_, &SessionToolbar::stop_requested, this, [this] {
         // Flushes any key still held down while the tunnel is still open.
         gateway_->set_captured(false);

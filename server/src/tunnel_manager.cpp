@@ -217,6 +217,7 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                         mlog::info("Device " + session->device_id +
                                    " desktop resized to " + std::to_string(w) +
                                    "x" + std::to_string(h));
+                        note_geometry(session->device_id, w, h);
                         emit device_registered(
                             QString::fromStdString(session->device_id),
                             QString::fromStdString(session->device_name), w, h);
@@ -234,6 +235,7 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                         if (w && h) {
                             session->screen_width = w;
                             session->screen_height = h;
+                            note_geometry(session->device_id, w, h);
                         }
                         mlog::info("Device " + session->device_id +
                                    " capabilities now 0x" +
@@ -269,6 +271,13 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                                   t0_us, proto::steady_us());
                         break;
                     }
+                    case proto::MessageType::DisplayModes:
+                        emit display_modes(
+                            QString::fromStdString(session->device_id),
+                            QByteArray(reinterpret_cast<const char*>(
+                                           frame.payload.data()),
+                                       static_cast<int>(frame.payload.size())));
+                        break;
                     case proto::MessageType::AuthResponse: {
                         std::vector<uint8_t> salt;
                         std::string password;
@@ -540,6 +549,17 @@ DeviceState TunnelManager::note_state_locked(const std::string& device_id,
     it->second.last_seen_ms = steady_now_ms();
     it->second.last_seen_time = std::time(nullptr);
     return previous;
+}
+
+void TunnelManager::note_geometry(const std::string& device_id, uint16_t width,
+                                  uint16_t height) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = roster_.find(device_id);
+    if (it == roster_.end()) {
+        return;  // registration owns the row; there is nothing to update yet
+    }
+    it->second.screen_width = width;
+    it->second.screen_height = height;
 }
 
 void TunnelManager::reaper_loop() {

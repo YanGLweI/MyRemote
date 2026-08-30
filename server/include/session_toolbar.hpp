@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QKeySequence>
+#include <QSize>
+#include <QVector>
 #include <QWidget>
 
 class QComboBox;
@@ -31,9 +33,13 @@ public:
     void set_zoomed(bool zoomed);
     void set_stats(int fps, int latency_ms);
     void set_quality_index(int index);
+    // The display modes the remote machine offered; an empty list (agent too
+    // old to answer) leaves the picker on "--".
+    void set_modes(const QVector<QSize>& modes, const QSize& current);
 
 signals:
     void quality_selected(int index);
+    void resolution_selected(int width, int height);
     void stop_requested();
     void start_requested();
     void logon_requested();
@@ -47,6 +53,8 @@ private:
     QLabel* state_ = nullptr;
     QLabel* capture_ = nullptr;
     QComboBox* quality_ = nullptr;
+    QComboBox* resolution_ = nullptr;
+    bool modes_known_ = false;
     QPushButton* logon_button_ = nullptr;
     QPushButton* fullscreen_button_ = nullptr;
     QPushButton* stop_button_ = nullptr;

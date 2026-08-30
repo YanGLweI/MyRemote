@@ -328,6 +328,21 @@ void relaunch_elevated() {
     }
 }
 
+// The mode list answers a query, and is re-sent after every set attempt so the
+// control centre reads the outcome from the current mode it carries.
+void send_display_modes() {
+    std::vector<std::pair<uint16_t, uint16_t>> wire;
+    for (const auto& m : win32util::list_display_modes()) {
+        wire.emplace_back(static_cast<uint16_t>(m.first),
+                          static_cast<uint16_t>(m.second));
+    }
+    g_connection->send(
+        proto::MessageType::DisplayModes,
+        proto::make_display_modes_payload(
+            static_cast<uint16_t>(GetSystemMetrics(SM_CXSCREEN)),
+            static_cast<uint16_t>(GetSystemMetrics(SM_CYSCREEN)), wire));
+}
+
 void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
     switch (type) {
         case proto::MessageType::RegisterAck: {
@@ -412,6 +427,30 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             }
             g_connection->send(proto::MessageType::Pong,
                                proto::make_pong_payload(t0_us));
+            break;
+        }
+        case proto::MessageType::QueryDisplayModes: {
+            send_display_modes();
+            break;
+        }
+        case proto::MessageType::SetDisplayMode: {
+            uint16_t w = 0, h = 0;
+            if (!proto::parse_set_display_mode_payload(payload, w, h)) {
+                break;
+            }
+            const int old_w = GetSystemMetrics(SM_CXSCREEN);
+            const int old_h = GetSystemMetrics(SM_CYSCREEN);
+            const LONG result = win32util::change_display_mode(w, h);
+            if (result == DISP_CHANGE_SUCCESSFUL) {
+                mlog::info("Display mode set to " + std::to_string(w) + "x" +
+                           std::to_string(h) + " (was " + std::to_string(old_w) +
+                           "x" + std::to_string(old_h) + ")");
+            } else {
+                mlog::warn("Display mode " + std::to_string(w) + "x" +
+                           std::to_string(h) + " refused, code " +
+                           std::to_string(result));
+            }
+            send_display_modes();
             break;
         }
         default:

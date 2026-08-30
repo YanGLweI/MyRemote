@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace proto {
@@ -35,6 +36,9 @@ enum class MessageType : uint8_t {
     // includes whatever the peer spent getting around to the reply.
     Ping            = 0x11,  // S→C [8B t0] our steady clock when it was sent
     Pong            = 0x12,  // C→S [8B t0] unchanged
+    QueryDisplayModes = 0x13,  // S→C empty: list the desktop modes you can do
+    DisplayModes      = 0x14,  // C→S [2B cur_w][2B cur_h][1B n][n×(2B w)(2B h)]
+    SetDisplayMode    = 0x15,  // S→C [2B w][2B h] switch the remote desktop mode
 };
 
 enum class RegisterStatus : uint8_t {
@@ -143,5 +147,19 @@ std::vector<uint8_t> make_ping_payload(uint64_t t0_us);
 bool parse_ping_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us);
 std::vector<uint8_t> make_pong_payload(uint64_t t0_us);
 bool parse_pong_payload(const std::vector<uint8_t>& payload, uint64_t& t0_us);
+
+// The mode list answers a query, and the agent re-sends it after every set
+// attempt, so the controller learns the outcome without a timer. The list is
+// capped at 64 modes; more would only be scrollbar fodder.
+std::vector<uint8_t> make_display_modes_payload(
+    uint16_t cur_w, uint16_t cur_h,
+    const std::vector<std::pair<uint16_t, uint16_t>>& modes);
+bool parse_display_modes_payload(const std::vector<uint8_t>& payload, uint16_t& cur_w,
+                                 uint16_t& cur_h,
+                                 std::vector<std::pair<uint16_t, uint16_t>>& modes);
+
+std::vector<uint8_t> make_set_display_mode_payload(uint16_t width, uint16_t height);
+bool parse_set_display_mode_payload(const std::vector<uint8_t>& payload, uint16_t& width,
+                                    uint16_t& height);
 
 }  // namespace proto

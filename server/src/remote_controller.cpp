@@ -34,6 +34,7 @@ constexpr int kPingSlowRetry = 10;
 RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& renderer,
                                    QObject* parent)
     : QObject(parent), tunnels_(tunnels), renderer_(renderer), pipeline_(renderer) {
+    qRegisterMetaType<QVector<QSize>>("QVector<QSize>");
     // Decoding happens on the pipeline thread; the GUI thread only gets a
     // cheap "something new to paint" nudge.
     connect(&pipeline_, &FramePipeline::frame_ready, this,
@@ -69,6 +70,8 @@ RemoteController::RemoteController(TunnelManager& tunnels, DisplayRenderer& rend
             [this] { auto_attempts_ = 0; });
 
     connect(&tunnels_, &TunnelManager::pong, this, &RemoteController::on_pong);
+    connect(&tunnels_, &TunnelManager::display_modes, this,
+            &RemoteController::on_display_modes);
 
     auto* stats_timer = new QTimer(this);
     connect(stats_timer, &QTimer::timeout, this, [this]() {
@@ -132,6 +135,7 @@ bool RemoteController::do_start(const std::string& device_id) {
     request_keyframe();
 
     set_controlled(device_id);
+    query_display_modes();
     tunnels_.exchange_frames_in(device_id);
     // A round trip measured on the previous session says nothing about this one,
     // and the device may have rebooted since.
@@ -277,6 +281,55 @@ bool RemoteController::controlled_supports_logon() const {
         }
     }
     return false;
+}
+
+void RemoteController::query_display_modes() {
+    const std::string device = controlled_device();
+    if (!device.empty()) {
+        tunnels_.send_to_device(device, proto::MessageType::QueryDisplayModes);
+    }
+}
+
+void RemoteController::set_display_mode(int width, int height) {
+    const std::string device = controlled_device();
+    if (device.empty()) {
+        return;
+    }
+    pending_set_mode_ = QSize(width, height);
+    tunnels_.send_to_device(
+        device, proto::MessageType::SetDisplayMode,
+        proto::make_set_display_mode_payload(static_cast<uint16_t>(width),
+                                             static_cast<uint16_t>(height)));
+}
+
+void RemoteController::on_display_modes(QString device_id, QByteArray payload) {
+    if (device_id.toStdString() != controlled_device()) {
+        return;
+    }
+    uint16_t cur_w = 0, cur_h = 0;
+    std::vector<std::pair<uint16_t, uint16_t>> wire;
+    if (!proto::parse_display_modes_payload(
+            std::vector<uint8_t>(payload.constBegin(), payload.constEnd()),
+            cur_w, cur_h, wire)) {
+        return;
+    }
+    QVector<QSize> modes;
+    modes.reserve(static_cast<int>(wire.size()));
+    for (const auto& m : wire) {
+        modes.append(QSize(m.first, m.second));
+    }
+    const QSize current(cur_w, cur_h);
+    if (pending_set_mode_.isValid()) {
+        if (current != pending_set_mode_) {
+            emit status_note(QStringLiteral("对端未能切换到 %1x%2，当前 %3x%4")
+                                 .arg(pending_set_mode_.width())
+                                 .arg(pending_set_mode_.height())
+                                 .arg(current.width())
+                                 .arg(current.height()));
+        }
+        pending_set_mode_ = QSize();
+    }
+    emit display_modes_ready(modes, current);
 }
 
 void RemoteController::request_control(const std::string& device_id,

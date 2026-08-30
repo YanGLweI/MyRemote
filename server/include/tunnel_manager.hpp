@@ -105,6 +105,9 @@ signals:
     // hop to the GUI thread is scheduling, not delay on the wire, and counting
     // it would inflate every reading.
     void pong(QString device_id, quint64 t0_us, quint64 t3_us);
+    // The agent's answer to a mode query, and its acknowledgement after every
+    // set attempt: raw DisplayModes payload, parsed by the controller.
+    void display_modes(QString device_id, QByteArray payload);
 
 private:
     void on_new_connection(SOCKET socket);
@@ -116,6 +119,10 @@ private:
     // Caller holds pool_mutex_. Records what the operator saw last so the row
     // survives the tunnel, and returns the previous state for change detection.
     DeviceState note_state_locked(const std::string& device_id, DeviceState state);
+    // A resize arrives on the tunnel thread, long after the registration that
+    // filled this row. Every reader goes through the roster, so it has to carry
+    // the live geometry: the header, and the size a new session seeds with.
+    void note_geometry(const std::string& device_id, uint16_t width, uint16_t height);
     static long long now_ms();
 
     Listener listener_;

@@ -61,6 +61,20 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     quality_->setCurrentIndex(kQualityDefault);
     quality_->setToolTip(QStringLiteral("画质档位（只作用于这台设备）"));
 
+    resolution_ = new QComboBox();
+    resolution_->addItem(QStringLiteral("--"));
+    resolution_->setEnabled(false);
+    resolution_->setToolTip(QStringLiteral(
+        "对端桌面的显示分辨率，选了就真的改对端机器的屏幕（仅本次会话）。\n"
+        "画质下拉只改编码大小，不碰对端桌面。-- 表示对端版本不认这个询问。"));
+    // The widest string it can ever show, so a mode list never reflows the row.
+    // The slack has to be counted in this font's digits: the theme draws its own
+    // arrow and the style reserves more room for it than it paints, so three
+    // digits still lost the last character of "1920x1080".
+    const QFontMetrics fm = resolution_->fontMetrics();
+    resolution_->setFixedWidth(fm.horizontalAdvance(QStringLiteral("3840x2160")) +
+                               6 * fm.horizontalAdvance(QLatin1Char('0')));
+
     logon_button_ = new QPushButton(QStringLiteral("返回登录界面"));
     logon_button_->setIcon(icons::lock());
     logon_button_->setEnabled(false);
@@ -93,6 +107,7 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
 
     actions->addWidget(title_, 1);
     actions->addWidget(quality_);
+    actions->addWidget(resolution_);
     actions->addWidget(logon_button_);
     actions->addWidget(fullscreen_button_);
     actions->addWidget(stop_button_);
@@ -111,6 +126,14 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
 
     connect(quality_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int idx) { emit quality_selected(idx); });
+    connect(resolution_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                const QSize mode =
+                    resolution_->itemData(idx).value<QSize>();
+                if (mode.isValid()) {
+                    emit resolution_selected(mode.width(), mode.height());
+                }
+            });
     connect(fullscreen_button_, &QPushButton::clicked, this,
             [this](bool on) { emit fullscreen_toggled(on); });
     connect(stop_button_, &QPushButton::clicked, this, [this]() {
@@ -142,6 +165,7 @@ void SessionToolbar::set_streaming(bool on) {
     stop_button_->setText(on ? QStringLiteral("断开")
                              : QStringLiteral("重新连接"));
     capture_->setVisible(on);
+    resolution_->setEnabled(on && modes_known_);
     if (!on) {
         stats_->setText(QStringLiteral("帧率 -- · 延迟 --"));
     }
@@ -207,4 +231,28 @@ void SessionToolbar::set_quality_index(int index) {
     if (index >= 0 && index < quality_->count()) {
         quality_->setCurrentIndex(index);
     }
+}
+
+void SessionToolbar::set_modes(const QVector<QSize>& modes, const QSize& current) {
+    resolution_->blockSignals(true);
+    resolution_->clear();
+    if (modes.isEmpty()) {
+        resolution_->addItem(QStringLiteral("--"));
+        modes_known_ = false;
+        resolution_->setEnabled(false);
+        resolution_->blockSignals(false);
+        return;
+    }
+    QVector<QSize> list = modes;
+    if (!list.contains(current)) {
+        list.prepend(current);
+    }
+    for (const QSize& m : list) {
+        resolution_->addItem(QStringLiteral("%1x%2").arg(m.width()).arg(m.height()),
+                             QVariant::fromValue(m));
+    }
+    resolution_->setCurrentIndex(list.indexOf(current));
+    modes_known_ = true;
+    resolution_->setEnabled(streaming_);
+    resolution_->blockSignals(false);
 }
