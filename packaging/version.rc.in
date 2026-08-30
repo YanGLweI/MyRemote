@@ -1,0 +1,41 @@
+#include <winver.h>
+
+// rc.exe reads this file as UTF-8 so the descriptions can be Chinese, and the
+// string table below says so in the same terms (0x0804 zh-CN, 1200 UTF-16).
+#pragma code_page(65001)
+
+#define MYREMOTE_FILEVER    @MYREMOTE_VERSION_MAJOR@, @MYREMOTE_VERSION_MINOR@, @MYREMOTE_VERSION_PATCH@, 0
+#define MYREMOTE_TEXTVER    "@MYREMOTE_VERSION@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    MYREMOTE_FILEVER
+ PRODUCTVERSION MYREMOTE_FILEVER
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS      VS_FF_DEBUG
+#else
+ FILEFLAGS      0x0L
+#endif
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",      "MyRemote"
+            VALUE "FileDescription",  "@MYREMOTE_FILE_DESCRIPTION@"
+            VALUE "FileVersion",      MYREMOTE_TEXTVER
+            VALUE "InternalName",     "@MYREMOTE_ORIGINAL_FILENAME@"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 MyRemote"
+            VALUE "OriginalFilename", "@MYREMOTE_ORIGINAL_FILENAME@"
+            VALUE "ProductName",      "MyRemote"
+            VALUE "ProductVersion",   MYREMOTE_TEXTVER
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

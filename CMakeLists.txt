@@ -15,6 +15,17 @@ option(BUILD_CLIENT "Build client agent" ON)
 add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 add_compile_options(/utf-8)
 
+# project(VERSION) 是唯一一处写版本号的地方：属性页里的 FileVersion 和 --version
+# 打印的串都从它派生。装到机器上的 exe 如果属性页是空的，出了问题就无法回答
+# "这台是哪一版"。
+add_compile_definitions(MYREMOTE_VERSION="${PROJECT_VERSION}")
+# version.rc.in 里写的是 @MYREMOTE_VERSION@：configure_file 对不存在的变量只会
+# 静默替换成空串，而空的 FileVersion 会让 Windows 干脆整个版本块都不给读。
+set(MYREMOTE_VERSION "${PROJECT_VERSION}")
+set(MYREMOTE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+set(MYREMOTE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+set(MYREMOTE_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+
 # Qt6 仅服务端需要
 if(BUILD_SERVER)
     find_package(Qt6 COMPONENTS Widgets REQUIRED)
@@ -56,6 +67,10 @@ set(WINDOWS_SYS_LIBS ws2_32 user32 gdi32 advapi32 wtsapi32)
 
 # 客户端（被控端）
 if(BUILD_CLIENT)
+    set(MYREMOTE_ORIGINAL_FILENAME "agent.exe")
+    set(MYREMOTE_FILE_DESCRIPTION "MyRemote 被控端")
+    configure_file("${CMAKE_SOURCE_DIR}/packaging/version.rc.in"
+                   "${CMAKE_BINARY_DIR}/generated/version_agent.rc" @ONLY)
     add_executable(agent WIN32
         client/src/main.cpp
         client/src/desktop.cpp
@@ -63,6 +78,7 @@ if(BUILD_CLIENT)
         client/src/config_gui.cpp
         client/src/tray_icon.cpp
         client/resources/agent.rc
+        "${CMAKE_BINARY_DIR}/generated/version_agent.rc"
         client/src/connection.cpp
         client/src/desktop_capture.cpp
         client/src/video_encoder.cpp
@@ -84,7 +100,12 @@ endif()
 
 # 服务端（控制端）
 if(BUILD_SERVER)
+    set(MYREMOTE_ORIGINAL_FILENAME "control_server.exe")
+    set(MYREMOTE_FILE_DESCRIPTION "MyRemote 远程控制管理台")
+    configure_file("${CMAKE_SOURCE_DIR}/packaging/version.rc.in"
+                   "${CMAKE_BINARY_DIR}/generated/version_control_server.rc" @ONLY)
     add_executable(control_server WIN32
+        "${CMAKE_BINARY_DIR}/generated/version_control_server.rc"
         server/src/main.cpp
         server/src/main_window.cpp
         server/src/sessions_area.cpp

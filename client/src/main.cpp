@@ -757,6 +757,7 @@ struct Args {
     bool console = false;
     bool config_ui = false;
     bool background = false;
+    bool version = false;
     bool install_autostart = false;
     bool uninstall_autostart = false;
     bool takeover = false;
@@ -818,6 +819,7 @@ Args parse_command_line() {
     args.console = has_flag("--console");
     args.config_ui = has_flag("--config-ui");
     args.background = has_flag("--background");
+    args.version = has_flag("--version");
     args.install_autostart = has_flag("--install-autostart");
     args.uninstall_autostart = has_flag("--uninstall-autostart");
     args.takeover = has_flag("--takeover");
@@ -944,6 +946,14 @@ int run_service_cli(const Args& args) {
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     Args args = parse_command_line();
+    // Answering "which build is this" must not start anything: no elevation, no
+    // mutex, no config, and above all no log file - a version query that leaves
+    // agent.log behind would make a machine look alive when nothing runs.
+    if (args.version) {
+        win32util::attach_parent_console();
+        printf("MyRemote agent %s\n", MYREMOTE_VERSION);
+        return 0;
+    }
     // The service dispatcher and the install CLI must be reached before the
     // single-instance mutex and the auto-elevation block: the mutex is
     // session-local, and elevation is meaningless under the SCM.

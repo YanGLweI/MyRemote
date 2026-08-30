@@ -6,6 +6,7 @@
 
 #include <QApplication>
 
+#include <cstdio>
 #include <string>
 
 #include "app_paths.hpp"
@@ -16,7 +17,36 @@
 #include "main_window.hpp"
 #include "theme.hpp"
 
+namespace {
+
+// A GUI-subsystem exe usually arrives with no standard handles at all, so borrow
+// the console it was started from. If the caller already handed us one - a
+// redirected file or pipe - writing there is the whole point, and reopening
+// CONOUT$ would throw that redirect away.
+void attach_parent_console() {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) {
+        return;
+    }
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        return;
+    }
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONOUT$", "w", stderr);
+}
+
+}  // namespace
+
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    // Answered before QApplication, the config and the log exist: a version
+    // query must not bind the port or leave a line in the record.
+    for (int i = 1; i < __argc; ++i) {
+        if (std::string("--version") == __argv[i]) {
+            attach_parent_console();
+            printf("MyRemote control server %s\n", MYREMOTE_VERSION);
+            return 0;
+        }
+    }
     QApplication app(__argc, __argv);
     QApplication::setApplicationName(QStringLiteral("MyRemote Control Center"));
     // Before the first dialog is built: translators are consulted per string,
