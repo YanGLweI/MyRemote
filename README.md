@@ -68,7 +68,8 @@ cmake --build build --config Release
 
 ## 安装与部署
 
-正式版发四个包（`SHA256SUMS.txt` 是它们的 SHA-256）：
+正式版发四个包（`SHA256SUMS.txt` 是它们的 SHA-256），下载在
+[Releases · v1.0.0](https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.0)；本地跑 `packaging\stage.ps1` 也能重新产出到 `build\package\dist\`：
 
 | 给谁 | 安装版 | 绿色版 |
 | --- | --- | --- |
