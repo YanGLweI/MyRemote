@@ -37,7 +37,9 @@ Windows 内网远程控制工具，专用于**单向隔离网络**（被控端�
 消息类型：Register / RegisterAck / Heartbeat / StartStream / StopStream /
 VideoFrame / InputEvent / RequestKeyframe / AuthChallenge / AuthResponse /
 DisplayChanged / StateReport（能力 flags + 桌面尺寸）/ LockWorkstation /
-Ping-Pong（延迟读数＝一次网络往返，与画面是否在动无关）。
+Ping-Pong（延迟读数＝一次网络往返，与画面是否在动无关）/ QueryDisplayModes →
+DisplayModes（当前分辨率 + 可选模式清单，兼作切换后的回执）→ SetDisplayMode
+（真的改对端桌面分辨率，只作用于本次会话，不写注册表）。
 
 ## 构建
 
