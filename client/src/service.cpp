@@ -575,6 +575,21 @@ bool is_installed() {
     return static_cast<bool>(service);
 }
 
+bool is_running() {
+    ServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+    if (!scm) {
+        return false;
+    }
+    ServiceHandle service(
+        OpenServiceW(scm.get(), kServiceName, SERVICE_QUERY_STATUS));
+    if (!service) {
+        return false;
+    }
+    SERVICE_STATUS status{};
+    return QueryServiceStatus(service.get(), &status) &&
+           status.dwCurrentState == SERVICE_RUNNING;
+}
+
 std::string query() {
     std::string out;
     ServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));

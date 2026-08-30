@@ -65,6 +65,15 @@ std::atomic<int> g_max_encode_width{1920};
 bool g_session_host = false;
 bool g_follow_desktop = false;
 std::atomic<bool> g_secure_desktop{false};
+// "本机不想被远控"，由托盘翻转。它刻意**不落盘**：重启之后这台机器应该重新可控，
+// 而开机自启是另一码事——这里停的只是这条隧道，进程和服务都还活着，所以图标还在，
+// 同一个菜单就是回来的路。
+std::atomic<bool> g_paused{false};
+// 托盘线程只能提出请求；写配置文件的是主循环，免得两个线程抢同一个文件。
+std::atomic<bool> g_hide_tray{false};
+// 菜单跑在托盘自己那个消息线程上，而 TrayIcon::stop() 要 join 它——自杀式死锁。
+// 所以"退出"也只是个请求：由主循环先删图标、再停服务。
+std::atomic<bool> g_quit_requested{false};
 // Whether this process may follow the logon screen at all, as opposed to
 // whether it is on one right now.
 bool g_can_use_secure_desktop = false;
@@ -157,6 +166,7 @@ gui::ConfigUi make_ui(const config::ClientConfig& c) {
     ui.secret_key = c.secret_key;
     ui.device_name = c.device_name;
     ui.control_password = c.control_password;
+    ui.tray_icon = c.tray_icon;
     ui.max_encode_width = c.max_encode_width;
     ui.config_path = g_config_path;
     return ui;
@@ -555,8 +565,9 @@ bool establish_session(const config::ClientConfig& cfg, const std::string& dev_i
     return false;
 }
 
-// The host has no tray and must never show a window, so it leaves a one-line
-// status file behind instead: that is what `agent.exe --service-state` prints.
+// The host runs as SYSTEM inside someone else's session, so it also leaves a
+// one-line status file behind: that is what `agent.exe --service-state` prints,
+// and it is the only record of which desktop the host thinks it is on.
 void write_host_status(const std::string& desktop) {
     if (!g_session_host || g_log_dir.empty()) {
         return;
@@ -570,12 +581,13 @@ void write_host_status(const std::string& desktop) {
     ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
     char line[256];
     snprintf(line, sizeof(line),
-             "pid=%lu session=%lu desktop=%s capture=%s size=%dx%d registered=%d\n",
+             "pid=%lu session=%lu desktop=%s capture=%s size=%dx%d registered=%d paused=%d\n",
              static_cast<unsigned long>(GetCurrentProcessId()),
              static_cast<unsigned long>(session_id),
              desktop.empty() ? "unknown" : desktop.c_str(),
              g_capturer && g_capturer->using_bitblt_fallback() ? "bitblt" : "dxgi",
-             width, height, g_state.registered.load() ? 1 : 0);
+             width, height, g_state.registered.load() ? 1 : 0,
+             g_paused.load() ? 1 : 0);
     std::wstring path = win32util::utf8_to_wide(g_log_dir + "\\host.status");
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -835,11 +847,15 @@ Args parse_command_line() {
     args.stop_service = has_flag("--stop-service");
     args.service_state = has_flag("--service-state");
     if (args.session_host) {
-        // Spawned by the service: nobody is watching this machine, and a
-        // window on the secure desktop is visible to whoever walks past it.
+        // Spawned by the service. It must not elevate, must not block on a
+        // dialog, and must follow whichever desktop owns the keyboard.
+        // The tray is deliberately *not* switched off here: the host is created
+        // on Winsta0\Default (service.cpp), desktop affinity is per-thread, and
+        // the follower only moves the capture thread - so its icon is naturally
+        // invisible while the machine is sitting at the logon screen, which is
+        // the exposure this line used to guard against by having no icon at all.
         args.background = true;
         args.no_elevate = true;
-        args.no_tray = true;
         args.follow_desktop = true;
     }
     args.ip_override = get_value("--ip");
@@ -1034,21 +1050,30 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         Sleep(100);
     }
     if (!instance_mutex) {
-        if (!args.background) {
-            HWND h = nullptr;
-            for (int i = 0; i < 20 && !h; ++i) {
-                h = FindWindowW(TrayIcon::kWndClass, nullptr);
-                if (!h) Sleep(100);
+        // 锁在别的 agent 手里。如果拿着它的是服务宿主（SYSTEM），"把它叫醒"这条路
+        // 走不通：UIPI 会把 Medium→System 的 WM_APP 悄悄丢掉，而 PostMessage 照样
+        // 返回 TRUE——点了没反应，比报错更难解释。所以交给下面让位那一支，让点击的
+        // 人以自己的身份打开配置界面。
+        const bool host_owns_machine =
+            !g_session_host && !args.force && !args.background &&
+            svc::is_installed() && svc::is_running();
+        if (!host_owns_machine) {
+            if (!args.background) {
+                HWND h = nullptr;
+                for (int i = 0; i < 20 && !h; ++i) {
+                    h = FindWindowW(TrayIcon::kWndClass, nullptr);
+                    if (!h) Sleep(100);
+                }
+                if (h) {
+                    PostMessageW(h, TrayIcon::WM_SHOW_CONFIG, 0, 0);
+                } else {
+                    MessageBoxW(nullptr,
+                                L"MyRemote Agent 已在运行（见系统托盘图标）。",
+                                L"MyRemote", MB_OK | MB_ICONINFORMATION);
+                }
             }
-            if (h) {
-                PostMessageW(h, TrayIcon::WM_SHOW_CONFIG, 0, 0);
-            } else {
-                MessageBoxW(nullptr,
-                            L"MyRemote Agent 已在运行（见系统托盘图标）。",
-                            L"MyRemote", MB_OK | MB_ICONINFORMATION);
-            }
+            return 0;
         }
-        return 0;
     }
 
     if (args.console) {
@@ -1091,7 +1116,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         ui.save_mode = gui::SaveMode::SaveOnly;
         return gui::run_config_gui(ui) ? 0 : 1;
     }
-    if (!g_session_host && !args.force && svc::is_installed()) {
+    // 只在服务**真的在跑**时让位。托盘"退出"之后服务是停的，这时双击必须把客户端
+    // 重新跑起来，而不是弹一个只读的编辑器然后退出。
+    if (!g_session_host && !args.force && svc::is_installed() && svc::is_running()) {
         mlog::info("The MyRemoteAgent service owns this machine; this instance "
                    "exits so the tunnel stays with the hosted process. Use "
                    "--force to override.");
@@ -1101,6 +1128,18 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             gui::run_config_gui(ui);
         }
         return 0;
+    }
+    if (!instance_mutex) {
+        // 上面那两支之间宿主可能刚好退了。再抢一次锁并**持有**它；还抢不到就到此
+        // 为止——两个 agent 抢同一个设备号，比"这次没起来"难查得多。
+        instance_mutex = CreateMutexW(nullptr, TRUE, L"MyRemoteAgent_SingleInstance");
+        if (!instance_mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
+            if (instance_mutex) {
+                CloseHandle(instance_mutex);
+            }
+            mlog::info("Another agent took the instance lock first; this instance exits");
+            return 0;
+        }
     }
     if (!args.background) {
         // First double-click on a fresh machine: configure, then run.
@@ -1121,24 +1160,58 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     g_reload_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_input_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    // A host has no tray and no dialogs: on the secure desktop every window it
-    // creates is visible to whoever is standing at the machine.
+    // 托盘是"坐在机器前的人"手里唯一的控制点。便携形态一直有；装了服务的机器过去
+    // 什么痕迹都没有。宿主进程起在 Winsta0\Default，锁屏与登录界面时这个图标自然
+    // 看不见，所以不需要为它切换桌面（那才是真正会漏窗口的做法）。
     TrayIcon tray;
-    if (!args.no_tray) {
-        TrayIcon::Actions tray_actions;
-        tray_actions.open_config = open_config_dialog;
-        tray_actions.quit = [] { g_state.running.store(false); };
-        tray_actions.install_autostart = request_autostart_install;
-        if (!g_elevated) {
-            tray_actions.elevate = relaunch_elevated;
-        }
-        if (!tray.start(std::move(tray_actions))) {
+    TrayIcon::Actions tray_actions;
+    bool tray_visible = false;
+    std::wstring last_tip;
+    const bool tray_possible =
+        !args.no_tray && (!args.background || g_session_host);
+    auto show_tray = [&]() {
+        tray_visible = tray.start(tray_actions);
+        if (!tray_visible) {
             mlog::warn("Tray icon unavailable, running headless");
+            return;
         }
         tray.set_tooltip(to_wide(cfg.device_name.empty()
                                      ? device::default_device_name()
                                      : cfg.device_name) +
                          L" | 连接中");
+        // 新建的图标只有上面这一句，循环里的读数必须重新推一遍。
+        last_tip.clear();
+    };
+    if (tray_possible) {
+        tray_actions.open_config = open_config_dialog;
+        tray_actions.toggle_pause = [] {
+            const bool now = !g_paused.load();
+            g_paused.store(now);
+            mlog::info(now
+                           ? "Remote control paused by the local user; dropping the tunnel"
+                           : "Remote control resumed by the local user");
+        };
+        tray_actions.paused = [] { return g_paused.load(); };
+        tray_actions.config_pointless_now = [] { return g_secure_desktop.load(); };
+        tray_actions.hide_icon = [] { g_hide_tray.store(true); };
+        if (g_session_host) {
+            // 服务态的"退出"= 整个客户端连服务一起停，StartType 保持 AUTO_START。
+            // 这里只能立个牌子：删图标、停服务都由主循环去做（见下面的
+            // g_quit_requested 分支），顺序错了就会留一个点不动的幽灵图标。
+            tray_actions.quit = [] { g_quit_requested.store(true); };
+            tray_actions.quit_text = L"退出（同时停止服务，下次开机自动回来）";
+            // 不挂这两项：登录计划任务会跟服务抢同一个设备号（--install-service
+            // 专门把它删掉），而 SYSTEM 本来就没有"提权重启"可做。
+        } else {
+            tray_actions.quit = [] { g_state.running.store(false); };
+            tray_actions.install_autostart = request_autostart_install;
+            if (!g_elevated) {
+                tray_actions.elevate = relaunch_elevated;
+            }
+        }
+        if (cfg.tray_icon) {
+            show_tray();
+        }
     }
 
     g_capturer = std::make_unique<DesktopCapturer>();
@@ -1185,7 +1258,6 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     int backoff_ms = 1000;
     DWORD next_try_tick = 0;
-    std::wstring last_tip;
     auto config_stamp = [&]() {
         FILETIME stamp{};
         HANDLE f = CreateFileW(win32util::utf8_to_wide(g_config_path).c_str(),
@@ -1223,9 +1295,57 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                                cfg.max_encode_width);
             backoff_ms = 1000;
             next_try_tick = 0;
+            // "显示托盘图标"这个复选框是藏掉图标后唯一的回头路，所以它必须
+            // 在运行中的进程上也立刻生效，而不是等下一次开机。
+            if (tray_possible && cfg.tray_icon != tray_visible) {
+                if (cfg.tray_icon) {
+                    show_tray();
+                } else {
+                    tray.stop();
+                    tray_visible = false;
+                }
+            }
         }
 
-        if (!g_connection->is_connected() || !g_state.registered.load()) {
+        if (g_quit_requested.exchange(false)) {
+            // 先删图标再停服务：停服务会让监管把我们收掉，图标要是还挂着，
+            // 机器上就留下一个点不动的幽灵。
+            tray.stop();
+            std::wstring why;
+            if (svc::stop(&why)) {
+                mlog::info("Service stopped from the tray; it starts again on next boot");
+            } else {
+                mlog::warn("The tray could not stop the service: " +
+                           win32util::wide_to_utf8(why.c_str()));
+            }
+            break;
+        }
+        if (g_hide_tray.exchange(false)) {
+            tray.stop();
+            tray_visible = false;
+            config::ClientConfig hidden = cfg;
+            hidden.tray_icon = false;
+            if (!config::ClientConfig::save(hidden, g_config_path)) {
+                // 图标这次是藏了，但下次开机它还会回来——这句话要说出口，
+                // 不能让用户以为"隐藏"是永久的。
+                mlog::warn("Tray icon hidden for now, but the setting did not persist: " +
+                           g_config_path);
+            }
+            // 自己刚写的这一份不是"操作者又改了设置"，不该触发一次重载。
+            config_written = config_stamp();
+        }
+
+        if (g_paused.load()) {
+            // 暂停只关隧道：进程与服务都活着，图标也还在，同一个菜单就是回来的路。
+            if (g_connection->is_connected()) {
+                g_connection->disconnect();
+                g_state.registered.store(false);
+                g_state.streaming.store(false);
+                backoff_ms = 1000;
+            }
+            // 把"下次尝试"始终留在近处，恢复时不必等一轮退避。
+            next_try_tick = GetTickCount() + 1000;
+        } else if (!g_connection->is_connected() || !g_state.registered.load()) {
             if (static_cast<int32_t>(GetTickCount() - next_try_tick) >= 0) {
                 g_state.streaming.store(false);
                 g_state.registered.store(false);
@@ -1243,8 +1363,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                                        : cfg.device_name) +
                            L" | " + to_wide(cfg.server_ip + ":" +
                                             std::to_string(cfg.server_port)) +
-                           (g_state.registered.load() ? L" | 已注册"
-                                                      : L" | 连接/重试中") +
+                           (g_paused.load()
+                                ? L" | 已停止，本机不被远控"
+                                : (g_state.registered.load() ? L" | 已注册"
+                                                             : L" | 连接/重试中")) +
                            (g_elevated ? L"" : L" | 受限");
         if (tip != last_tip) {
             tray.set_tooltip(tip);

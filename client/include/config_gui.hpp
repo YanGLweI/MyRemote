@@ -18,6 +18,9 @@ struct ConfigUi {
     std::string secret_key;
     std::string device_name;
     std::string control_password;
+    // The way back for someone who hid the icon from its own menu: without a
+    // checkbox here, hiding it would be a one-way door.
+    bool tray_icon = true;
     // Not editable here: the controller's quality preset owns the cap, but a
     // save has to carry it through or it silently resets to the default.
     int max_encode_width = 1920;

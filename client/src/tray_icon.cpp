@@ -150,7 +150,19 @@ void TrayIcon::ShowMenu() {
     constexpr int kCmdElevate = 2;
     constexpr int kCmdAutostart = 3;
     constexpr int kCmdQuit = 4;
-    AppendMenuW(menu, MF_STRING, kCmdConfig, L"打开配置");
+    constexpr int kCmdPause = 5;
+    constexpr int kCmdHide = 6;
+    // A window opened here would land on the Default desktop while the person
+    // at the machine is looking at Winlogon: gray it rather than lie.
+    const bool config_grayed =
+        actions_.config_pointless_now && actions_.config_pointless_now();
+    AppendMenuW(menu, MF_STRING | (config_grayed ? MF_GRAYED : 0), kCmdConfig,
+                L"打开配置");
+    if (actions_.toggle_pause) {
+        const bool paused = actions_.paused && actions_.paused();
+        AppendMenuW(menu, MF_STRING, kCmdPause,
+                    paused ? L"启动远程控制" : L"停止远程控制（本机不再被远控）");
+    }
     if (actions_.elevate) {
         AppendMenuW(menu, MF_STRING, kCmdElevate,
                     L"以管理员身份重启（控制提权窗口）");
@@ -160,7 +172,12 @@ void TrayIcon::ShowMenu() {
                     L"安装开机自启（管理员权限）");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kCmdQuit, L"退出");
+    if (actions_.hide_icon) {
+        AppendMenuW(menu, MF_STRING, kCmdHide, L"隐藏托盘图标");
+    }
+    if (actions_.quit) {
+        AppendMenuW(menu, MF_STRING, kCmdQuit, actions_.quit_text.c_str());
+    }
     POINT pt;
     GetCursorPos(&pt);
     int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x,
@@ -170,6 +187,12 @@ void TrayIcon::ShowMenu() {
     switch (cmd) {
         case kCmdConfig:
             if (actions_.open_config) actions_.open_config();
+            break;
+        case kCmdPause:
+            if (actions_.toggle_pause) actions_.toggle_pause();
+            break;
+        case kCmdHide:
+            if (actions_.hide_icon) actions_.hide_icon();
             break;
         case kCmdElevate:
             if (actions_.elevate) actions_.elevate();

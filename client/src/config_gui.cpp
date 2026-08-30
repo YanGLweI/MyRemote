@@ -33,6 +33,7 @@ enum : int {
     IDC_ED_KEY,
     IDC_ED_NAME,
     IDC_ED_PWD,
+    IDC_CB_TRAY,
     IDC_BTN_TEST,
     IDC_BTN_SAVE,
     IDC_BTN_CANCEL,
@@ -46,7 +47,7 @@ constexpr int kLabelH = 18;
 constexpr int kGap = 8;
 constexpr int kMargin = 14;
 constexpr int kClientW = kMargin * 2 + kFieldW;
-constexpr int kClientH = 422;
+constexpr int kClientH = 486;
 constexpr wchar_t kWndClass[] = L"MyRemoteConfigWnd";
 
 // Per-dialog state; lives as GWLP_USERDATA of the dialog window.
@@ -122,6 +123,17 @@ HWND make_button(DlgData* d, HWND parent, int id, const wchar_t* text, int x,
                  int y, int w, int height = 30) {
     HWND h = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                              x, y, d->px(w), d->px(height), parent,
+                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                             nullptr, nullptr);
+    SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(d->font), TRUE);
+    return h;
+}
+
+HWND make_checkbox(DlgData* d, HWND parent, int id, const wchar_t* text, int x,
+                   int y, int w) {
+    HWND h = CreateWindowExW(0, L"BUTTON", text,
+                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                             x, y, d->px(w), d->px(kFieldH), parent,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                              nullptr, nullptr);
     SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(d->font), TRUE);
@@ -337,6 +349,8 @@ void on_save(HWND hwnd) {
     cfg->secret_key = utf8(GetDlgItem(hwnd, IDC_ED_KEY));
     cfg->device_name = utf8(GetDlgItem(hwnd, IDC_ED_NAME));
     cfg->control_password = utf8(GetDlgItem(hwnd, IDC_ED_PWD));
+    cfg->tray_icon = SendDlgItemMessageW(hwnd, IDC_CB_TRAY, BM_GETCHECK, 0, 0) ==
+                     BST_CHECKED;
 
     config::ClientConfig disk;
     disk.server_ip = cfg->server_ip;
@@ -344,6 +358,7 @@ void on_save(HWND hwnd) {
     disk.secret_key = cfg->secret_key;
     disk.device_name = cfg->device_name;
     disk.control_password = cfg->control_password;
+    disk.tray_icon = cfg->tray_icon;
     disk.max_encode_width = cfg->max_encode_width;
     if (!config::ClientConfig::save(disk, cfg->config_path)) {
         set_status(hwnd, L"保存失败：无法写入 " + wide(cfg->config_path) +
@@ -409,6 +424,13 @@ void create_children(HWND hwnd, DlgData* d) {
     WNDPROC old = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         pwd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(pwd_edit_proc)));
     SetWindowLongPtrW(pwd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(old));
+    y += d->px(kFieldH) + d->px(kGap);
+
+    make_checkbox(d, hwnd, IDC_CB_TRAY,
+                  L"显示托盘图标（右下角，可暂停远程控制或退出）",
+                  d->px(kMargin), y, d->px(kFieldW));
+    SendMessageW(GetDlgItem(hwnd, IDC_CB_TRAY), BM_SETCHECK,
+                 (!cfg || cfg->tray_icon) ? BST_CHECKED : BST_UNCHECKED, 0);
     y += d->px(kFieldH) + d->px(kGap) + d->px(4);
 
     make_button(d, hwnd, IDC_BTN_TEST, L"测试连接并注册", d->px(kMargin), y,

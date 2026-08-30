@@ -14,6 +14,10 @@ struct ClientConfig {
     // Long edge of the encoded picture; wider desktops are downscaled to it
     // while input mapping keeps using the real desktop size. 0 = native.
     int max_encode_width = 1920;
+    // The person at the machine may hide the notification-area icon. It is a
+    // setting and not a one-off click: after a reboot the tray has to come back
+    // only if they want it to, and the config dialog is the way to say so.
+    bool tray_icon = true;
 
     static ClientConfig load(const std::string& path);
     static bool save(const ClientConfig& cfg, const std::string& path);

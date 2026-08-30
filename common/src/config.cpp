@@ -88,6 +88,28 @@ public:
         }
     }
 
+    bool get_bool(const std::string& key, bool& out) const {
+        size_t value_pos = 0;
+        if (!find_value(key, value_pos)) {
+            return false;
+        }
+        if (text_.compare(value_pos, 4, "true") == 0) {
+            out = true;
+            return true;
+        }
+        if (text_.compare(value_pos, 5, "false") == 0) {
+            out = false;
+            return true;
+        }
+        // People edit this file by hand; 1/0 is as good an answer as true/false.
+        int as_int = 0;
+        if (!get_int(key, as_int)) {
+            return false;
+        }
+        out = as_int != 0;
+        return true;
+    }
+
 private:
     bool find_value(const std::string& key, size_t& value_pos) const {
         std::string needle = "\"" + key + "\"";
@@ -135,6 +157,7 @@ ClientConfig ClientConfig::load(const std::string& path) {
     json.get_string("device_name", cfg.device_name);
     json.get_string("control_password", cfg.control_password);
     json.get_int("max_encode_width", cfg.max_encode_width);
+    json.get_bool("tray_icon", cfg.tray_icon);
     return cfg;
 }
 
@@ -150,7 +173,8 @@ bool ClientConfig::save(const ClientConfig& cfg, const std::string& path) {
          << "    \"device_name\": \"" << json_escape(cfg.device_name) << "\",\n"
          << "    \"control_password\": \"" << json_escape(cfg.control_password)
          << "\",\n"
-         << "    \"max_encode_width\": " << cfg.max_encode_width << "\n"
+         << "    \"max_encode_width\": " << cfg.max_encode_width << ",\n"
+         << "    \"tray_icon\": " << (cfg.tray_icon ? "true" : "false") << "\n"
          << "}\n";
     file.flush();
     return file.good();

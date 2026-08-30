@@ -24,6 +24,19 @@ public:
         // Only set while the agent runs with a filtered token.
         Callback elevate;
         Callback install_autostart;
+        // Drops or restores the tunnel without touching the process, the
+        // service or the start type: the icon has to survive it, because the
+        // same menu is the way back.
+        Callback toggle_pause;
+        Callback hide_icon;
+        // Asked while the menu is being built, so the item can read as an
+        // action rather than as a mode the user has to remember.
+        std::function<bool()> paused;
+        // On the secure desktop a window we create is invisible to whoever is
+        // typing at the machine, so opening the editor would only look broken.
+        std::function<bool()> config_pointless_now;
+        // Service mode stops the service too, and the label has to say so.
+        std::wstring quit_text = L"退出";
     };
 
     // Creates the tray window + icon on a dedicated message-loop thread.

@@ -26,6 +26,11 @@ bool stop(std::wstring* why);
 // True when the service is registered, whatever its state.
 bool is_installed();
 
+// True only while it actually reports RUNNING. "Installed" is not enough to
+// yield the machine: after the tray's 退出 the service is stopped, and the next
+// double-click has to start the client for real.
+bool is_running();
+
 // Human-readable status for `agent.exe --service-state`.
 std::string query();
 
