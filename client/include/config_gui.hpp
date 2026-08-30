@@ -3,6 +3,8 @@
 #include <functional>
 #include <string>
 
+#include "config.hpp"
+
 namespace gui {
 
 enum class SaveMode {
@@ -26,6 +28,10 @@ struct ConfigUi {
     int max_encode_width = 1920;
     std::string config_path;  // shown read-only; where Save writes to
     SaveMode save_mode = SaveMode::SaveOnly;
+    // When set, Save hands the finished config to this instead of writing the
+    // file itself: the tray proxy runs user-IL and asks the SYSTEM host to
+    // write on its behalf. Empty = write config_path directly, as always.
+    std::function<bool(const config::ClientConfig&)> save_via;
     bool saved = false;  // true when the user pressed Save
 };
 

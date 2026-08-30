@@ -77,6 +77,7 @@ if(BUILD_CLIENT)
         client/src/service.cpp
         client/src/config_gui.cpp
         client/src/tray_icon.cpp
+        client/src/tray_proxy.cpp
         client/resources/agent.rc
         "${CMAKE_BINARY_DIR}/generated/version_agent.rc"
         client/src/connection.cpp

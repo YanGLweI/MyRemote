@@ -33,6 +33,7 @@
 #include "messages.hpp"
 #include "service.hpp"
 #include "tray_icon.hpp"
+#include "tray_proxy.hpp"
 #include "video_encoder.hpp"
 
 namespace {
@@ -811,6 +812,7 @@ namespace {
 struct Args {
     bool console = false;
     bool config_ui = false;
+    bool tray_proxy = false;
     bool background = false;
     bool version = false;
     bool install_autostart = false;
@@ -873,6 +875,7 @@ Args parse_command_line() {
 
     args.console = has_flag("--console");
     args.config_ui = has_flag("--config-ui");
+    args.tray_proxy = has_flag("--tray-proxy");
     args.background = has_flag("--background");
     args.version = has_flag("--version");
     args.install_autostart = has_flag("--install-autostart");
@@ -1028,6 +1031,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     // Physical-pixel metrics everywhere (capture/encoder/screen size).
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    // M19 per-session tray process. It is not an agent instance: no elevation
+    // prompt, no single-instance mutex, no yielding to the service - it only
+    // draws the icon for its session and forwards menu actions to the host.
+    if (args.tray_proxy) {
+        return trayproxy::run(args.config_path);
+    }
 
     // Interactive launch: request admin up front, because a limited agent
     // cannot drive elevated windows remotely. --background must not prompt, or

@@ -360,7 +360,10 @@ void on_save(HWND hwnd) {
     disk.control_password = cfg->control_password;
     disk.tray_icon = cfg->tray_icon;
     disk.max_encode_width = cfg->max_encode_width;
-    if (!config::ClientConfig::save(disk, cfg->config_path)) {
+    const bool written =
+        cfg->save_via ? cfg->save_via(disk)
+                      : config::ClientConfig::save(disk, cfg->config_path);
+    if (!written) {
         set_status(hwnd, L"保存失败：无法写入 " + wide(cfg->config_path) +
                          L"（权限不足或被占用？）");
         return;
