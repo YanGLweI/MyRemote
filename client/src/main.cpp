@@ -259,21 +259,24 @@ DWORD hosted_agent_pid() {
 
 // The tray proxy (M19) shares this image path but must never be a takeover
 // target: the sweep below would otherwise kill the operator's tray on every
-// elevated double-click. Identify it by its command line.
+// elevated double-click. Identify it by its command line, and treat "could not
+// read it" as untouchable - the cost of sparing a rival agent is one retry,
+// the cost of killing a proxy is a painted icon that never answers again.
 #ifndef ProcessCommandLineInformation
 #define ProcessCommandLineInformation static_cast<PROCESSINFOCLASS>(60)
 #endif
-bool process_is_tray_proxy(DWORD pid) {
+enum class ProxyProbe { NotProxy, IsProxy, Unknown };
+ProxyProbe probe_tray_proxy(DWORD pid) {
     using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS,
                                                          PVOID, ULONG, PULONG);
     static auto* nt_query = reinterpret_cast<NtQueryInformationProcessFn>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess"));
     if (!nt_query) {
-        return false;
+        return ProxyProbe::Unknown;
     }
     HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!proc) {
-        return false;
+        return ProxyProbe::Unknown;
     }
     std::wstring cmd;
     ULONG need = 0;
@@ -285,14 +288,17 @@ bool process_is_tray_proxy(DWORD pid) {
         st = nt_query(proc, ProcessCommandLineInformation, buffer.data(), need,
                       &need);
     }
-    if (st >= 0) {
-        const auto* us = reinterpret_cast<const UNICODE_STRING*>(buffer.data());
-        if (us->Buffer && us->Length) {
-            cmd.assign(us->Buffer, us->Length / sizeof(wchar_t));
-        }
-    }
     CloseHandle(proc);
-    return cmd.find(L"--tray-proxy") != std::wstring::npos;
+    if (st < 0) {
+        return ProxyProbe::Unknown;
+    }
+    const auto* us = reinterpret_cast<const UNICODE_STRING*>(buffer.data());
+    if (!us->Buffer || !us->Length) {
+        return ProxyProbe::Unknown;
+    }
+    cmd.assign(us->Buffer, us->Length / sizeof(wchar_t));
+    return cmd.find(L"--tray-proxy") != std::wstring::npos ? ProxyProbe::IsProxy
+                                                           : ProxyProbe::NotProxy;
 }
 
 // Any second copy of this exact image in this session would fight for the
@@ -324,7 +330,13 @@ bool retire_same_path_instances(DWORD skip_pid = 0) {
             other_session != own_session) {
             continue;
         }
-        if (process_is_tray_proxy(entry.th32ProcessID)) {
+        // A tray proxy is a child of the host, so parentage alone settles it
+        // without reading anything out of the other process.
+        if (entry.th32ParentProcessID == GetCurrentProcessId() ||
+            (skip_pid && entry.th32ParentProcessID == skip_pid)) {
+            continue;
+        }
+        if (probe_tray_proxy(entry.th32ProcessID) != ProxyProbe::NotProxy) {
             continue;
         }
         HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
@@ -1117,7 +1129,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             if (!args.background) {
                 HWND h = nullptr;
                 for (int i = 0; i < 20 && !h; ++i) {
-                    h = FindWindowW(TrayIcon::kWndClass, nullptr);
+                    // The tray window is message-only, so FindWindowW's
+                    // top-level scan can never return it; the message-only
+                    // namespace has to be walked explicitly. This lands on the
+                    // session's own tray proxy, which opens the dialog as that
+                    // user - the one thing a SYSTEM host could not do.
+                    h = FindWindowExW(HWND_MESSAGE, nullptr,
+                                      TrayIcon::kWndClass, nullptr);
                     if (!h) Sleep(100);
                 }
                 if (h) {
@@ -1253,9 +1271,31 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         tray_actions.config_pointless_now = [] { return g_secure_desktop.load(); };
         tray_actions.hide_icon = [] { g_hide_tray.store(true); };
         tray_actions.quit = [] { g_state.running.store(false); };
-        tray_actions.install_autostart = request_autostart_install;
-        if (!g_elevated) {
-            tray_actions.elevate = relaunch_elevated;
+        // 装过服务之后，这两条要么没用（宿主本来就是 SYSTEM），要么有害
+        // （计划任务和服务抢同一个设备号）。它们只属于没有服务的形态。
+        if (!svc::is_installed()) {
+            tray_actions.install_autostart = request_autostart_install;
+            if (!g_elevated) {
+                tray_actions.elevate = relaunch_elevated;
+            }
+        } else if (!svc::is_running()) {
+            // 托盘里点了"退出"之后就是这个状态：服务在，只是停了，双击客户端
+            // 把它以前台方式跑了起来。回到受管形态的开关应该写在这里，而不是
+            // 让人去记一条命令行。
+            tray_actions.start_service = [] {
+                std::wstring why;
+                if (svc::start(&why)) {
+                    mlog::info("Service re-enabled from the tray");
+                    return;
+                }
+                const std::wstring text =
+                    L"无法启动 MyRemoteAgent 服务：" + why +
+                    L"\n\n启动服务需要管理员权限。";
+                mlog::warn("The tray could not start the service: " +
+                           win32util::wide_to_utf8(why.c_str()));
+                MessageBoxW(nullptr, text.c_str(), L"MyRemote",
+                            MB_OK | MB_ICONWARNING);
+            };
         }
         if (cfg.tray_icon) {
             show_tray();

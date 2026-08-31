@@ -28,6 +28,10 @@ public:
         // Only set while the agent runs with a filtered token.
         Callback elevate;
         Callback install_autostart;
+        // Offered instead of the two above when a service is installed but not
+        // running: the way back from the tray's 退出 is to re-enable the
+        // service, not to register a second autostart that competes with it.
+        Callback start_service;
         // Drops or restores the tunnel without touching the process, the
         // service or the start type: the icon has to survive it, because the
         // same menu is the way back.

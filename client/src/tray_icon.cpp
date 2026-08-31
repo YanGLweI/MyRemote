@@ -282,6 +282,7 @@ void TrayIcon::ShowMenu() {
     constexpr int kCmdQuit = 4;
     constexpr int kCmdPause = 5;
     constexpr int kCmdHide = 6;
+    constexpr int kCmdStartService = 7;
     // A window opened here would land on the Default desktop while the person
     // at the machine is looking at Winlogon: gray it rather than lie.
     const bool config_grayed =
@@ -302,6 +303,10 @@ void TrayIcon::ShowMenu() {
                     L"安装开机自启（管理员权限）");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (actions_.start_service) {
+        AppendMenuW(menu, MF_STRING, kCmdStartService,
+                    L"重新启用远程控制服务");
+    }
     if (actions_.hide_icon) {
         AppendMenuW(menu, MF_STRING, kCmdHide, L"隐藏托盘图标");
     }
@@ -327,6 +332,9 @@ void TrayIcon::ShowMenu() {
             break;
         case kCmdHide:
             action = actions_.hide_icon;
+            break;
+        case kCmdStartService:
+            action = actions_.start_service;
             break;
         case kCmdElevate:
             action = actions_.elevate;
