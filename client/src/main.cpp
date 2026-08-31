@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <shellapi.h>
 #include <tlhelp32.h>
 #include <wtsapi32.h>
 #include <winternl.h>
@@ -13,8 +14,10 @@
 #include <chrono>
 #include <cstdio>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -851,41 +854,46 @@ struct Args {
 
 Args parse_command_line() {
     Args args;
-    std::string cmd = GetCommandLineA();
-    // Boundary-aware: "--service" must not match "--service-state".
-    auto has_flag = [&cmd](const std::string& flag) {
-        size_t pos = 0;
-        while (true) {
-            pos = cmd.find(flag, pos);
-            if (pos == std::string::npos) {
-                return false;
-            }
-            size_t after = pos + flag.size();
-            if (after >= cmd.size() || cmd[after] == ' ' || cmd[after] == '\t' ||
-                cmd[after] == '=') {
-                return true;
-            }
-            pos = after;
+    // The shell's own parser, not a scan over GetCommandLineA(). The session
+    // host hands every tray proxy a quoted --config path (tray_proxies.cpp),
+    // and this scanner kept the quote marks as part of the value and cut the
+    // value at its first space - so on an installed machine the proxy tried to
+    // open a path that cannot exist, and the config fell back to defaults in
+    // silence. Wide tokens also drop the ACP round trip that mangled a
+    // non-ASCII path, which is decoded from UTF-8 downstream.
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) {
+        return args;
+    }
+    std::set<std::string> flags;
+    std::map<std::string, std::string> values;
+    for (int i = 1; i < argc; ++i) {
+        const std::string tok = win32util::wide_to_utf8(argv[i]);
+        if (tok.rfind("--", 0) != 0) {
+            continue;  // somebody else's value, or something we never ask about
         }
+        const size_t eq = tok.find('=');
+        if (eq != std::string::npos) {
+            values[tok.substr(0, eq)] = tok.substr(eq + 1);
+            continue;
+        }
+        flags.insert(tok);
+        if ((tok == "--ip" || tok == "--port" || tok == "--config") &&
+            i + 1 < argc) {
+            values[tok] = win32util::wide_to_utf8(argv[++i]);
+        }
+    }
+    LocalFree(argv);
+
+    // Exact token: --service can no longer be matched by --service-state, and
+    // --config can no longer be matched by --config-ui, with no boundary scan.
+    auto has_flag = [&flags](const std::string& flag) {
+        return flags.count(flag) != 0;
     };
-    auto get_value = [&cmd](const std::string& flag) -> std::string {
-        size_t pos = 0;
-        while (true) {
-            pos = cmd.find(flag, pos);
-            if (pos == std::string::npos) return {};
-            size_t after = pos + flag.size();
-            if (after >= cmd.size() || cmd[after] == ' ' || cmd[after] == '\t' ||
-                cmd[after] == '=') {
-                break;
-            }
-            pos = after;  // e.g. "--config-ui" must not match "--config"
-        }
-        size_t vpos = pos + flag.size();
-        vpos = cmd.find_first_not_of(" \t=", vpos);
-        if (vpos == std::string::npos) return {};
-        size_t end = cmd.find_first_of(" \t", vpos);
-        return cmd.substr(vpos, end == std::string::npos ? std::string::npos
-                                                          : end - vpos);
+    auto get_value = [&values](const std::string& flag) -> std::string {
+        const auto it = values.find(flag);
+        return it == values.end() ? std::string() : it->second;
     };
 
     args.console = has_flag("--console");
@@ -1159,7 +1167,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     mlog::init(g_log_dir + "\\" + "agent.log");
     SetUnhandledExceptionFilter(crash_filter);
     mlog::info("MyRemote agent starting");
-    mlog::info("Config file: " + g_config_path);
+    mlog::info("Config file: " + g_config_path +
+               (paths.config_present ? " (found)" : " (missing)"));
     if (g_session_host) {
         mlog::info("Session host started by the MyRemoteAgent service "
                    "(no tray, no dialogs, follows the input desktop)");

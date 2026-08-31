@@ -133,6 +133,15 @@ std::wstring program_data_dir() {
     return std::wstring(root, n) + L"\\" + kAppFolder;
 }
 
+namespace {
+
+bool file_exists(const std::string& utf8_path) {
+    return GetFileAttributesW(utf8_to_wide(utf8_path).c_str()) !=
+           INVALID_FILE_ATTRIBUTES;
+}
+
+}  // namespace
+
 AgentPaths resolve_paths(const std::string& cli_override) {
     AgentPaths paths;
     if (!cli_override.empty()) {
@@ -142,6 +151,10 @@ AgentPaths resolve_paths(const std::string& cli_override) {
         paths.log_dir = pos == std::wstring::npos
                             ? "."
                             : wide_to_utf8(wide.substr(0, pos).c_str());
+        // Still used even when it is not there - first run and "the installer
+        // wrote nothing" both look like this. What the caller gains is the
+        // ability to say so out loud instead of running on silent defaults.
+        paths.config_present = file_exists(paths.config);
         return paths;
     }
 
@@ -151,6 +164,7 @@ AgentPaths resolve_paths(const std::string& cli_override) {
         if (GetFileAttributesW(shared_config.c_str()) != INVALID_FILE_ATTRIBUTES) {
             paths.config = wide_to_utf8(shared_config.c_str());
             paths.log_dir = wide_to_utf8(shared.c_str());
+            paths.config_present = true;
             return paths;
         }
     }
@@ -161,12 +175,14 @@ AgentPaths resolve_paths(const std::string& cli_override) {
     if (GetFileAttributesW(utf8_to_wide(local).c_str()) != INVALID_FILE_ATTRIBUTES) {
         paths.config = local;
         paths.log_dir = dir;
+        paths.config_present = true;
         return paths;
     }
     if (!shared.empty()) {
         CreateDirectoryW(shared.c_str(), nullptr);
         paths.config = wide_to_utf8((shared + L"\\config.json").c_str());
         paths.log_dir = wide_to_utf8(shared.c_str());
+        paths.config_present = file_exists(paths.config);
         return paths;
     }
     paths.config = local;

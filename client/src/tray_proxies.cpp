@@ -264,7 +264,10 @@ bool launch_proxy(DWORD session) {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.lpDesktop = const_cast<LPWSTR>(L"Winsta0\\Default");
-    std::wstring cmd = g_exe + L" --tray-proxy --no-elevate";
+    // Quoted image path: lpApplicationName is null, so CreateProcess would
+    // otherwise cut the command line at the first space of a path like
+    // C:\Program Files\... and never find the exe at all.
+    std::wstring cmd = L"\"" + g_exe + L"\" --tray-proxy --no-elevate";
     if (!g_child_config.empty()) {
         cmd += L" --config \"" + utf16(g_child_config) + L"\"";
     }

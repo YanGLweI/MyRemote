@@ -153,6 +153,15 @@ void init_proxy_log() {
 
 int run(const std::string& config_override) {
     init_proxy_log();
+    // Before the pipe: a proxy that never reached its host still has to say
+    // which config it was handed. This process used to say nothing at all, so
+    // "the dialog showed 127.0.0.1" left no trace to diagnose from.
+    const win32util::AgentPaths paths =
+        win32util::resolve_paths(config_override);
+    g_config_path = paths.config;
+    mlog::info("Tray proxy config: " + g_config_path +
+               (paths.config_present ? " (found)" : " (missing)"));
+
     HANDLE pipe = connect_to_host();
     if (pipe == INVALID_HANDLE_VALUE) {
         mlog::warn("Tray proxy: no host pipe; giving up and exiting");
@@ -162,8 +171,6 @@ int run(const std::string& config_override) {
     DWORD mode = PIPE_READMODE_BYTE;
     SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
     mlog::info("Tray proxy: connected to the session host");
-
-    g_config_path = win32util::resolve_paths(config_override).config;
 
     TrayIcon tray;
     TrayIcon::Actions actions;

@@ -37,6 +37,11 @@ std::wstring program_data_dir();
 struct AgentPaths {
     std::string config;   // config.json to load
     std::string log_dir;  // where agent.log / service.log / host.status go
+    // Whether that file is actually there. A --config path is used as given
+    // whether or not it exists (first run looks like that), so this is the only
+    // way a caller can tell "not configured yet" apart from "configured, but I
+    // cannot read it" - which used to silently become an all-defaults config.
+    bool config_present = false;
 };
 
 // --config wins; then %ProgramData%\MyRemote once it exists; then the exe
