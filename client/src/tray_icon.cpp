@@ -97,10 +97,12 @@ void TrayIcon::Run(HANDLE ready_event) {
     wc.lpszClassName = kWndClass;
     RegisterClassExW(&wc);  // idempotent: already-registered is fine
 
-    // A hidden top-level tool window, not a message-only one. A message-only
-    // window is invisible to every process but the one that made it (so a second
-    // agent could never post to it) and is left out of broadcasts (so
-    // TaskbarCreated would never arrive). Never shown.
+    // A hidden top-level tool window, not a message-only one. Message-only
+    // windows are skipped by EnumWindows and by system broadcasts, so the
+    // TaskbarCreated retry would never arrive, and a class-only FindWindowW
+    // misses them too (only an exact class+title match reaches them, which is
+    // how the old wake path failed to find this window). Top-level fixes all
+    // three. Never shown.
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kWndClass, kWndTitle,
                                 WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, hinst,
                                 this);

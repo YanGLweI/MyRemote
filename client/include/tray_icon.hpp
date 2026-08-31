@@ -12,10 +12,11 @@
 #include <thread>
 
 // Notification-area icon backed by a hidden top-level tool window. It is never
-// shown and carries WS_EX_TOOLWINDOW so it stays out of the taskbar and alt-tab,
-// but being top-level is what lets a second agent in the same session find it by
-// class + title and post WM_SHOW_CONFIG to raise the configuration dialog - and
-// what lets the TaskbarCreated broadcast reach it when explorer restarts.
+// shown and carries WS_EX_TOOLWINDOW so it stays out of the taskbar and alt-tab.
+// Top-level is what makes it enumerable and findable by a second agent in the
+// same session (which posts WM_SHOW_CONFIG to raise the configuration dialog)
+// and what lets the TaskbarCreated broadcast reach it when explorer restarts -
+// a message-only window, the form this window used to have, is skipped by both.
 class TrayIcon {
 public:
     static constexpr UINT WM_SHOW_CONFIG = WM_APP + 1;  // cross-process trigger
