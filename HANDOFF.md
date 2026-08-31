@@ -9,10 +9,10 @@
 | 事项 | 状态 |
 | --- | --- |
 | GitHub Release | **v1.0.4 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4，五个资产：Server/Agent × setup/zip + `SHA256SUMS.txt`）。1.0.1/1.0.2/1.0.3 从未单独发版，内容全并进了 1.0.4 |
-| 代码 | main 已推到 **`dbc3954`**（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 本文件所在这笔文档刷新），tag **v1.0.4** 打在 `dbc3954` 上 |
+| 代码 | tag **v1.0.4** 打在 `dbc3954`（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 一笔文档刷新）；main 之后又走了 `08a03af`（TEST-WIN 现场判账，**只动文档**，代码与 1.0.4 一致） |
 | 交付物 | `D:\IT-share\MyRemote-v1.0.4\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.3 那份仍在原地做参照 |
 | 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.4**，`stage.ps1` 出包时断言过（含两个 exe 的 ProductVersion 与图标数） |
-| 用户侧 | **两台都在 1.0.4**（YEUNG：`agent.exe`/`control_server.exe` FileVersion 实测 1.0.4，服务 Running/Automatic；TEST-WIN：`agent.exe` 1.0.4，只有被控端）。TEST-WIN 三条症状现在**都有日志与转录背书**（见第 3 节），不再是"口头确认"；M20 那七条现场账也在同一台机器上逐条判过：**四条 PASS、一条半 PASS、两条刻意没跑**，而那两条没跑的里有一条已经由读代码判出真因（见"已确认待修"） |
+| 用户侧 | **两台都在 1.0.4**（YEUNG：`agent.exe`/`control_server.exe` FileVersion 实测 1.0.4，服务 Running/Automatic；TEST-WIN：`agent.exe` 1.0.4，只有被控端）。TEST-WIN 三条症状现在**都有日志与转录背书**（见第 3 节），不再是"口头确认"；M20 那七条现场账也在同一台机器上逐条判过：**五条判完（⑦ 带一个盲区）、两条刻意没跑**，而那两条没跑的里有一条已经由读代码判出真因（见"已确认待修"） |
 
 ## 2. M21 是什么问题、怎么修的
 
