@@ -34,6 +34,10 @@ struct HostState {
 HANDLE g_pipe = INVALID_HANDLE_VALUE;
 std::mutex g_write_mu;
 std::atomic<bool> g_dialog_open{false};
+// Set when the host's state says the icon should not exist any more, so the
+// read loop can take itself down instead of being killed from outside.
+std::atomic<bool> g_leave{false};
+constexpr DWORD kSilenceMs = 15000;
 
 bool send_line(const std::string& line) {
     std::lock_guard<std::mutex> lock(g_write_mu);
@@ -88,6 +92,12 @@ void apply_state(TrayIcon& tray, const std::string& line) {
     };
     g_state.paused.store(field("paused=") == "1");
     g_state.registered.store(field("registered=") == "1");
+    // "tray_icon=0" is the host saying this icon should not exist. Doing it
+    // here is what lets the host stop killing proxies, which is how ghost
+    // icons got painted in the first place.
+    if (field("tray_icon=") == "0") {
+        g_leave.store(true);
+    }
     const std::string server = field("server=");
     const size_t np = line.find("name=");
     const std::string name =
@@ -200,28 +210,62 @@ int run(const std::string& config_override) {
         mlog::warn("Tray proxy: icon unavailable in this session");
     }
 
-    // This thread becomes the pipe reader; the tray pumps on its own thread.
+    // Poll rather than block in ReadFile: this loop also has to notice a host
+    // that stopped talking. A replaced or wedged host keeps its pipe instance
+    // open, so a blocking read would sit behind a painted icon forever - the
+    // exact state this milestone exists to end.
     std::string buf;
-    char chunk[512];
-    DWORD n = 0;
-    bool bye = false;
-    while (!bye && ReadFile(pipe, chunk, sizeof(chunk), &n, nullptr) && n) {
-        buf.append(chunk, n);
-        size_t pos;
-        while ((pos = buf.find('\n')) != std::string::npos) {
-            const std::string line = buf.substr(0, pos);
-            buf.erase(0, pos + 1);
-            if (line == "bye") {
-                bye = true;
+    DWORD last_rx = GetTickCount();
+    const char* reason = "host pipe closed";
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &avail, nullptr)) {
+            break;
+        }
+        if (avail) {
+            char chunk[1024];
+            DWORD n = 0;
+            if (!ReadFile(pipe, chunk, sizeof(chunk) - 1, &n, nullptr) || !n) {
                 break;
             }
-            if (line.rfind("state ", 0) == 0) {
-                apply_state(tray, line);
+            buf.append(chunk, n);
+            last_rx = GetTickCount();
+            bool leave = false;
+            size_t pos;
+            while ((pos = buf.find('\n')) != std::string::npos) {
+                const std::string line = buf.substr(0, pos);
+                buf.erase(0, pos + 1);
+                if (line == "bye" || line == "die") {
+                    reason = line == "bye" ? "host said bye" : "host retired this icon";
+                    leave = true;
+                    break;
+                }
+                if (line == "ping") {
+                    // liveness() only advances inside the pump's message loop,
+                    // so this is the host's proof that the tray can still answer.
+                    send_line("pong tray=" + std::to_string(tray.liveness()));
+                    continue;
+                }
+                if (line.rfind("state ", 0) == 0) {
+                    apply_state(tray, line);
+                }
+            }
+            if (leave) {
+                break;
             }
         }
+        if (g_leave.load()) {
+            reason = "the host hid the icon";
+            break;
+        }
+        if (static_cast<int32_t>(GetTickCount() - last_rx) > kSilenceMs) {
+            reason = "the host stopped talking";
+            mlog::warn("Tray proxy: nothing from the host for 15s; exiting so a live host can respawn us");
+            break;
+        }
+        Sleep(150);
     }
-    mlog::info(bye ? "Tray proxy: host said bye; exiting"
-                   : "Tray proxy: host pipe closed; exiting");
+    mlog::info(std::string("Tray proxy: ") + reason + "; exiting");
     CloseHandle(pipe);
     g_pipe = INVALID_HANDLE_VALUE;
     tray.stop();

@@ -5,6 +5,14 @@
 // has a person in it - console and RDP alike - using that session's user
 // token, so the icon is drawn by the logged-in user rather than by SYSTEM.
 // Every menu action comes back over the tray pipe and is applied here.
+//
+// Two rules run through this file, and M20 exists because they were broken:
+//  - nothing on the host's own threads may block waiting for a proxy, because
+//    the supervisor is the thing that repairs a bad proxy;
+//  - a proxy is asked to leave (bye / die / cut the pipe) and only as a last
+//    resort killed, because Shell_NotifyIconW(NIM_DELETE) can only be done by
+//    the process that added the icon - killing one leaves a painted icon that
+//    answers nothing, which reads as a working tray.
 
 #include "tray_proxies.hpp"
 
@@ -14,11 +22,14 @@
 #include <wtsapi32.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "desktop.hpp"
@@ -28,21 +39,33 @@
 namespace trayproxies {
 namespace {
 
+constexpr int kQueueLimit = 32;           // lines, per proxy
+constexpr DWORD kPingEveryMs = 2000;
+constexpr DWORD kPongTimeoutMs = 8000;    // no pong at all -> cut the pipe
+constexpr int kStalePongs = 3;            // pongs, but the pump is not moving
+constexpr DWORD kExitGraceMs = 3000;
+constexpr DWORD kAfterCutGraceMs = 2000;
+
 struct Client {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     DWORD session = 0;
-    std::thread reader;
     std::atomic<bool> alive{true};
-};
-
-struct ProxySlot {
-    HANDLE process = nullptr;
-    DWORD inactive_since = 0;  // 0 = session was active last look
+    std::atomic<bool> shutting_down{false};
+    std::thread reader;
+    std::thread writer;
+    std::mutex qmu;
+    std::condition_variable qcv;
+    std::deque<std::string> queue;
+    std::atomic<DWORD> since{0};             // when we accepted it
+    std::atomic<DWORD> last_pong_tick{0};
+    std::atomic<unsigned long long> last_pong_liveness{0};
+    std::atomic<int> stale_pongs{0};
 };
 
 std::mutex g_mu;
 std::vector<Client*> g_clients;
-std::map<DWORD, ProxySlot> g_proxies;
+std::map<DWORD, HANDLE> g_proxies;   // session -> process handle
+std::map<DWORD, DWORD> g_retiring;   // session -> tick we first asked it to leave
 std::thread g_acceptor;
 std::thread g_supervisor;
 HANDLE g_stop_event = nullptr;
@@ -50,12 +73,12 @@ CommandSink g_sink;
 std::wstring g_exe;
 std::string g_child_config;
 
-std::string g_last_state_line;
 bool g_tray_enabled = true;
 std::string g_state_server;
 std::string g_state_name;
 std::atomic<bool> g_state_paused{false};
 std::atomic<bool> g_state_registered{false};
+DWORD g_last_ping_tick = 0;
 
 std::wstring utf16(const std::string& s) { return win32util::utf8_to_wide(s); }
 
@@ -67,20 +90,113 @@ std::string state_line() {
            " server=" + g_state_server + " name=" + g_state_name;
 }
 
-void write_line(HANDLE pipe, const std::string& line) {
-    const std::string out = line + "\n";
-    DWORD written = 0;
-    WriteFile(pipe, out.data(), static_cast<DWORD>(out.size()), &written,
-              nullptr);
+// Never called with g_mu held: a proxy that stopped draining must be able to
+// hold up nothing but its own queue.
+void queue_line(Client* c, const std::string& line) {
+    if (!c->alive.load()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(c->qmu);
+        if (c->queue.size() >= kQueueLimit) {
+            // It cannot drain faster than we talk to it. Drop the client rather
+            // than grow without bound; the supervisor will cut and respawn it.
+            c->alive.store(false);
+            return;
+        }
+        c->queue.push_back(line);
+    }
+    c->qcv.notify_one();
 }
 
-void send_state_to_all(const std::string& line) {
-    std::lock_guard<std::mutex> lock(g_mu);
-    for (Client* c : g_clients) {
-        if (c->alive.load()) {
-            write_line(c->pipe, line);
+bool raw_write(HANDLE pipe, const std::string& line) {
+    const std::string out = line + "\n";
+    DWORD written = 0;
+    return WriteFile(pipe, out.data(), static_cast<DWORD>(out.size()), &written,
+                     nullptr) != FALSE;
+}
+
+void writer_loop(Client* c) {
+    for (;;) {
+        std::string line;
+        {
+            std::unique_lock<std::mutex> lock(c->qmu);
+            c->qcv.wait(lock, [&] {
+                return c->shutting_down.load() || !c->queue.empty();
+            });
+            if (c->queue.empty()) {
+                if (c->shutting_down.load()) {
+                    return;
+                }
+                continue;
+            }
+            line = std::move(c->queue.front());
+            c->queue.pop_front();
+        }
+        if (!raw_write(c->pipe, line)) {
+            c->alive.store(false);
+            return;
         }
     }
+}
+
+void dispatch(Client* self, const std::string& line) {
+    if (line == "pause") {
+        if (g_sink.pause) g_sink.pause();
+    } else if (line == "resume") {
+        if (g_sink.resume) g_sink.resume();
+    } else if (line == "hide") {
+        if (g_sink.hide) g_sink.hide();
+    } else if (line == "quit") {
+        if (g_sink.quit) g_sink.quit();
+    } else if (line.rfind("pong tray=", 0) == 0) {
+        // Proof that the proxy's tray message loop is still turning: the number
+        // is a counter only that loop can advance.
+        const unsigned long long ticks =
+            _strtoui64(line.c_str() + strlen("pong tray="), nullptr, 10);
+        self->last_pong_tick.store(GetTickCount());
+        if (self->last_pong_liveness.exchange(ticks) == ticks) {
+            self->stale_pongs.fetch_add(1);
+        } else {
+            self->stale_pongs.store(0);
+        }
+    } else if (line.rfind("save_config ", 0) == 0) {
+        if (g_sink.save_config) {
+            g_sink.save_config(line.substr(strlen("save_config ")));
+        }
+    } else {
+        mlog::warn("Tray proxies: unknown command from session " +
+                   std::to_string(self->session) + ": " + line);
+    }
+}
+
+void reader_loop(Client* c) {
+    std::string buf;
+    char chunk[512];
+    while (!c->shutting_down.load()) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(c->pipe, nullptr, 0, nullptr, &avail, nullptr)) {
+            break;  // the proxy exited or the pipe broke
+        }
+        if (!avail) {
+            Sleep(150);
+            continue;
+        }
+        DWORD n = 0;
+        if (!ReadFile(c->pipe, chunk, sizeof(chunk), &n, nullptr) || !n) {
+            break;
+        }
+        buf.append(chunk, n);
+        size_t pos;
+        while ((pos = buf.find('\n')) != std::string::npos) {
+            const std::string line = buf.substr(0, pos);
+            buf.erase(0, pos + 1);
+            if (!line.empty()) {
+                dispatch(c, line);
+            }
+        }
+    }
+    c->alive.store(false);
 }
 
 HANDLE make_pipe_instance() {
@@ -104,43 +220,6 @@ HANDLE make_pipe_instance() {
     return h;
 }
 
-void dispatch(Client* self, const std::string& line) {
-    if (line == "pause") {
-        if (g_sink.pause) g_sink.pause();
-    } else if (line == "resume") {
-        if (g_sink.resume) g_sink.resume();
-    } else if (line == "hide") {
-        if (g_sink.hide) g_sink.hide();
-    } else if (line == "quit") {
-        if (g_sink.quit) g_sink.quit();
-    } else if (line.rfind("save_config ", 0) == 0) {
-        if (g_sink.save_config) {
-            g_sink.save_config(line.substr(strlen("save_config ")));
-        }
-    } else {
-        mlog::warn("Tray proxies: unknown command from session " +
-                   std::to_string(self->session) + ": " + line);
-    }
-}
-
-void client_reader(Client* self) {
-    std::string buf;
-    char chunk[512];
-    DWORD n = 0;
-    while (ReadFile(self->pipe, chunk, sizeof(chunk), &n, nullptr) && n) {
-        buf.append(chunk, n);
-        size_t pos;
-        while ((pos = buf.find('\n')) != std::string::npos) {
-            const std::string line = buf.substr(0, pos);
-            buf.erase(0, pos + 1);
-            if (!line.empty()) {
-                dispatch(self, line);
-            }
-        }
-    }
-    self->alive.store(false);
-}
-
 void acceptor_loop() {
     while (WaitForSingleObject(g_stop_event, 0) != WAIT_OBJECT_0) {
         HANDLE h = make_pipe_instance();
@@ -162,12 +241,16 @@ void acceptor_loop() {
         DWORD pid = 0;
         GetNamedPipeClientProcessId(h, &pid);
         ProcessIdToSessionId(pid, &c->session);
-        c->reader = std::thread(client_reader, c);
+        const DWORD now = GetTickCount();
+        c->since.store(now);
+        c->last_pong_tick.store(now);
+        c->reader = std::thread(reader_loop, c);
+        c->writer = std::thread(writer_loop, c);
         {
             std::lock_guard<std::mutex> lock(g_mu);
             g_clients.push_back(c);
         }
-        write_line(h, state_line());  // hello: bring the new proxy up to date
+        queue_line(c, state_line());  // hello: bring the new proxy up to date
     }
 }
 
@@ -197,35 +280,101 @@ bool launch_proxy(DWORD session) {
         return false;
     }
     CloseHandle(pi.hThread);
-    ProxySlot slot;
-    slot.process = pi.hProcess;
-    g_proxies[session] = slot;
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_proxies[session] = pi.hProcess;
     mlog::info("Tray proxies: spawned a proxy in session " +
                std::to_string(session));
     return true;
+}
+
+void close_client(Client* c) {
+    c->shutting_down.store(true);
+    c->qcv.notify_all();
+    if (c->reader.joinable()) {
+        c->reader.join();
+    }
+    if (c->writer.joinable()) {
+        c->writer.join();
+    }
+    CloseHandle(c->pipe);
+    c->pipe = INVALID_HANDLE_VALUE;
+    delete c;
+}
+
+// Cut the pipe instead of killing the process: the proxy's own read loop turns
+// the broken pipe into a clean exit, and a clean exit is the only moment it can
+// delete its icon.
+void cut_pipe(Client* c, const char* why) {
+    mlog::info(std::string("Tray proxies: cutting the pipe to session ") +
+               std::to_string(c->session) + " (" + why + ")");
+    c->shutting_down.store(true);
+    c->qcv.notify_all();
+    DisconnectNamedPipe(c->pipe);
+}
+
+// Ask the proxy to leave, give it time to do so, and only then escalate. The
+// escalation is logged because it is the one path that can leave a ghost icon.
+void retire_proxy(DWORD session, HANDLE process, const char* why) {
+    if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
+        mlog::info(std::string("Tray proxies: retiring the proxy in session ") +
+                   std::to_string(session) + " (" + why + ")");
+    }
+    if (WaitForSingleObject(process, kExitGraceMs) == WAIT_TIMEOUT) {
+        TerminateProcess(process, 0);
+        WaitForSingleObject(process, 1000);
+        mlog::error("Tray proxies: session " + std::to_string(session) +
+                    " proxy had to be killed; it may have left a ghost icon");
+    }
+    CloseHandle(process);
 }
 
 void supervisor_loop() {
     while (WaitForSingleObject(g_stop_event, 1000) != WAIT_OBJECT_0) {
         const DWORD now = GetTickCount();
 
-        // Reap clients whose pipe closed (proxy exited).
+        // Ping every proxy so a proxy whose pump stopped turning is visible.
         {
             std::lock_guard<std::mutex> lock(g_mu);
-            for (size_t i = g_clients.size(); i-- > 0;) {
-                Client* c = g_clients[i];
-                if (!c->alive.load()) {
-                    if (c->reader.joinable()) {
-                        c->reader.join();
-                    }
-                    CloseHandle(c->pipe);
-                    g_clients.erase(g_clients.begin() + i);
-                    delete c;
+            if (static_cast<int32_t>(now - g_last_ping_tick) >= (int)kPingEveryMs) {
+                g_last_ping_tick = now;
+                for (Client* c : g_clients) {
+                    queue_line(c, "ping");
                 }
             }
         }
 
-        std::lock_guard<std::mutex> lock(g_mu);
+        // Reap clients whose pipe closed, and ones that stopped answering.
+        std::vector<Client*> dead;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            for (size_t i = g_clients.size(); i-- > 0;) {
+                Client* c = g_clients[i];
+                const bool silent =
+                    static_cast<int32_t>(now - c->last_pong_tick.load()) >
+                    (int)kPongTimeoutMs;
+                const bool stuck_pump =
+                    c->stale_pongs.load() >= kStalePongs;
+                if (!c->alive.load() || silent || stuck_pump) {
+                    if (c->alive.load() && !c->shutting_down.load()) {
+                        cut_pipe(c, silent ? "no pong" : "tray pump not turning");
+                    }
+                    if (!c->alive.load()) {
+                        dead.push_back(c);
+                        g_clients.erase(g_clients.begin() + i);
+                    }
+                }
+            }
+        }
+        for (Client* c : dead) {
+            close_client(c);
+        }
+
+        std::vector<DWORD> to_spawn;
+        bool tray_enabled;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            tray_enabled = g_tray_enabled;
+        }
         const auto sessions = win32util::list_sessions();
         auto is_active = [&](DWORD id) {
             for (const auto& s : sessions) {
@@ -237,45 +386,70 @@ void supervisor_loop() {
         };
 
         // One proxy per active session that has a user, while the icon is on.
-        if (g_tray_enabled) {
+        // Spawning happens outside the lock: CreateProcessAsUserW is slow and
+        // the broadcast path must not wait on it.
+        if (tray_enabled) {
             for (const auto& s : sessions) {
                 if (s.id == 0 || !s.active || s.user.empty()) {
                     continue;
                 }
-                const auto it = g_proxies.find(s.id);
-                const bool alive = it != g_proxies.end() &&
-                                   WaitForSingleObject(it->second.process, 0) ==
-                                       WAIT_TIMEOUT;
+                bool alive = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_mu);
+                    const auto it = g_proxies.find(s.id);
+                    alive = it != g_proxies.end() &&
+                            WaitForSingleObject(it->second, 0) == WAIT_TIMEOUT;
+                }
                 if (!alive) {
-                    if (it != g_proxies.end()) {
-                        CloseHandle(it->second.process);
-                        g_proxies.erase(it);
-                    }
-                    launch_proxy(s.id);
+                    to_spawn.push_back(s.id);
                 }
             }
         }
+        for (DWORD id : to_spawn) {
+            launch_proxy(id);
+        }
 
-        // Retire proxies whose session went away or whose icon was hidden.
-        for (auto it = g_proxies.begin(); it != g_proxies.end();) {
-            const DWORD id = it->first;
-            const bool gone = !g_tray_enabled || !is_active(id);
-            if (gone) {
-                if (it->second.inactive_since == 0) {
-                    it->second.inactive_since = now;
-                } else if (static_cast<int32_t>(now - it->second.inactive_since) >
-                           2000) {
-                    TerminateProcess(it->second.process, 0);
-                    CloseHandle(it->second.process);
-                    mlog::info("Tray proxies: retired the proxy in session " +
-                               std::to_string(id));
+        // Retire proxies whose session went away or whose icon was hidden. The
+        // first pass tells the proxy to leave and cuts its pipe, which is how it
+        // gets the chance to delete its own icon; the kill is the last resort.
+        std::vector<std::pair<DWORD, HANDLE>> to_retire;
+        std::vector<Client*> to_cut;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            for (auto it = g_proxies.begin(); it != g_proxies.end();) {
+                const DWORD id = it->first;
+                const bool gone = !tray_enabled || !is_active(id);
+                if (!gone) {
+                    g_retiring.erase(id);
+                    ++it;
+                    continue;
+                }
+                const auto first = g_retiring.find(id);
+                if (first == g_retiring.end()) {
+                    g_retiring[id] = now;
+                    for (Client* c : g_clients) {
+                        if (c->session == id) {
+                            to_cut.push_back(c);
+                        }
+                    }
+                    ++it;
+                    continue;
+                }
+                if (static_cast<int32_t>(now - first->second) >
+                    (int)kAfterCutGraceMs) {
+                    to_retire.push_back({id, it->second});
+                    g_retiring.erase(id);
                     it = g_proxies.erase(it);
                     continue;
                 }
-            } else {
-                it->second.inactive_since = 0;
+                ++it;
             }
-            ++it;
+        }
+        for (Client* c : to_cut) {
+            cut_pipe(c, "session left or icon hidden");
+        }
+        for (const auto& p : to_retire) {
+            retire_proxy(p.first, p.second, "session left or icon hidden");
         }
     }
 }
@@ -305,13 +479,18 @@ void stop() {
     if (wake != INVALID_HANDLE_VALUE) {
         CloseHandle(wake);
     }
+    std::vector<Client*> clients;
+    std::map<DWORD, HANDLE> proxies;
     {
         std::lock_guard<std::mutex> lock(g_mu);
-        for (Client* c : g_clients) {
-            if (c->alive.load()) {
-                write_line(c->pipe, "bye");
-            }
-        }
+        clients = g_clients;
+        g_clients.clear();
+        proxies = g_proxies;
+        g_proxies.clear();
+        g_retiring.clear();
+    }
+    for (Client* c : clients) {
+        queue_line(c, "bye");
     }
     if (g_acceptor.joinable()) {
         g_acceptor.join();
@@ -319,20 +498,17 @@ void stop() {
     if (g_supervisor.joinable()) {
         g_supervisor.join();
     }
-    std::lock_guard<std::mutex> lock(g_mu);
-    for (auto& kv : g_proxies) {
-        TerminateProcess(kv.second.process, 0);
-        CloseHandle(kv.second.process);
+    // Every proxy that is still up has been told to go away; give each one the
+    // grace, then cut, then - only if it still will not - kill it.
+    for (Client* c : clients) {
+        cut_pipe(c, "host shutting down");
     }
-    g_proxies.clear();
-    for (Client* c : g_clients) {
-        if (c->reader.joinable()) {
-            c->reader.join();
-        }
-        CloseHandle(c->pipe);
-        delete c;
+    for (const auto& kv : proxies) {
+        retire_proxy(kv.first, kv.second, "host shutting down");
     }
-    g_clients.clear();
+    for (Client* c : clients) {
+        close_client(c);
+    }
     CloseHandle(g_stop_event);
     g_stop_event = nullptr;
 }
@@ -349,9 +525,17 @@ void broadcast_state(bool paused, bool registered, bool tray_icon,
     }
     const std::string line = state_line();
     static std::string last_sent;
-    if (line != last_sent) {
-        last_sent = line;
-        send_state_to_all(line);
+    if (line == last_sent) {
+        return;
+    }
+    last_sent = line;
+    std::vector<Client*> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        snapshot = g_clients;
+    }
+    for (Client* c : snapshot) {
+        queue_line(c, line);
     }
 }
 
