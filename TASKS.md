@@ -69,7 +69,9 @@
   - M19-1 `9d81b01` 托盘地基：`tray_icon.cpp` 注册 `TaskbarCreated` 广播并在 NIM_ADD 失败时 1s 重试，修掉重启/explorer 崩溃后图标不重现；`retire_same_path_instances` 读对方命令行、跳过 `--tray-proxy`（代理与 agent 同映像，否则提权双击的清扫会杀掉操作者的托盘）；假话文案改指向开始菜单"配置界面"。
   - M19-2 `81905f9` 代理骨架：`--tray-proxy` 新 CLI 模式，在自动提权/单实例互斥/服务让位**之前**短路（它不是 agent 实例）；图标画在自己会话，菜单动作经命名管道回宿主；管道断=宿主没了→删图标退出；无宿主时短重试后 exit 1（负向路径已验：`proxy-exit=1`、日志不撒谎）。配置窗加 `save_via` 钩子，代理把 Save 交给宿主写（用户 IL 未必写得了 agent 目录），现有调用方钩子为空、行为不变。
   - M19-3 `80202f3` 宿主侧：服务态宿主不再自己画托盘，改由 `tray_proxies.cpp` 在每个**有人登录**的会话（控制台+RDP）用该会话用户令牌（`WTSQueryUserToken`+`CreateEnvironmentBlock`+`CreateProcessAsUserW` 到 `Winsta0\Default`）拉一个用户态代理；会话断开 2s 后收掉、登录再拉。管道 DACL=SYSTEM+管理员+该会话用户。命令经同一批原子落地：pause/resume 翻隧道、hide 写 `tray_icon=false`、quit 先删全图标再停服务、save_config 用新 `ClientConfig::from_json` 解析由宿主写盘。宿主以 `state` 行广播 paused/registered/tray_icon/server/name，代理画 tooltip；`host.status` 增加 `proxies=`，`--service-state` 从此能看见哪几个会话有图标。便携模式一字未动。
-  - M19-4 文档+出包：README/release-notes 托盘小节改写为"每会话一个用户态代理"，暴露面改写（代理是用户 IL，暂停/退出/改配置的权力属于该会话登录用户，管道 DACL 即边界）；版本抬到 **1.0.2** 出四包交用户实测，**不发版**。
+  - M19-4 文档+出包：README/release-notes 托盘小节改写为"每会话一个用户态代理"，暴露面改写（代理是用户 IL，暂停/退出/改配置的权力属于该会话登录用户，管道 DACL 即边界）；README"部署形态"里"托盘图标由宿主持有"那句同步纠正为"图标归每会话代理、命令执行归宿主"；版本抬到 **1.0.2** 出四包交用户实测，**不发版**。
+  - 非提权端到端已验（`build/m19_proxy_hold.ps1` 用一次性命名管道假冒宿主，代理跑在 RDP 会话 2）：连上→收 `state`→tooltip 渲染成 `YEUNG-proxytest | 10.60.1.188:7500 | 已注册`；右键菜单四项齐全（截图 `build/scratch/m19-menu-4.png`）；点"停止远程控制"→假冒宿主侧打印 `PROXY SENT: pause`；关管道→代理 ≤1.5s 自行退出。这条路径把 M19 的 IPC、菜单、状态回流三段都跑通了，**唯独没跑通的是"谁来拉起代理"**（`WTSQueryUserToken` 必须 SYSTEM）。
+  - 测出来的第三件事：**Windows 11 会把第一次见到的托盘图标收进右下角 `^` 折叠区**，直到用户自己拖出来，而这个偏好（`HKCU\Control Panel\NotifyIconSettings\<key>\IsPromoted`）应用无权代设。v1.0.1"装完没有托盘"的报告里必然混了这一条，所以 README 与 release-notes 都写明"找不到图标先点 `^`"，并给出区分"没画"与"画了但被收起"的两个判据（`proxies=` / `tray-<会话>.log`）。
   - **待一次提权装机验证**（代理必须以 SYSTEM 宿主才能 `WTSQueryUserToken`，非提权验不了）：RDP 会话装完 1.0.2 立即有图标；`--service-state` 的 `proxies=` 含该会话；暂停/恢复、隐藏/勾回、退出/双击恢复都在 RDP 里可见；重启+登录后图标自动出现；taskkill 代理 1s 内补拉；宿主退出代理自删。
 
 ## 后续可选优化
