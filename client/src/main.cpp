@@ -81,6 +81,17 @@ std::atomic<bool> g_hide_tray{false};
 // 菜单跑在托盘自己那个消息线程上，而 TrayIcon::stop() 要 join 它——自杀式死锁。
 // 所以"退出"也只是个请求：由主循环先删图标、再停服务。
 std::atomic<bool> g_quit_requested{false};
+// 这台机器在 SCM 眼里是什么形状。由监管循环喂，托盘菜单只读它：查 SCM 这件事
+// 一旦放上消息线程，M20 那种"菜单再也不出来"就回来了。
+enum ServiceShape { NoService = 0, ServiceStopped = 1, ServiceRunning = 2 };
+std::atomic<int> g_service_shape{NoService};
+
+int read_service_shape() {
+    if (!svc::is_installed()) {
+        return NoService;
+    }
+    return svc::is_running() ? ServiceRunning : ServiceStopped;
+}
 // Whether this process may follow the logon screen at all, as opposed to
 // whether it is on one right now.
 bool g_can_use_secure_desktop = false;
@@ -1324,32 +1335,36 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         tray_actions.config_pointless_now = [] { return g_secure_desktop.load(); };
         tray_actions.hide_icon = [] { g_hide_tray.store(true); };
         tray_actions.quit = [] { g_state.running.store(false); };
-        // 装过服务之后，这两条要么没用（宿主本来就是 SYSTEM），要么有害
-        // （计划任务和服务抢同一个设备号）。它们只属于没有服务的形态。
-        if (!svc::is_installed()) {
-            tray_actions.install_autostart = request_autostart_install;
-            if (!g_elevated) {
-                tray_actions.elevate = relaunch_elevated;
-            }
-        } else if (!svc::is_running()) {
-            // 托盘里点了"退出"之后就是这个状态：服务在，只是停了，双击客户端
-            // 把它以前台方式跑了起来。回到受管形态的开关应该写在这里，而不是
-            // 让人去记一条命令行。
-            tray_actions.start_service = [] {
-                std::wstring why;
-                if (svc::start(&why)) {
-                    mlog::info("Service re-enabled from the tray");
-                    return;
-                }
-                const std::wstring text =
-                    L"无法启动 MyRemoteAgent 服务：" + why +
-                    L"\n\n启动服务需要管理员权限。";
-                mlog::warn("The tray could not start the service: " +
-                           win32util::wide_to_utf8(why.c_str()));
-                MessageBoxW(nullptr, text.c_str(), L"MyRemote",
-                            MB_OK | MB_ICONWARNING);
-            };
+        // 装过服务之后，前两条要么没用（宿主本来就是 SYSTEM），要么有害（计划任务
+        // 和服务抢同一个设备号）；服务装了但停着——正是托盘点了「退出」之后——才给
+        // 最后一条。回调一律挂着，给不给由下面这两个谓词在弹菜单那一刻决定：形状会
+        // 在进程活着的时候变（点了启用、别人用 services.msc 停了、覆盖安装），启动时
+        // 算一次会让菜单说完谎就一直说到进程结束。
+        tray_actions.install_autostart = request_autostart_install;
+        if (!g_elevated) {
+            tray_actions.elevate = relaunch_elevated;
         }
+        tray_actions.start_service = [] {
+            std::wstring why;
+            if (svc::start(&why)) {
+                mlog::info("Service re-enabled from the tray");
+                return;
+            }
+            const std::wstring text =
+                L"无法启动 MyRemoteAgent 服务：" + why +
+                L"\n\n启动服务需要管理员权限。";
+            mlog::warn("The tray could not start the service: " +
+                       win32util::wide_to_utf8(why.c_str()));
+            MessageBoxW(nullptr, text.c_str(), L"MyRemote",
+                        MB_OK | MB_ICONWARNING);
+        };
+        tray_actions.show_autostart_group = [] {
+            return g_service_shape.load() == NoService;
+        };
+        tray_actions.show_start_service = [] {
+            return g_service_shape.load() == ServiceStopped;
+        };
+        g_service_shape.store(read_service_shape());
         if (cfg.tray_icon) {
             show_tray();
         }
@@ -1428,6 +1443,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     int backoff_ms = 1000;
     DWORD next_try_tick = 0;
+    DWORD next_shape_tick = 0;
     auto config_stamp = [&]() {
         FILETIME stamp{};
         HANDLE f = CreateFileW(win32util::utf8_to_wide(g_config_path).c_str(),
@@ -1486,6 +1502,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                     tray_visible = false;
                 }
             }
+        }
+
+        if (tray_possible &&
+            static_cast<int32_t>(GetTickCount() - next_shape_tick) >= 0) {
+            // Here rather than in ShowMenu: this thread may afford a slow call,
+            // the tray's message thread may not - that is precisely how M20
+            // started. One sample per second is soon enough for a menu the human
+            // has to right-click to open, and it makes an item that was just
+            // acted on disappear by the next popup.
+            next_shape_tick = GetTickCount() + 1000;
+            g_service_shape.store(read_service_shape());
         }
 
         if (g_quit_requested.exchange(false)) {

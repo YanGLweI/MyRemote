@@ -16,6 +16,16 @@ constexpr UINT_PTR kAddIconRetryTimer = 1;
 constexpr UINT_PTR kLivenessTimer = 2;
 constexpr size_t kTipCapacity = 127;
 
+namespace {
+
+// No opinion registered means the pre-existing behaviour: show whatever callback
+// the caller wired up. With one, the menu asks at the moment it is built.
+bool wanted(const std::function<bool()>& predicate) {
+    return !predicate || predicate();
+}
+
+}  // namespace
+
 LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
@@ -301,18 +311,18 @@ void TrayIcon::ShowMenu() {
         AppendMenuW(menu, MF_STRING, kCmdPause,
                     paused ? L"启动远程控制" : L"停止远程控制（本机不再被远控）");
     }
-    if (actions_.elevate) {
+    if (actions_.elevate && wanted(actions_.show_autostart_group)) {
         AppendMenuW(menu, MF_STRING, kCmdElevate,
                     L"以管理员身份重启（控制提权窗口）");
     }
-    if (actions_.install_autostart) {
+    if (actions_.install_autostart && wanted(actions_.show_autostart_group)) {
         AppendMenuW(menu, MF_STRING, kCmdAutostart,
                     L"安装开机自启（管理员权限）");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    if (actions_.start_service) {
+    if (actions_.start_service && wanted(actions_.show_start_service)) {
         AppendMenuW(menu, MF_STRING, kCmdStartService,
-                    L"重新启用远程控制服务");
+                    L"启用后台服务（当前：前台运行，开机不自启）");
     }
     if (actions_.hide_icon) {
         AppendMenuW(menu, MF_STRING, kCmdHide, L"隐藏托盘图标");

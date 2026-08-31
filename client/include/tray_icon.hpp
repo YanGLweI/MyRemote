@@ -43,6 +43,17 @@ public:
         // Asked while the menu is being built, so the item can read as an
         // action rather than as a mode the user has to remember.
         std::function<bool()> paused;
+        // Which of the two service-shaped items this machine deserves *now*.
+        // The callbacks above stay wired for the life of the process; these are
+        // what makes the menu follow a service that got stopped or started while
+        // it was running. A process that asked once at startup kept offering
+        // "启用后台服务" after it had already been clicked, which is the same
+        // class of lie this milestone is about.
+        // Both must be a read of something cached: the menu is built on the
+        // tray's own message thread, and M20 exists because that thread was once
+        // blocked by something that never came back.
+        std::function<bool()> show_autostart_group;
+        std::function<bool()> show_start_service;
         // On the secure desktop a window we create is invisible to whoever is
         // typing at the machine, so opening the editor would only look broken.
         std::function<bool()> config_pointless_now;
