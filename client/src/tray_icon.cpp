@@ -97,8 +97,13 @@ void TrayIcon::Run(HANDLE ready_event) {
     wc.lpszClassName = kWndClass;
     RegisterClassExW(&wc);  // idempotent: already-registered is fine
 
-    HWND hwnd = CreateWindowExW(0, kWndClass, L"MyRemote Agent", WS_OVERLAPPED,
-                                0, 0, 0, 0, HWND_MESSAGE, nullptr, hinst, this);
+    // A hidden top-level tool window, not a message-only one. A message-only
+    // window is invisible to every process but the one that made it (so a second
+    // agent could never post to it) and is left out of broadcasts (so
+    // TaskbarCreated would never arrive). Never shown.
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kWndClass, kWndTitle,
+                                WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, hinst,
+                                this);
     if (hwnd) {
         hwnd_.store(hwnd);
         nid_ = {};

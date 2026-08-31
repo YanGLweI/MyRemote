@@ -1129,13 +1129,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             if (!args.background) {
                 HWND h = nullptr;
                 for (int i = 0; i < 20 && !h; ++i) {
-                    // The tray window is message-only, so FindWindowW's
-                    // top-level scan can never return it; the message-only
-                    // namespace has to be walked explicitly. This lands on the
-                    // session's own tray proxy, which opens the dialog as that
-                    // user - the one thing a SYSTEM host could not do.
-                    h = FindWindowExW(HWND_MESSAGE, nullptr,
-                                      TrayIcon::kWndClass, nullptr);
+                    // The tray window is a hidden top-level tool window, so it
+                    // is found by class + title from another process. This lands
+                    // on the session's own tray proxy, which opens the dialog as
+                    // that user - the one thing a SYSTEM host could not do.
+                    h = FindWindowW(TrayIcon::kWndClass, TrayIcon::kWndTitle);
                     if (!h) Sleep(100);
                 }
                 if (h) {

@@ -11,14 +11,16 @@
 #include <string>
 #include <thread>
 
-// Notification-area icon backed by a message-only window whose class name is
-// "MyRemoteAgentTray". A message-only window is invisible to FindWindowW, so a
-// second instance reaches it with FindWindowExW(HWND_MESSAGE, ...) and posts
-// WM_SHOW_CONFIG to raise the configuration dialog.
+// Notification-area icon backed by a hidden top-level tool window. It is never
+// shown and carries WS_EX_TOOLWINDOW so it stays out of the taskbar and alt-tab,
+// but being top-level is what lets a second agent in the same session find it by
+// class + title and post WM_SHOW_CONFIG to raise the configuration dialog - and
+// what lets the TaskbarCreated broadcast reach it when explorer restarts.
 class TrayIcon {
 public:
     static constexpr UINT WM_SHOW_CONFIG = WM_APP + 1;  // cross-process trigger
     static constexpr wchar_t kWndClass[] = L"MyRemoteAgentTray";
+    static constexpr wchar_t kWndTitle[] = L"MyRemote Agent";
 
     using Callback = std::function<void()>;
 
