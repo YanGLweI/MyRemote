@@ -519,15 +519,46 @@ void stop() {
     g_stop_event = nullptr;
 }
 
+// The proxy reads this line by the first "key=" it finds, and name is the last
+// field precisely because it may contain spaces. A device name that happens to
+// contain `tray_icon=0` would therefore be read as a command - and "hide the
+// icon" is a decision the name must never be able to make. Newlines would break
+// the framing outright. Spaces stay.
+std::string safe_name_for_state(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20) {
+            continue;
+        }
+        out.push_back(c == '=' ? '-' : c);
+    }
+    return out;
+}
+
 void broadcast_state(bool paused, bool registered, bool tray_icon,
                      const std::string& server, const std::string& name) {
+    bool began_hiding = false;
+    bool began_showing = false;
+    size_t sessions = 0;
     {
         std::lock_guard<std::mutex> lock(g_mu);
+        sessions = g_clients.size();
+        began_hiding = g_tray_enabled && !tray_icon && sessions != 0;
+        began_showing = !g_tray_enabled && tray_icon;
         g_state_paused.store(paused);
         g_state_registered.store(registered);
         g_tray_enabled = tray_icon;
         g_state_server = server;
-        g_state_name = name;
+        g_state_name = safe_name_for_state(name);
+    }
+    if (began_hiding) {
+        // The one line that explains a machine whose icons went away.
+        mlog::info("Tray proxies: the setting now says no icon; retiring " +
+                   std::to_string(sessions) + " proxy session(s)");
+    } else if (began_showing) {
+        mlog::info("Tray proxies: the icon is wanted again; sessions get a proxy");
     }
     const std::string line = state_line();
     static std::string last_sent;

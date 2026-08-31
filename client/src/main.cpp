@@ -1513,9 +1513,20 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                 mlog::warn("Tray icon hidden for now, but the setting did not persist: " +
                            g_config_path);
             }
+            // 内存里这一份必须跟着变：广播给各会话代理的 tray_icon 读的就是它，
+            // 只改副本等于永远不说"这枚图标不该存在"，图标既不自己退、监管还会
+            // 继续补生——这正是"点了隐藏却没藏掉"的全部经过。
+            cfg = hidden;
             // 自己刚写的这一份不是"操作者又改了设置"，不该触发一次重载。
             config_written = config_stamp();
         }
+        // 广播在重连**之前**：try_once() 会占满 10s 连接超时，放在它后面等于"控制端
+        // 联系不上的机器，图标要等一轮超时才肯消失"。registered 因此晚一轮（200ms）。
+        trayproxies::broadcast_state(
+            g_paused.load(), g_state.registered.load(), cfg.tray_icon,
+            cfg.server_ip + ":" + std::to_string(cfg.server_port),
+            cfg.device_name.empty() ? device::default_device_name()
+                                    : cfg.device_name);
 
         if (g_paused.load()) {
             // 暂停只关隧道：进程与服务都活着，图标也还在，同一个菜单就是回来的路。
@@ -1554,11 +1565,6 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             tray.set_tooltip(tip);
             last_tip = tip;
         }
-        trayproxies::broadcast_state(
-            g_paused.load(), g_state.registered.load(), cfg.tray_icon,
-            cfg.server_ip + ":" + std::to_string(cfg.server_port),
-            cfg.device_name.empty() ? device::default_device_name()
-                                    : cfg.device_name);
     }
 
     g_state.running.store(false);
