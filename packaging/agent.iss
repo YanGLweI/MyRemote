@@ -157,29 +157,6 @@ begin
     Result := Trim(ConnectPage.Values[PageIndex]);
 end;
 
-function JsonEsc(const S: String): String;
-var
-  I: Integer;
-begin
-  Result := '';
-  for I := 1 to Length(S) do
-  begin
-    if (S[I] = '\') or (S[I] = '"') then
-      Result := Result + '\';
-    Result := Result + S[I];
-  end;
-end;
-
-function ProgramDataConfig: String;
-begin
-  Result := ExpandConstant('{commonappdata}\MyRemote\config.json');
-end;
-
-function AppConfig: String;
-begin
-  Result := ExpandConstant('{app}\config.json');
-end;
-
 function ConfigNotWritten: Boolean;
 begin
   Result := not ConfigWritten;
@@ -189,7 +166,7 @@ procedure InitializeWizard;
 begin
   ConnectPage := CreateInputQueryPage(wpSelectTasks,
     '连到哪台控制端', '全部留空也可以：装完第一次运行会弹出配置界面。',
-    '填写任意一项就会写入配置文件，留空的项用默认值。' + #13#10 +
+    '填写任意一项就会写入配置文件；留空的项保持机器上原有的设置。' + #13#10 +
     '接入密钥必须与控制端「设置」里那一条完全一致，否则会被拒绝接入。');
   ConnectPage.Add('控制端地址（IP 或主机名）：', False);
   ConnectPage.Add('端口（默认 7500）：', False);
@@ -198,7 +175,8 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  IP, Port, Key, Text: String;
+  IP, Port, Key, Params, Exe: String;
+  ResultCode: Integer;
 begin
   if CurStep <> ssPostInstall then
     Exit;
@@ -209,35 +187,33 @@ begin
   if (IP = '') and (Port = '') and (Key = '') then
     Exit;  // 什么都没填：不去动配置，让第一次运行弹界面
 
-  if FileExists(ProgramDataConfig) then begin
-    // agent 找配置的顺序是 ProgramData 优先（client/src/desktop.cpp 的 resolve_paths），
-    // 写 {app}\config.json 会被无视，所以这里只提醒、不假装成功。
-    // 静默安装（尤其是被 sc.exe 一次性服务拉起来跑的那种）绝不能弹窗：
-    // session 0 里没有前台，弹窗会把安装器永久挂住。
-    Log('A config already exists in %ProgramData%\MyRemote; it was left untouched.');
-    if not WizardSilent then
-      MsgBox('检测到已有 %ProgramData%\MyRemote\config.json，agent 会优先读它，' +
-        '安装器没有覆盖这个文件。' + #13#10 + #13#10 +
-        '要改连接信息，请编辑那个文件，或先用配置界面保存。', mbInformation, MB_OK);
+  // 落盘交给 agent 自己。安装器不猜路径：resolve_paths 认哪一份（ProgramData 优先），
+  // --set-server 就写哪一份；它还会先把那份读回来，只覆盖页面上显式给出的项，
+  // 于是设备名、控制密码、编码宽度、托盘开关在覆盖安装时原样保住——
+  // config.cpp 的 save() 是全量写，从默认值起步会把这些悄悄抹掉。
+  // 静默安装（尤其是被 sc.exe 一次性服务拉起来跑的那种）绝不能弹窗：
+  // session 0 里没有前台，弹窗会把安装器永久挂住。
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  Params := '--set-server';
+  if IP <> '' then
+    Params := Params + ' --ip "' + IP + '"';
+  if Port <> '' then
+    Params := Params + ' --port ' + Port;
+  if Key <> '' then
+    Params := Params + ' --key "' + Key + '"';
+  if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+    Log('agent.exe --set-server could not run (code ' + IntToStr(ResultCode) + ').');
     Exit;
   end;
-
-  if Port = '' then
-    Port := '7500';
-  if Key = '' then
-    Key := 'default_secret_key_12345';
-  // 字段顺序与 deploy\config.json 一致；common/src/config.cpp 是逐键扫描，顺序不影响读取。
-  // 写成不带 BOM：SaveStringsToUTF8File 总会加一个 BOM，而这个文件应该和
-  // deploy\config.json、配置界面写出来的那份逐字节可比。这里的值全是 ASCII
-  // （device_name 固定留空），所以过一遍 AnsiString 不会丢字——以后要加中文字段，
-  // 必须先换回带 BOM 的 UTF-8 写法并确认解析器读得动。
-  Text := '{' + #13#10 +
-    '  "server_ip": "' + JsonEsc(IP) + '",' + #13#10 +
-    '  "server_port": ' + Port + ',' + #13#10 +
-    '  "secret_key": "' + JsonEsc(Key) + '",' + #13#10 +
-    '  "device_name": "",' + #13#10 +
-    '  "control_password": ""' + #13#10 + '}' + #13#10;
-  SaveStringToFile(AppConfig, Text, False);
+  if ResultCode <> 0 then begin
+    Log('agent.exe --set-server exited with ' + IntToStr(ResultCode) +
+        '; the config was left as it was.');
+    if not WizardSilent then
+      MsgBox('安装完成，但连接信息没有写入配置（agent.exe --set-server 退出码 ' +
+        IntToStr(ResultCode) + '）。' + #13#10 + #13#10 +
+        '请从开始菜单打开“配置界面”手工填写。', mbInformation, MB_OK);
+    Exit;
+  end;
   ConfigWritten := True;
 end;
 

@@ -884,8 +884,10 @@ struct Args {
     bool start_service = false;
     bool stop_service = false;
     bool service_state = false;
+    bool set_server = false;
     std::string ip_override;
     int port_override = 0;
+    std::string key_override;
     std::string config_path;
 };
 
@@ -916,7 +918,8 @@ Args parse_command_line() {
             continue;
         }
         flags.insert(tok);
-        if ((tok == "--ip" || tok == "--port" || tok == "--config") &&
+        if ((tok == "--ip" || tok == "--port" || tok == "--key" ||
+             tok == "--config") &&
             i + 1 < argc) {
             values[tok] = win32util::wide_to_utf8(argv[++i]);
         }
@@ -952,6 +955,7 @@ Args parse_command_line() {
     args.start_service = has_flag("--start-service");
     args.stop_service = has_flag("--stop-service");
     args.service_state = has_flag("--service-state");
+    args.set_server = has_flag("--set-server");
     if (args.session_host) {
         // Spawned by the service. It must not elevate, must not block on a
         // dialog, and must follow whichever desktop owns the keyboard.
@@ -965,6 +969,7 @@ Args parse_command_line() {
         args.follow_desktop = true;
     }
     args.ip_override = get_value("--ip");
+    args.key_override = get_value("--key");
     std::string port = get_value("--port");
     if (!port.empty()) {
         args.port_override = std::atoi(port.c_str());
@@ -1064,6 +1069,45 @@ int run_service_cli(const Args& args) {
     return ok ? 0 : 1;
 }
 
+// The installer's connect page has to land in the file the agent actually reads.
+// Writing it from here instead of from Setup's own string builder is what keeps
+// device_name, control_password, the encode width and the tray setting alive
+// across a reinstall: save() writes every field, so a write that started from
+// defaults would silently reset a configured machine.
+int run_set_server(const Args& args) {
+    win32util::AgentPaths paths = win32util::resolve_paths(args.config_path);
+    if (args.ip_override.empty() && args.port_override <= 0 &&
+        args.key_override.empty()) {
+        printf("MyRemoteAgent set-server: nothing given; pass --ip, --port or --key.\n");
+        printf("Target file: %s\n", paths.config.c_str());
+        return 2;
+    }
+    config::LoadStatus status = config::LoadStatus::Missing;
+    config::ClientConfig cfg = config::ClientConfig::load(paths.config, &status);
+    if (status == config::LoadStatus::Unreadable) {
+        printf("MyRemoteAgent set-server: FAILED - %s holds no setting we can read; "
+               "refusing to write over it.\n", paths.config.c_str());
+        return 1;
+    }
+    if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
+    if (args.port_override > 0) cfg.server_port = args.port_override;
+    if (!args.key_override.empty()) cfg.secret_key = args.key_override;
+    const std::wstring target = win32util::utf8_to_wide(paths.config);
+    const size_t slash = target.rfind(L'\\');
+    if (slash != std::wstring::npos) {
+        // %ProgramData%\MyRemote is absent on a machine that never ran the agent.
+        CreateDirectoryW(target.substr(0, slash).c_str(), nullptr);
+    }
+    if (!config::ClientConfig::save(cfg, paths.config)) {
+        printf("MyRemoteAgent set-server: FAILED - cannot write %s\n",
+               paths.config.c_str());
+        return 1;
+    }
+    printf("MyRemoteAgent set-server: ok  %s -> %s:%d\n", paths.config.c_str(),
+           cfg.server_ip.c_str(), cfg.server_port);
+    return 0;
+}
+
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
@@ -1087,6 +1131,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         args.uninstall_autostart) {
         win32util::attach_parent_console();
         return run_service_cli(args);
+    }
+    if (args.set_server) {
+        win32util::attach_parent_console();
+        return run_set_server(args);
     }
 
     // Physical-pixel metrics everywhere (capture/encoder/screen size).
