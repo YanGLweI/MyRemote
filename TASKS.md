@@ -100,9 +100,11 @@
 - M21-4 `f759b4c` 根因C：服务形状由主循环以 ≤1/s 采样进 `atomic<int>`，`Actions` 新增 `show_autostart_group` / `show_start_service` 两个谓词在**弹菜单那一刻**现问（只读原子——查 SCM 放上托盘消息线程就是 M20 的复发）；文案定稿「启用后台服务（当前：前台运行，开机不自启）」。**判据**（`build/m21_menu_shape.ps1` 三跑各一张截图）：服务停着 → 该项在（菜单 239px）；同一实例活着时把服务起起来 → 该项消失，**实测延迟 13s**（一轮主循环，而这一轮里含 10s 连接超时；隧道正常时 ≤1.2s）；服务在跑时新起实例 → 该项与「安装开机自启」都不在（195px）。
 - M21-5 `a116d77` 诊断读数说谎：`host.status` 只由宿主覆盖写、全仓无人删，所以服务停了它照样把上一代宿主的 `registered=` / `paused=` / `proxies=` 摆成现在时。现在先用记录里的 `pid=` 复核进程是否还活着（只有 `ERROR_ACCESS_DENIED` 才算"这个 token 问不动"），再看文件多久没动，两者任一不过就整行前挂 `STALE(原因)`；**不改写也不删除**记录，现场取证要原件。判据：伪造一个不存在的 pid → 打 stale；服务 RUNNING → 打真值。本机还顺手抓到一个活案例：dev 构建把 8 月 30 日的记录当现值打了出来。
 - M21-6 `b34708c` 安装器落盘位置：新增 `agent.exe --set-server [--ip|--port|--key]`——按运行期同一套 `resolve_paths` 找到该写的那份、读回来、只覆盖显式给出的项、整体写回、创建父目录、Unreadable 拒绝（退出码 1）、什么都没给返回 2；`agent.iss` 改调它并以退出码决定 `ConfigWritten`，删掉从此没人调的 `JsonEsc` / `AppConfig` / `ProgramDataConfig`（转义与路径归 agent 负责，两份实现迟早分叉），向导说明跟着改口。**判据**（`build/m21_set_server.ps1` 17 项全绿 + ISCC 编译通过）：新建、只改一项其余原样保住、坏文件拒绝且 sha256 不变、空参数拒绝、不起实例。**端到端那一跑刻意没做**：安装包与机器上那份同 AppId 同版本，Inno 会先把 `C:\MyRemote\Agent` 的现有安装静默卸掉——留到 TEST-WIN 下一个装机窗口顺路验。
-- M21-7 文档与版本：README 补"隐藏是全机语义"、`--service-state` 的 `host:` 口径、配置解析顺序、管道 DACL 实际放行的是**交互式登录组**（原文写的是"该会话用户"，与 `tray_proxies.cpp` 的 `(A;;GRGW;;;IU)` 不符）；release-notes 改写为 **1.0.4**；版本抬 1.0.4（本轮不出包）。
+- M21-7 文档与版本：README 补"隐藏是全机语义"、`--service-state` 的 `host:` 口径、配置解析顺序、管道 DACL 实际放行的是**交互式登录组**（原文写的是"该会话用户"，与 `tray_proxies.cpp` 的 `(A;;GRGW;;;IU)` 不符）；release-notes 改写为 **1.0.4**；版本抬 1.0.4。
+- M21-8 真机复测（TEST-WIN 装 1.0.4）：三条症状用户反馈通过。**这是口头确认，没带回日志/截图**——台账按"报障机复测通过"记，`--set-server` 的端到端重装语义与 M20 那七条仍无现场证据。
+- M21-9 出包 + 发版：`stage.ps1 -SkipBuild` 出四包（版本一致性、两个 exe 的 ProductVersion、Qt 四目录、图标数四道断言全过）+ LF `SHA256SUMS.txt`；五件交付 `D:\IT-share\MyRemote-v1.0.4\` 并在目标目录复校 OK；**GitHub Release v1.0.4 已发布**（tag 打在 M21 收口之后，1.0.1~1.0.3 不补 tag）。
 - 刻意没做：`state` 行不加 `config_ok=0/1`——修好引号之后"代理读到的是不是真配置"已经由它自己那行日志与开窗/拒绝行为说清，再加一个字段只是多一处会各自说谎的读数。`secret_key` / `control_password` 也不推上管道（管道 DACL 是全机交互用户）。
-- **仍只能真机验**：安装态点「隐藏托盘图标」图标 1s 内退场、`proxies=` 掉到 none、日志无 `left a ghost icon`；点「启用后台服务」把这台收回受管形态；向导填的地址经 `--set-server` 落到 `%ProgramData%\MyRemote\config.json` 且覆盖安装后 `device_name` 等字段仍在。
+- **仍无现场证据**：`--set-server` 的端到端重装语义（覆盖安装后 `device_name`/`control_password`/`tray_icon` 仍在、给了不同 IP 会覆盖、不带参数不动已有配置），以及 M20 那七条自愈判据。隐藏退场与「启用后台服务」收回受管形态两条已在 TEST-WIN 由用户复测通过（口头确认）。
 
 ## 后续可选优化
 

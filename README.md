@@ -69,12 +69,12 @@ cmake --build build --config Release
 ## 安装与部署
 
 正式版发四个包（`SHA256SUMS.txt` 是它们的 SHA-256），下载在
-[Releases · v1.0.0](https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.0)；本地跑 `packaging\stage.ps1` 也能重新产出到 `build\package\dist\`：
+[Releases · latest](https://github.com/YanGLweI/MyRemote/releases/latest)（当前 **v1.0.4**）；本地跑 `packaging\stage.ps1` 也能重新产出到 `build\package\dist\`：
 
 | 给谁 | 安装版 | 绿色版 |
 | --- | --- | --- |
-| 控制端（服务端，运维坐的那台） | `MyRemote-Server-v1.0.0-setup.exe` | `MyRemote-Server-v1.0.0-portable.zip` |
-| 被控端（客户端，要被远控的机器） | `MyRemote-Agent-v1.0.0-setup.exe` | `MyRemote-Agent-v1.0.0-portable.zip` |
+| 控制端（服务端，运维坐的那台） | `MyRemote-Server-v1.0.4-setup.exe` | `MyRemote-Server-v1.0.4-portable.zip` |
+| 被控端（客户端，要被远控的机器） | `MyRemote-Agent-v1.0.4-setup.exe` | `MyRemote-Agent-v1.0.4-portable.zip` |
 
 - **控制端装在 `C:\MyRemote\Server`，不要装进 `Program Files`。** `server_config.json` 和日志都写在 exe 旁边，设置页每次保存都要重写它；非提权进程写不进受保护目录，表现就是状态栏那句"设置没能写进文件"。
 - 控制端安装版加一条**按程序**放行的入站防火墙规则（不按端口，所以以后改监听端口不用回来补规则），卸载时删掉。被控端**只出站**，不需要任何放行；用绿色版则要自己放行 TCP 7500。
@@ -87,7 +87,7 @@ cmake --build build --config Release
 远程批量推送（不依赖 WinRM，走管理共享即可）：
 
 ```bat
-MyRemote-Agent-v1.0.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
+MyRemote-Agent-v1.0.4-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
   /TASKS=service /SERVERIP=10.0.0.5 /SERVERPORT=7500 /SECRETKEY=与控制端一致的串
 ```
 

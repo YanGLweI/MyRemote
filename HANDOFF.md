@@ -8,12 +8,11 @@
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | 仍停在 **v1.0.0**（tag 与资产一字未动），1.0.1~1.0.4 都**未发布** |
-| 代码 | main 已推到 M21-6，共六笔：`9dd9c3c`(M21-1) `19df922`(M21-2) `a116d77`(M21-5) `647b7ea`(M21-3) `f759b4c`(M21-4) `b34708c`(M21-6)；**本文件所在的第七笔（M21-7 文档+抬版本）收尾后需 `git push`** |
-| 交付物 | `D:\IT-share\MyRemote-v1.0.3\`：四包 + `SHA256SUMS.txt`，仍是**当前交给用户的那一份**（1.0.3，带这三个 bug） |
-| 本轮出包 | **没出**。1.0.4 只抬了版本号（`CMakeLists.txt` + `packaging/common.iss` 一致，`stage.ps1` 的断言过得去），四包等下一次决定 |
-| dist 目录 | `build/package/dist/` 里 1.0.3 的 **agent** setup 曾被本轮一次 `ISCC` 试编译覆盖成"M21 内容、1.0.3 文件名"，已挪走改名为 `build/scratch/agent-setup-m21-probe.exe`；dist 里现在没有任何 1.0.4 产物，权威 1.0.3 只在 D:\IT-share |
-| 用户侧 | **TEST-WIN 装的是 1.0.3**（本轮三条症状的来源）；**YEUNG 装的仍是 1.0.2**（实测 `C:\MyRemote\Agent\agent.exe --version` → 1.0.2，从未做过 1.0.3 的提权装机）——注意 1.0.2 同样有引号那个病，本机代理命令行里就是 `--config "C:\MyRemote\Agent\config.json"` |
+| GitHub Release | **v1.0.4 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4，五个资产：Server/Agent × setup/zip + `SHA256SUMS.txt`）。1.0.1/1.0.2/1.0.3 从未单独发版，内容全并进了 1.0.4 |
+| 代码 | main 已推到 M21-7（`e02320d`），M21 七笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` |
+| 交付物 | `D:\IT-share\MyRemote-v1.0.4\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.3 那份仍在原地做参照 |
+| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.4**，`stage.ps1` 出包时断言过（含两个 exe 的 ProductVersion 与图标数） |
+| 用户侧 | **TEST-WIN 已装 1.0.4**，三条症状用户反馈"ok"——**这是口头确认，没带回日志/截图**，所以台账里记作"报障机复测通过"而不是"逐条有证据"；YEUNG 仍是 **1.0.2**（`--version` 实测，从未做过提权装机） |
 
 ## 2. M21 是什么问题、怎么修的
 
@@ -37,14 +36,18 @@
 4. **M21-5**：伪造 `host.status` 里的 pid → 打 `STALE`；服务 RUNNING → 打真值。本轮还顺手抓到一个活案例：dev 构建把 8 月 30 日的记录当现值打了出来。
 5. **M21-6 CLI**：`build/m21_set_server.ps1` 17 项全绿（新建、只改 `--ip` 其余六项原样保住、坏文件拒绝且 sha256 不变、空参数返回 2、不起实例、带空格的 `--key` 完整存活）；`ISCC` 编译 `agent.iss` 通过（删掉的 `JsonEsc`/`AppConfig`/`ProgramDataConfig` 确无残留引用）。
 
-### 待验——只能真机（下一个装机窗口，TEST-WIN 优先）
+### 真机复测（2026-08-31，TEST-WIN 装 1.0.4，**用户口头确认，未带回日志/截图**）
 
-① 安装态点「隐藏托盘图标」：图标 ≤1s 退场、`--service-state` 的 `proxies=` 掉到 none、日志无 `left a ghost icon`。
-② 前台实例点「启用后台服务（当前：前台运行，开机不自启）」：这台真的收回受管形态（该实例随后被新宿主 `retire_same_path_instances` 收掉）。
-③ **M21-6 端到端那一跑**：`/VERYSILENT /TASKS="!service" /SERVERIP=...` 装到临时目录 → ProgramData 那份为该 IP 且 `device_name`/`control_password`/`tray_icon` 仍在；再装一次不同 IP → 被覆盖；不带参数 → 不动已有配置。**刻意没在 YEUNG 做**：安装包与机器上那份同 `AppId` 同版本，Inno 会先把 `C:\MyRemote\Agent` 的现有安装静默卸掉——为验 12 行 Pascal 把这台机器的受管形态拆了不值。TEST-WIN 上做这件事没有这个代价。
-④ M20 那七条（假宿主故障注入、explorer 重启、退出无残留、僵死代理 ≤10s 自愈、暂停/退出/隐藏语义、1.0.2→1.0.3 覆盖安装）——**至今一条都没在真机上跑过**，账还在 TASKS.md 的 M20 块末尾。
+① 安装态点「隐藏托盘图标」：图标 ≤1s 退场、`proxies=` 掉到 none、日志无 `left a ghost icon`。
+② 前台实例点「启用后台服务（当前：前台运行，开机不自启）」：收回受管形态，该实例随后被新宿主 `retire_same_path_instances` 收掉。
+③ 症状②那条主判据（托盘「打开配置」回显真地址、`tray-<会话>.log` 首行 `(found)`）随本轮装机通过。
 
-用户侧复测脚本 = 他撞出 bug 的原序列：暂停→再右键→恢复→退出→双击→再右键→隐藏→勾回显示。
+这三条记作"报障机复测通过"，**不等于逐条有证据**——下次要引用时按口头确认对待。
+
+### 仍无现场证据
+
+④ **M21-6 端到端那一跑**：`/VERYSILENT /TASKS="!service" /SERVERIP=...` 装到临时目录 → ProgramData 那份为该 IP 且 `device_name`/`control_password`/`tray_icon` 仍在；再装一次不同 IP → 被覆盖；不带参数 → 不动已有配置。**刻意没在 YEUNG 做**：安装包与机器上那份同 `AppId` 同版本，Inno 会先把 `C:\MyRemote\Agent` 的现有安装静默卸掉——为验 12 行 Pascal 把这台机器的受管形态拆了不值。TEST-WIN 上做这件事没有这个代价。
+⑤ M20 那七条（假宿主故障注入、explorer 重启、退出无残留、僵死代理 ≤10s 自愈、暂停/退出/隐藏语义、1.0.2→1.0.3 覆盖安装）——**至今一条都没在真机上跑过**，账还在 TASKS.md 的 M20 块末尾。
 
 ## 4. 可能还有什么问题（按可信度排序）
 
@@ -57,10 +60,10 @@
 
 ## 5. 下一步工作（按顺序）
 
-1. **TEST-WIN 装 1.0.4**（要先出包：`packaging/stage.ps1`）→ 跑第 3 节 ①②③，顺路把 M20 那七条一起结。跨机动作，**必须先经用户点头**。
-2. 全绿之后再谈抬 tag / 发 Release（当前决定仍是**不发版**，1.0.1~1.0.4 只在交付目录里）。
+1. **两笔现场账还挂着**（都在第 3 节"仍无现场证据"）：`--set-server` 的端到端重装语义、M20 那七条自愈判据。TEST-WIN 现在就是 1.0.4，顺路做代价最低——跨机动作，**必须先经用户点头**。
+2. **YEUNG 这台还停在 1.0.2**：它是控制端所在机器，也是本轮所有判据的跑场。要么随下一次验证一起抬到 1.0.4，要么明确不抬（它现在能远控、受管形态正常）。
 3. 收尾清理：删测试期间为 dev 路径写的两个 `HKCU\Control Panel\NotifyIconSettings\<key>\IsPromoted=1`（本机，`build/m19_promote_icon.ps1` 当年写进去的）。
-4. YEUNG 这台还停在 1.0.2：要么随下一次真机验证一起抬，要么明确不抬（它现在能远控、受管形态正常）。
+4. 发版之后的既有决定：tag 只打在真正交付过的版本上（v1.0.0、v1.0.4），1.0.1~1.0.3 不再补 tag。
 
 ## 6. 环境与工具备忘（会杀时间的坑）
 
@@ -82,10 +85,10 @@
 - **测试脚本一律纯 ASCII**（PS 5.1 按 ANSI 解码无 BOM UTF-8，中文字面量匹配必挂）；窗口识别走类名（`MyRemoteAgentTray`/`MyRemoteConfigWnd`/`#32768`），中文按钮文案在 C# 侧用 `(char)0x4FDD` 拼；`EnumWindows` 回调整体放 C# 侧；PS 单结果管道要 `@()` 包；`$w` 会撞 `$W`。
 - 截图脚本必须先 `SetProcessDPIAware()`（本机 200%/3400 宽物理）。
 - 关键脚本：`build/m21_cli_regression.ps1`、`build/m21_probe_config.ps1`、`build/m21_hide_probe.ps1`、`build/m21_menu_shape.ps1`、`build/m21_window.ps1`（把需要停服务的那几跑收进一个提权窗口）、`build/m21_set_server.ps1`、`build/scratch/m21_pipe_smoke.ps1`（不碰产品、只练管道读法）、`build/scratch/m21_cleanup.ps1`（提权收残留）。取证目录 `C:\ProgramData\MyRemote\tray-<会话>.log` 与 `C:\MyRemote\Agent\*.log`。
-- 远端只读取证走 `\\10.60.254.153\c$\...`，bash 命令层拒绝内联 UNC——写进 `.ps1` 再执行。TEST-WIN 的两份配置本轮实测都是 `10.60.1.188`，**没被 127.0.0.1 覆盖过**。
+- 远端只读取证走 `\\10.60.254.153\c$\...`，bash 命令层拒绝内联 UNC——写进 `.ps1` 再执行。TEST-WIN 那两份配置在**本轮装机前**实测都是 `10.60.1.188`，**没被 127.0.0.1 覆盖过**（装完之后再没读过，别拿这句当现值）。
 
 ## 7. 机器快照（本会话结束时）
 
 - **YEUNG**：安装态 **1.0.2** 服务 RUNNING（本轮为验证停过两次、每次约 2 分钟，均已起回），宿主在控制台会话 4，会话 2（RDP，无显示器）有代理；管道正常；`build.*bin.*Release` 残留 = 0；桌面上本轮误放的一个配置窗已 `WM_CLOSE` 收掉（那个实例随后自己退出）。`%ProgramData%\MyRemote\config.json` 与 `{app}\config.json` 都还是这台自己的真值，本轮所有写测试都走 `--config <scratch>`。
-- **构建产物**：`build/bin/Release` = **1.0.4** dev 全量（含 windeployqt 产物）；`build/package/dist` 无 1.0.4 包；`build/scratch/` 下本轮留下 `m21_window.log`（提权窗口全程转录）、`m21_pipe_trace.txt`（管道逐行）、`m21-menu-{stopped,live,running}.png`、`m21set/`、`m21host/`、`m21menu/` 与上面那批脚本。
+- **构建产物**：`build/bin/Release` = **1.0.4** 全量（agent + control_server + windeployqt 产物）；`build/package/dist` = 1.0.4 四包 + `SHA256SUMS.txt`（LF，`sha256sum -c` 四条 OK）；同一批五件已复制到 `D:\IT-share\MyRemote-v1.0.4\` 并在目标目录复校四条全 OK。`build/scratch/` 下本轮留下 `m21_window.log`（提权窗口全程转录）、`m21_pipe_trace.txt`（管道逐行）、`m21-menu-{stopped,live,running}.png`、`m21set/`、`m21host/`、`m21menu/`、`agent-setup-m21-probe.exe`（试编译产物，别当 1.0.3 交付件）与上面那批脚本。
 - **git**：工作区应只剩 M21-7 这一笔待推（README / release-notes / TASKS / HANDOFF / 两处版本号）。`.qoderignore` 是未跟踪的本地文件，不属于任何里程碑。
