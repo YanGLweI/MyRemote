@@ -69,9 +69,14 @@ std::string to_json_line(const config::ClientConfig& c) {
            ", \"tray_icon\": " + (c.tray_icon ? "true" : "false") + "}";
 }
 
+// The menu actions run on TrayIcon's worker thread, which can outlive run()'s
+// stack frame, so everything they read lives here instead.
+HostState g_state;
+std::string g_config_path;
+
 // "state paused=0 registered=1 tray_icon=1 server=ip:port name=..." - name is
 // last because it is the only value allowed to contain spaces.
-void apply_state(HostState& st, TrayIcon& tray, const std::string& line) {
+void apply_state(TrayIcon& tray, const std::string& line) {
     auto field = [&](const char* key) -> std::string {
         const size_t at = line.find(key);
         if (at == std::string::npos) {
@@ -81,24 +86,24 @@ void apply_state(HostState& st, TrayIcon& tray, const std::string& line) {
         const size_t end = line.find(' ', begin);
         return line.substr(begin, end == std::string::npos ? end : end - begin);
     };
-    st.paused.store(field("paused=") == "1");
-    st.registered.store(field("registered=") == "1");
+    g_state.paused.store(field("paused=") == "1");
+    g_state.registered.store(field("registered=") == "1");
     const std::string server = field("server=");
     const size_t np = line.find("name=");
     const std::string name =
         np == std::string::npos ? "" : line.substr(np + 5);
     {
-        std::lock_guard<std::mutex> lock(st.mu);
-        st.server = win32util::utf8_to_wide(server);
-        st.name = win32util::utf8_to_wide(name);
+        std::lock_guard<std::mutex> lock(g_state.mu);
+        g_state.server = win32util::utf8_to_wide(server);
+        g_state.name = win32util::utf8_to_wide(name);
     }
     std::wstring tip;
     {
-        std::lock_guard<std::mutex> lock(st.mu);
-        tip = st.name + L" | " + st.server;
+        std::lock_guard<std::mutex> lock(g_state.mu);
+        tip = g_state.name + L" | " + g_state.server;
     }
-    tip += st.paused.load() ? L" | 已停止，本机不被远控"
-           : (st.registered.load() ? L" | 已注册" : L" | 连接/重试中");
+    tip += g_state.paused.load() ? L" | 已停止，本机不被远控"
+           : (g_state.registered.load() ? L" | 已注册" : L" | 连接/重试中");
     tray.set_tooltip(tip);
 }
 
@@ -148,26 +153,30 @@ int run(const std::string& config_override) {
     SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
     mlog::info("Tray proxy: connected to the session host");
 
-    const std::string config_path =
-        win32util::resolve_paths(config_override).config;
+    g_config_path = win32util::resolve_paths(config_override).config;
 
-    HostState state;
     TrayIcon tray;
     TrayIcon::Actions actions;
-    actions.paused = [&] { return state.paused.load(); };
-    actions.toggle_pause = [&] {
-        send_line(state.paused.load() ? "resume" : "pause");
+    actions.paused = [] { return g_state.paused.load(); };
+    actions.toggle_pause = [] {
+        // The label was chosen on the tray thread; decide the word from the
+        // same flag and flip it now, or a second click while the host's echo is
+        // still in flight would send "pause" twice.
+        const bool now_paused = !g_state.paused.load();
+        g_state.paused.store(now_paused);
+        send_line(now_paused ? "pause" : "resume");
     };
     actions.hide_icon = [] { send_line("hide"); };
     actions.quit = [] { send_line("quit"); };
     actions.quit_text = L"退出（同时停止服务，下次开机自动回来）";
-    actions.open_config = [&] {
+    actions.open_config = [] {
         bool expected = false;
         if (!g_dialog_open.compare_exchange_strong(expected, true)) {
             return;
         }
         gui::ConfigUi ui;
-        const config::ClientConfig c = config::ClientConfig::load(config_path);
+        const config::ClientConfig c =
+            config::ClientConfig::load(g_config_path);
         ui.server_ip = c.server_ip;
         ui.server_port = c.server_port;
         ui.secret_key = c.secret_key;
@@ -175,7 +184,7 @@ int run(const std::string& config_override) {
         ui.control_password = c.control_password;
         ui.tray_icon = c.tray_icon;
         ui.max_encode_width = c.max_encode_width;
-        ui.config_path = config_path;
+        ui.config_path = g_config_path;
         ui.save_mode = gui::SaveMode::SaveAndApply;
         // The proxy may not be able to write the agent directory; the host
         // writes on our behalf and hot-reloads itself.
@@ -207,7 +216,7 @@ int run(const std::string& config_override) {
                 break;
             }
             if (line.rfind("state ", 0) == 0) {
-                apply_state(state, tray, line);
+                apply_state(tray, line);
             }
         }
     }

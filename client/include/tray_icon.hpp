@@ -4,13 +4,17 @@
 #include <shellapi.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 
 // Notification-area icon backed by a message-only window whose class name is
-// "MyRemoteAgentTray": a second agent instance FindWindowW's it and posts
-// WM_SHOW_CONFIG to raise the configuration dialog of the running instance.
+// "MyRemoteAgentTray". A message-only window is invisible to FindWindowW, so a
+// second instance reaches it with FindWindowExW(HWND_MESSAGE, ...) and posts
+// WM_SHOW_CONFIG to raise the configuration dialog.
 class TrayIcon {
 public:
     static constexpr UINT WM_SHOW_CONFIG = WM_APP + 1;  // cross-process trigger
@@ -41,24 +45,47 @@ public:
 
     // Creates the tray window + icon on a dedicated message-loop thread.
     bool start(Actions actions);
-    void stop();
+    // Waits up to grace_ms for the message pump and then for whatever the
+    // picked menu item is still doing. If the pump never comes back we delete
+    // the icon ourselves before giving up on the thread: a painted icon whose
+    // owner we abandoned is indistinguishable from a working one.
+    void stop(DWORD grace_ms = 3000);
     void set_tooltip(const std::wstring& text);
+    // Bumped by a timer on the message-loop thread, so it only advances while
+    // that thread is actually pumping. Callers use it to tell a live tray from
+    // a painted-and-stuck one.
+    uint64_t liveness() const { return liveness_.load(); }
+
+    // Runs fn off the message-loop thread. fn is copied, so it must not reach
+    // back into this TrayIcon or into a stack frame that can end before it
+    // does - the actions it runs are capture-free for that reason.
+    void enqueue(Callback fn);
 
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM);
     void Run(HANDLE ready_event);
+    void WorkerLoop();
     void ShowMenu();
     // NIM_ADD returns FALSE while the shell is absent (boot, explorer restart);
     // the icon then has to be re-added later or the machine looks tray-less.
     void AddIcon(HWND hwnd);
+    void RemoveIcon();
 
     std::atomic<HWND> hwnd_{nullptr};
     NOTIFYICONDATAW nid_{};
     Actions actions_;
     std::thread thread_;
+    std::thread worker_;
+    std::mutex queue_mu_;
+    std::condition_variable queue_cv_;
+    std::queue<Callback> queue_;
+    bool worker_exit_ = false;
+    std::atomic<bool> worker_busy_{false};
     HANDLE ready_event_ = nullptr;
-    std::atomic<bool> stopped_{false};
+    HANDLE pump_done_ = nullptr;
+    HANDLE worker_done_ = nullptr;
+    std::atomic<uint64_t> liveness_{0};
     bool icon_added_ = false;
     UINT wm_taskbar_created_ = 0;
 };

@@ -13,6 +13,7 @@ constexpr UINT WM_TRAY_CALLBACK = WM_APP + 2;
 constexpr UINT WM_TRAY_SET_TIP = WM_APP + 3;
 constexpr UINT WM_TRAY_STOP = WM_APP + 4;
 constexpr UINT_PTR kAddIconRetryTimer = 1;
+constexpr UINT_PTR kLivenessTimer = 2;
 constexpr size_t kTipCapacity = 127;
 
 LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -41,14 +42,20 @@ LRESULT TrayIcon::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    if (msg == WM_TIMER && wp == kLivenessTimer) {
+        // Nothing reads this counter here; the point is that only a thread that
+        // gets back to GetMessage can bump it.
+        liveness_.fetch_add(1);
+        return 0;
+    }
     switch (msg) {
         case WM_SHOW_CONFIG:
-            if (actions_.open_config) actions_.open_config();
+            if (actions_.open_config) enqueue(actions_.open_config);
             return 0;
         case WM_TRAY_CALLBACK:
             switch (LOWORD(lp)) {
                 case WM_LBUTTONDBLCLK:
-                    if (actions_.open_config) actions_.open_config();
+                    if (actions_.open_config) enqueue(actions_.open_config);
                     break;
                 case WM_RBUTTONUP:
                 case WM_CONTEXTMENU:
@@ -63,7 +70,10 @@ LRESULT TrayIcon::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 reinterpret_cast<std::wstring*>(lp));
             if (tip) {
                 wcsncpy_s(nid_.szTip, tip->c_str(), _TRUNCATE);
-                nid_.uFlags = NIF_TIP;
+                // uFlags keeps whatever Run() gave it. Narrowing it to NIF_TIP
+                // here would still let this MODIFY through but would leave any
+                // later NIM_ADD without NIF_MESSAGE - an icon that paints and
+                // never answers a right-click.
                 Shell_NotifyIconW(NIM_MODIFY, &nid_);
             }
             return 0;
@@ -105,20 +115,24 @@ void TrayIcon::Run(HANDLE ready_event) {
                          : LoadIconW(nullptr, MAKEINTRESOURCEW(32512));  // IDI_APPLICATION
         wcscpy_s(nid_.szTip, L"MyRemote Agent");
         AddIcon(hwnd);
+        SetTimer(hwnd, kLivenessTimer, 2000, nullptr);
     }
     SetEvent(ready_event);
     if (!hwnd) {
+        SetEvent(pump_done_);
         return;
     }
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        DispatchMessage(&msg);
     }
-    Shell_NotifyIconW(NIM_DELETE, &nid_);
+    KillTimer(hwnd, kLivenessTimer);
+    RemoveIcon();
     DestroyWindow(hwnd);
     hwnd_.store(nullptr);
+    SetEvent(pump_done_);
 }
 
 void TrayIcon::AddIcon(HWND hwnd) {
@@ -133,25 +147,114 @@ void TrayIcon::AddIcon(HWND hwnd) {
     SetTimer(hwnd, kAddIconRetryTimer, 1000, nullptr);
 }
 
+void TrayIcon::RemoveIcon() {
+    if (icon_added_) {
+        Shell_NotifyIconW(NIM_DELETE, &nid_);
+        icon_added_ = false;
+    }
+}
+
+void TrayIcon::WorkerLoop() {
+    for (;;) {
+        Callback fn;
+        {
+            std::unique_lock<std::mutex> lock(queue_mu_);
+            queue_cv_.wait(lock,
+                           [&] { return worker_exit_ || !queue_.empty(); });
+            if (queue_.empty()) {
+                if (worker_exit_) {
+                    break;
+                }
+                continue;
+            }
+            fn = std::move(queue_.front());
+            queue_.pop();
+        }
+        worker_busy_.store(true);
+        fn();
+        worker_busy_.store(false);
+    }
+    SetEvent(worker_done_);
+}
+
+void TrayIcon::enqueue(Callback fn) {
+    if (!fn) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(queue_mu_);
+        queue_.push(std::move(fn));
+    }
+    queue_cv_.notify_one();
+}
+
 bool TrayIcon::start(Actions actions) {
     actions_ = std::move(actions);
     ready_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    pump_done_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    worker_done_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    worker_exit_ = false;
+    worker_ = std::thread(&TrayIcon::WorkerLoop, this);
     thread_ = std::thread(&TrayIcon::Run, this, ready_event_);
     WaitForSingleObject(ready_event_, 3000);
     return hwnd_.load() != nullptr;
 }
 
-void TrayIcon::stop() {
-    stopped_.store(true);
+void TrayIcon::stop(DWORD grace_ms) {
     if (HWND h = hwnd_.load()) {
         PostMessageW(h, WM_TRAY_STOP, 0, 0);
     }
-    if (thread_.joinable()) {
-        thread_.join();
+    // Both waits are on our own events rather than on the threads' handles:
+    // std::thread's native handle is not waitable, and a pump stuck inside a
+    // modal menu or a shell call has to be given up on without hanging us too.
+    const bool pump_done =
+        !thread_.joinable() ||
+        WaitForSingleObject(pump_done_, grace_ms) == WAIT_OBJECT_0;
+    if (pump_done) {
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    } else {
+        // Take the icon down ourselves: a painted icon whose pump we abandoned
+        // is indistinguishable from a working one.
+        RemoveIcon();
+        if (thread_.joinable()) {
+            thread_.detach();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(queue_mu_);
+        worker_exit_ = true;
+    }
+    queue_cv_.notify_all();
+    const DWORD worker_grace = worker_busy_.load() ? grace_ms : 200;
+    const bool worker_done =
+        !worker_.joinable() ||
+        WaitForSingleObject(worker_done_, worker_grace) == WAIT_OBJECT_0;
+    if (worker_done) {
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    } else if (worker_.joinable()) {
+        // Queued actions are capture-free, so a worker that outlives us can
+        // only finish what it started; it cannot reach back into this object.
+        worker_.detach();
     }
     if (ready_event_) {
         CloseHandle(ready_event_);
         ready_event_ = nullptr;
+    }
+    // An abandoned thread may still signal these, so they stay open until both
+    // threads really came back. This happens at most once per bad exit.
+    if (pump_done && worker_done) {
+        if (pump_done_) {
+            CloseHandle(pump_done_);
+            pump_done_ = nullptr;
+        }
+        if (worker_done_) {
+            CloseHandle(worker_done_);
+            worker_done_ = nullptr;
+        }
     }
 }
 
@@ -211,26 +314,31 @@ void TrayIcon::ShowMenu() {
                                pt.y, h, nullptr);
     DestroyMenu(menu);
     PostMessageW(h, WM_NULL, 0, 0);
+    // Everything a picked item does can block - a UAC prompt, schtasks, a pipe
+    // whose peer stopped reading. This loop is the only thing that can answer
+    // the next right-click, so the work goes to the worker thread instead.
+    Callback action;
     switch (cmd) {
         case kCmdConfig:
-            if (actions_.open_config) actions_.open_config();
+            action = actions_.open_config;
             break;
         case kCmdPause:
-            if (actions_.toggle_pause) actions_.toggle_pause();
+            action = actions_.toggle_pause;
             break;
         case kCmdHide:
-            if (actions_.hide_icon) actions_.hide_icon();
+            action = actions_.hide_icon;
             break;
         case kCmdElevate:
-            if (actions_.elevate) actions_.elevate();
+            action = actions_.elevate;
             break;
         case kCmdAutostart:
-            if (actions_.install_autostart) actions_.install_autostart();
+            action = actions_.install_autostart;
             break;
         case kCmdQuit:
-            if (actions_.quit) actions_.quit();
+            action = actions_.quit;
             break;
         default:
             break;
     }
+    enqueue(std::move(action));
 }
