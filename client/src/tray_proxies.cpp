@@ -161,9 +161,12 @@ void dispatch(Client* self, const std::string& line) {
             self->stale_pongs.store(0);
         }
     } else if (line.rfind("save_config ", 0) == 0) {
-        if (g_sink.save_config) {
+        // The file is ours to write, so the verdict is ours to say: the proxy
+        // must not tell its dialog "saved" on the strength of a pipe write.
+        const bool ok =
+            g_sink.save_config &&
             g_sink.save_config(line.substr(strlen("save_config ")));
-        }
+        queue_line(self, ok ? "saved ok" : "saved fail");
     } else {
         mlog::warn("Tray proxies: unknown command from session " +
                    std::to_string(self->session) + ": " + line);

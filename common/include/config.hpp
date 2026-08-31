@@ -4,6 +4,18 @@
 
 namespace config {
 
+// What was actually behind the path load() was given. Every field of
+// ClientConfig has a default, so "here is a config" cannot by itself tell
+// "nobody has configured this machine" apart from "it is configured, but I
+// could not read it" - and the second one used to look exactly like the first,
+// which is how a dialog that showed 127.0.0.1 came to write that over a real
+// address the moment somebody pressed Save.
+enum class LoadStatus {
+    Missing,     // no such file: a fresh machine, and editable on purpose
+    Read,        // at least one known key came back
+    Unreadable,  // a file is there, but nothing in it is a setting we know
+};
+
 // Client (被控端) configuration, loaded from config.json next to agent.exe.
 struct ClientConfig {
     std::string server_ip = "127.0.0.1";
@@ -19,10 +31,12 @@ struct ClientConfig {
     // only if they want it to, and the config dialog is the way to say so.
     bool tray_icon = true;
 
-    static ClientConfig load(const std::string& path);
+    static ClientConfig load(const std::string& path,
+                             LoadStatus* status = nullptr);
     // Parses the same field set load() reads; empty/absent keys keep defaults.
     // The tray proxy uses it to hand a config received over its pipe to save().
-    static ClientConfig from_json(const std::string& text);
+    static ClientConfig from_json(const std::string& text,
+                                  LoadStatus* status = nullptr);
     static bool save(const ClientConfig& cfg, const std::string& path);
 };
 

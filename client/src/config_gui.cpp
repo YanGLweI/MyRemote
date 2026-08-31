@@ -364,8 +364,10 @@ void on_save(HWND hwnd) {
         cfg->save_via ? cfg->save_via(disk)
                       : config::ClientConfig::save(disk, cfg->config_path);
     if (!written) {
-        set_status(hwnd, L"保存失败：无法写入 " + wide(cfg->config_path) +
-                         L"（权限不足或被占用？）");
+        set_status(hwnd,
+                   L"配置没有写入：" + wide(cfg->config_path) +
+                   L"\n可能是权限不足、文件被占用，或者正在运行的 agent "
+                   L"拒绝覆盖它自己读不到的配置。");
         return;
     }
     cfg->saved = true;

@@ -179,6 +179,25 @@ gui::ConfigUi make_ui(const config::ClientConfig& c) {
     return ui;
 }
 
+// A config.json that exists but yields not one known setting is not
+// "unconfigured" - it is a file somebody loses the moment a dialog pre-filled
+// with defaults gets saved. Those dialogs say so and stay shut. A missing file
+// is the other thing: that is what a machine nobody has set up looks like, and
+// it stays editable.
+bool config_is_editable(config::LoadStatus status) {
+    if (status != config::LoadStatus::Unreadable) {
+        return true;
+    }
+    mlog::warn("Config exists but holds no setting we know; not editing it: " +
+               g_config_path);
+    const std::wstring text =
+        L"读不到配置文件里的任何设置：\n" + to_wide(g_config_path) +
+        L"\n\n在这个窗口里保存会把默认值覆盖上去，所以它没有打开。"
+        L"请先修正这个文件，或者删掉它再重新配置。";
+    MessageBoxW(nullptr, text.c_str(), L"MyRemote 配置", MB_OK | MB_ICONERROR);
+    return false;
+}
+
 // Tray click / second-instance double-click: raise the config dialog of the
 // running agent; a save schedules a hot reload in the supervisor loop.
 void open_config_dialog() {
@@ -186,7 +205,14 @@ void open_config_dialog() {
     if (!g_config_dialog_open.compare_exchange_strong(expected, true)) {
         return;  // dialog already open
     }
-    gui::ConfigUi ui = make_ui(config::ClientConfig::load(g_config_path));
+    config::LoadStatus status = config::LoadStatus::Missing;
+    config::ClientConfig read =
+        config::ClientConfig::load(g_config_path, &status);
+    if (!config_is_editable(status)) {
+        g_config_dialog_open.store(false);
+        return;
+    }
+    gui::ConfigUi ui = make_ui(read);
     ui.save_mode = gui::SaveMode::SaveAndApply;
     gui::show_config_gui_async(std::move(ui), [](const gui::ConfigUi& done) {
         g_config_dialog_open.store(false);
@@ -1190,11 +1216,21 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                      "tray menu or a scheduled task to run elevated");
     log_session_state();
 
-    config::ClientConfig cfg = config::ClientConfig::load(g_config_path);
+    config::LoadStatus cfg_status = config::LoadStatus::Missing;
+    config::ClientConfig cfg = config::ClientConfig::load(g_config_path, &cfg_status);
+    if (cfg_status == config::LoadStatus::Unreadable && (g_session_host || args.background)) {
+        // No dialog to open for a headless process, but "I am running on the
+        // defaults" is not something a log file should keep to itself.
+        mlog::warn("The config file holds no setting we know; running on defaults: " +
+                   g_config_path);
+    }
     if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
     if (args.port_override > 0) cfg.server_port = args.port_override;
 
     if (args.config_ui) {
+        if (!config_is_editable(cfg_status)) {
+            return 1;
+        }
         gui::ConfigUi ui = make_ui(cfg);
         ui.save_mode = gui::SaveMode::SaveOnly;
         return gui::run_config_gui(ui) ? 0 : 1;
@@ -1206,6 +1242,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                    "exits so the tunnel stays with the hosted process. Use "
                    "--force to override.");
         if (!args.background) {
+            if (!config_is_editable(cfg_status)) {
+                return 1;
+            }
             gui::ConfigUi ui = make_ui(cfg);
             ui.save_mode = gui::SaveMode::SaveOnly;
             gui::run_config_gui(ui);
@@ -1226,13 +1265,20 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     }
     if (!args.background) {
         // First double-click on a fresh machine: configure, then run.
+        if (!config_is_editable(cfg_status)) {
+            return 1;
+        }
         gui::ConfigUi ui = make_ui(cfg);
         ui.save_mode = gui::SaveMode::SaveAndRun;
         if (!gui::run_config_gui(ui)) {
             mlog::info("Configuration cancelled, agent not started");
             return 0;
         }
-        cfg = config::ClientConfig::load(g_config_path);
+        cfg = config::ClientConfig::load(g_config_path, &cfg_status);
+        if (cfg_status != config::LoadStatus::Read) {
+            mlog::warn("Saved, but the agent cannot read that file back: " +
+                       g_config_path);
+        }
     }
 
     g_control_password = cfg.control_password;
@@ -1324,8 +1370,16 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             // The proxy runs user-IL and may not be able to write the agent
             // directory; the host writes on its behalf and the mtime poll
             // below picks the change up as a normal hot reload.
-            return config::ClientConfig::save(
-                config::ClientConfig::from_json(json), g_config_path);
+            config::LoadStatus status = config::LoadStatus::Unreadable;
+            const config::ClientConfig incoming =
+                config::ClientConfig::from_json(json, &status);
+            if (status != config::LoadStatus::Read) {
+                // save() rewrites the whole file, so a payload that carries no
+                // settings would write the defaults over somebody's real ones.
+                mlog::warn("Tray proxy sent a config we could not read; nothing written");
+                return false;
+            }
+            return config::ClientConfig::save(incoming, g_config_path);
         };
         trayproxies::start(std::move(sink), g_config_path);
     }
@@ -1400,7 +1454,18 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             g_connection->disconnect();
             g_state.registered.store(false);
             g_state.streaming.store(false);
-            cfg = config::ClientConfig::load(g_config_path);
+            config::LoadStatus restatus = config::LoadStatus::Missing;
+            config::ClientConfig fresh =
+                config::ClientConfig::load(g_config_path, &restatus);
+            if (restatus != config::LoadStatus::Read) {
+                // Swapping in the code defaults here would move a live tunnel to
+                // 127.0.0.1 because a file went missing; keeping the settings the
+                // agent is actually running with is the steadier and louder call.
+                mlog::warn("The config file is gone or holds no setting we know; "
+                           "keeping the settings this agent runs with");
+            } else {
+                cfg = fresh;
+            }
             if (!args.ip_override.empty()) cfg.server_ip = args.ip_override;
             if (args.port_override > 0) cfg.server_port = args.port_override;
             g_control_password = cfg.control_password;

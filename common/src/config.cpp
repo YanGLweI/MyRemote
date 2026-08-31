@@ -144,24 +144,40 @@ std::string read_file(const std::string& path) {
 
 }  // namespace
 
-ClientConfig ClientConfig::from_json(const std::string& text) {
+ClientConfig ClientConfig::from_json(const std::string& text,
+                                     LoadStatus* status) {
     ClientConfig cfg;
-    if (text.empty()) {
-        return cfg;
+    size_t keys = 0;
+    if (!text.empty()) {
+        MiniJson json(text);
+        keys += json.get_string("server_ip", cfg.server_ip);
+        keys += json.get_int("server_port", cfg.server_port);
+        keys += json.get_string("secret_key", cfg.secret_key);
+        keys += json.get_string("device_name", cfg.device_name);
+        keys += json.get_string("control_password", cfg.control_password);
+        keys += json.get_int("max_encode_width", cfg.max_encode_width);
+        keys += json.get_bool("tray_icon", cfg.tray_icon);
     }
-    MiniJson json(text);
-    json.get_string("server_ip", cfg.server_ip);
-    json.get_int("server_port", cfg.server_port);
-    json.get_string("secret_key", cfg.secret_key);
-    json.get_string("device_name", cfg.device_name);
-    json.get_string("control_password", cfg.control_password);
-    json.get_int("max_encode_width", cfg.max_encode_width);
-    json.get_bool("tray_icon", cfg.tray_icon);
+    // A file we opened but learned nothing from is not an unconfigured machine.
+    // Treating it as one is what let a dialog full of defaults be saved as truth.
+    if (status) {
+        *status = keys ? LoadStatus::Read : LoadStatus::Unreadable;
+    }
     return cfg;
 }
 
-ClientConfig ClientConfig::load(const std::string& path) {
-    return from_json(read_file(path));
+ClientConfig ClientConfig::load(const std::string& path, LoadStatus* status) {
+    if (status &&
+        GetFileAttributesW(utf8_to_wide(path).c_str()) == INVALID_FILE_ATTRIBUTES) {
+        *status = LoadStatus::Missing;
+        return ClientConfig();
+    }
+    LoadStatus parsed = LoadStatus::Unreadable;
+    ClientConfig cfg = from_json(read_file(path), &parsed);
+    if (status) {
+        *status = parsed;
+    }
+    return cfg;
 }
 
 bool ClientConfig::save(const ClientConfig& cfg, const std::string& path) {

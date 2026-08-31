@@ -37,6 +37,9 @@ std::atomic<bool> g_dialog_open{false};
 // Set when the host's state says the icon should not exist any more, so the
 // read loop can take itself down instead of being killed from outside.
 std::atomic<bool> g_leave{false};
+// 0 = nothing asked yet, 1 = the host wrote it, -1 = the host refused. Only the
+// host can write this file, so "save_config" is a request, not an achievement.
+std::atomic<int> g_save_reply{0};
 constexpr DWORD kSilenceMs = 15000;
 
 bool send_line(const std::string& line) {
@@ -191,9 +194,26 @@ int run(const std::string& config_override) {
         if (!g_dialog_open.compare_exchange_strong(expected, true)) {
             return;
         }
-        gui::ConfigUi ui;
+        config::LoadStatus status = config::LoadStatus::Missing;
         const config::ClientConfig c =
-            config::ClientConfig::load(g_config_path);
+            config::ClientConfig::load(g_config_path, &status);
+        if (status == config::LoadStatus::Unreadable) {
+            // A dialog full of defaults here is a lie with teeth: the host
+            // answers Save by writing this very file. Missing is different - that
+            // is what a machine nobody has configured yet looks like.
+            g_dialog_open.store(false);
+            mlog::warn("Tray proxy: not editing an unreadable config: " +
+                       g_config_path);
+            const std::wstring text =
+                L"读不到配置文件里的任何设置：\n" +
+                win32util::utf8_to_wide(g_config_path) +
+                L"\n\n在这个窗口里保存会把默认值覆盖上去，所以它没有打开。"
+                L"请先修正这个文件，或者删掉它再重新配置。";
+            MessageBoxW(nullptr, text.c_str(), L"MyRemote 配置",
+                        MB_OK | MB_ICONERROR);
+            return;
+        }
+        gui::ConfigUi ui;
         ui.server_ip = c.server_ip;
         ui.server_port = c.server_port;
         ui.secret_key = c.secret_key;
@@ -204,9 +224,20 @@ int run(const std::string& config_override) {
         ui.config_path = g_config_path;
         ui.save_mode = gui::SaveMode::SaveAndApply;
         // The proxy may not be able to write the agent directory; the host
-        // writes on our behalf and hot-reloads itself.
+        // writes on our behalf and hot-reloads itself. Its answer is the only
+        // evidence the write happened, so wait for it.
         ui.save_via = [](const config::ClientConfig& c2) {
-            return send_line("save_config " + to_json_line(c2));
+            g_save_reply.store(0);
+            if (!send_line("save_config " + to_json_line(c2))) {
+                return false;
+            }
+            for (int i = 0; i < 60 && g_save_reply.load() == 0; ++i) {
+                Sleep(50);
+            }
+            if (g_save_reply.load() == 0) {
+                mlog::warn("Tray proxy: the agent never answered the save");
+            }
+            return g_save_reply.load() > 0;
         };
         gui::show_config_gui_async(std::move(ui),
                                    [](const gui::ConfigUi&) {
@@ -251,6 +282,10 @@ int run(const std::string& config_override) {
                     // liveness() only advances inside the pump's message loop,
                     // so this is the host's proof that the tray can still answer.
                     send_line("pong tray=" + std::to_string(tray.liveness()));
+                    continue;
+                }
+                if (line.rfind("saved ", 0) == 0) {
+                    g_save_reply.store(line == "saved ok" ? 1 : -1);
                     continue;
                 }
                 if (line.rfind("state ", 0) == 0) {
