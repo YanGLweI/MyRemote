@@ -590,6 +590,61 @@ bool is_running() {
            status.dwCurrentState == SERVICE_RUNNING;
 }
 
+// The session host rewrites host.status about once a second while it lives and
+// nobody deletes it when it dies, so read without asking it is the one record on
+// this machine that can report a dead host's registered=/paused=/proxies= as if
+// they were the current ones - which is what a stopped service leaves behind.
+// Two signals, because each one fails differently: whether that pid is still
+// running (which a limited token may not be able to ask) and how long ago the
+// file was last written.
+std::string host_record_gap(const std::string& text, HANDLE file) {
+    unsigned long pid = 0;
+    if (sscanf(text.c_str(), "pid=%lu", &pid) == 1 && pid) {
+        HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                               FALSE, static_cast<DWORD>(pid));
+        if (!h) {
+            // Only a denied ask means "this token cannot tell". Any other failure
+            // - there is no such process - is exactly what a stale record looks
+            // like, and a fresh timestamp would otherwise wave it through.
+            if (GetLastError() != ERROR_ACCESS_DENIED) {
+                return "pid " + std::to_string(pid) + " is not running";
+            }
+        } else {
+            const bool dead = WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
+            CloseHandle(h);
+            if (dead) {
+                return "pid " + std::to_string(pid) + " is gone";
+            }
+        }
+    }
+    // Either that pid is still alive, or this token may not ask - and a record
+    // the host has not touched in a quarter of a minute is not a live host
+    // either way.
+    FILETIME written{};
+    if (GetFileTime(file, nullptr, nullptr, &written)) {
+        SYSTEMTIME utc{}, local{};
+        FILETIME now{};
+        GetSystemTimeAsFileTime(&now);
+        ULARGE_INTEGER last{written.dwLowDateTime, written.dwHighDateTime};
+        ULARGE_INTEGER fresh{now.dwLowDateTime, now.dwHighDateTime};
+        const long long secs =
+            static_cast<long long>((fresh.QuadPart - last.QuadPart) / 10000000ULL);
+        if (secs > 15) {
+            std::string when = "?";
+            if (FileTimeToSystemTime(&written, &utc) &&
+                SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local)) {
+                char stamp[40];
+                snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d %02d:%02d:%02d",
+                         local.wYear, local.wMonth, local.wDay, local.wHour,
+                         local.wMinute, local.wSecond);
+                when = stamp;
+            }
+            return "written " + when + " and nothing since - a live host rewrites it every second";
+        }
+    }
+    return {};
+}
+
 std::string query() {
     std::string out;
     ServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
@@ -653,8 +708,12 @@ std::string query() {
         while (ReadFile(file, chunk, sizeof(chunk) - 1, &read, nullptr) && read) {
             text.append(chunk, read);
         }
+        const std::string gap = host_record_gap(text, file);
         CloseHandle(file);
-        out += "  host: " + text + "\n";
+        // The record itself stays on the line, fields intact: the verdict goes
+        // in front of it so nobody can skim a dead host's readings as current.
+        out += "  host: " + (gap.empty() ? std::string() : ("STALE(" + gap + ") ")) +
+               text + "\n";
     } else {
         out += "  host: no session host running\n";
     }
