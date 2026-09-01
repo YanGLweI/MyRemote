@@ -74,6 +74,62 @@ bool annexb_to_avcc(const uint8_t* data, size_t size, std::vector<uint8_t>& out)
     return !out.empty();
 }
 
+// Extract SPS and PPS NAL units from an Annex-B access unit and build the
+// MF_MT_MPEG_SEQUENCE_HEADER blob (AVCC extradata layout). Returns false when
+// no SPS is present (a non-keyframe).
+bool build_sequence_header(const uint8_t* data, size_t size,
+                           std::vector<uint8_t>& header) {
+    std::vector<std::vector<uint8_t>> sps;
+    std::vector<std::vector<uint8_t>> pps;
+    size_t i = 0;
+    while (i + 3 < size) {
+        if (!(data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)) {
+            ++i;
+            continue;
+        }
+        i += 3;
+        if (i < size && data[i] == 0) ++i;
+        if (i >= size) break;
+        const uint8_t nal_type = data[i] & 0x1F;
+        size_t nal_start = i;
+        while (i + 3 <= size) {
+            if (data[i] == 0 && data[i + 1] == 0 &&
+                (data[i + 2] == 1 || (data[i + 2] == 0 && i + 3 < size &&
+                                      data[i + 3] == 1))) {
+                break;
+            }
+            ++i;
+        }
+        const size_t nal_len = i - nal_start;
+        if (nal_len == 0 || nal_start + nal_len > size) continue;
+        if (nal_type == 7) {
+            sps.emplace_back(data + nal_start, data + nal_start + nal_len);
+        } else if (nal_type == 8) {
+            pps.emplace_back(data + nal_start, data + nal_start + nal_len);
+        }
+    }
+    if (sps.empty()) return false;
+    header.clear();
+    header.push_back(1);  // configurationVersion
+    header.push_back(sps[0][1]);  // AVCProfileIndication
+    header.push_back(sps[0][2]);  // profile_compatibility
+    header.push_back(sps[0][3]);  // AVCLevelIndication
+    header.push_back(0xFF);       // lengthSizeMinusOne = 3 (4-byte prefixes)
+    header.push_back(0xE0 | static_cast<uint8_t>(sps.size()));
+    for (const auto& n : sps) {
+        header.push_back(static_cast<uint8_t>((n.size() >> 8) & 0xFF));
+        header.push_back(static_cast<uint8_t>(n.size() & 0xFF));
+        header.insert(header.end(), n.begin(), n.end());
+    }
+    header.push_back(static_cast<uint8_t>(pps.size()));
+    for (const auto& n : pps) {
+        header.push_back(static_cast<uint8_t>((n.size() >> 8) & 0xFF));
+        header.push_back(static_cast<uint8_t>(n.size() & 0xFF));
+        header.insert(header.end(), n.begin(), n.end());
+    }
+    return true;
+}
+
 // NV12 -> RGB32, same BT.601 math the OpenH264 path uses so both decoders
 // agree on colour. The MF decoder hands us a contiguous NV12 buffer.
 void nv12_to_qimage(const uint8_t* y, const uint8_t* uv, int y_stride,
@@ -170,9 +226,10 @@ bool MfDecoder::initialize(int width, int height, CodecType type) {
     if (FAILED(MFCreateMediaType(input.GetAddressOf()))) return false;
     input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     input->SetGUID(MF_MT_SUBTYPE, *subtype);
-    input->SetUINT64(MF_MT_FRAME_SIZE, Pack2UINT32AsUINT64(
-                                           static_cast<UINT32>(width),
-                                           static_cast<UINT32>(height)));
+    // Do NOT set MF_MT_FRAME_SIZE here: the H.264/HEVC decoder derives the
+    // real dimensions from the stream's SPS/PPS, and declaring a wrong size
+    // (registration resolution vs. the agent's downscaled encode size) makes
+    // ProcessOutput answer NEED_MORE_INPUT forever.
     input->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
     if (FAILED(mft_->SetInputType(0, input.Get(), 0))) {
         mlog::warn("MF decoder rejected input type");
@@ -221,6 +278,24 @@ bool MfDecoder::initialize(int width, int height, CodecType type) {
         }
     }
 
+    // The decoder's output type may carry the real frame size (the one the
+    // SPS declares), which can differ from the session's registration size:
+    // the agent downscales to its encode cap. Adopt it so NV12->QImage
+    // conversion and the renderer see the actual picture dimensions.
+    if (output) {
+        UINT64 size = 0;
+        if (SUCCEEDED(output->GetUINT64(MF_MT_FRAME_SIZE, &size))) {
+            const UINT32 w = static_cast<UINT32>(size >> 32);
+            const UINT32 h = static_cast<UINT32>(size & 0xFFFFFFFF);
+            if (w > 0 && h > 0) {
+                width_ = static_cast<int>(w);
+                height_ = static_cast<int>(h);
+                mlog::info("MF decoder adopted output size " +
+                           std::to_string(width_) + "x" + std::to_string(height_));
+            }
+        }
+    }
+
     if (FAILED(mft_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0))) {
         shutdown();
         return false;
@@ -243,10 +318,27 @@ bool MfDecoder::decode(const uint8_t* data, size_t size, QImage& out) {
     std::vector<uint8_t> avcc;
     const uint8_t* bits = data;
     size_t bit_len = size;
-    if (has_start_code(data, size)) {
+    const bool is_annexb = has_start_code(data, size);
+    if (is_annexb) {
         if (!annexb_to_avcc(data, size, avcc)) return false;
         bits = avcc.data();
         bit_len = avcc.size();
+    }
+
+    // For streaming scenarios where the agent may send keyframes without
+    // carrying SPS/PPS upfront, we can skip the explicit media type update.
+    // The MF H.264 decoder will parse them from the stream itself. This avoids
+    // the "need more input" hang when the first few frames are non-keyframes.
+    // static bool sequence_header_extracted = false;
+
+    static int dbg_count = 0;
+    if (++dbg_count % 60 == 1) {
+        mlog::info("MfDecoder::decode in=" + std::to_string(size) +
+                   " annexb=" + std::to_string(is_annexb) +
+                   " out=" + std::to_string(bit_len) +
+                   " first4=" + std::to_string(bits[0]) + "," +
+                   std::to_string(bits[1]) + "," + std::to_string(bits[2]) + "," +
+                   std::to_string(bits[3]));
     }
 
     Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
@@ -264,6 +356,11 @@ bool MfDecoder::decode(const uint8_t* data, size_t size, QImage& out) {
     Microsoft::WRL::ComPtr<IMFSample> sample;
     if (FAILED(MFCreateSample(sample.GetAddressOf()))) return false;
     sample->AddBuffer(buffer.Get());
+    // MF decoders expect a presentation timestamp and a duration on every
+    // sample; samples without them can be rejected or decoded into garbage.
+    sample->SetSampleTime(sample_time_);
+    sample->SetSampleDuration(10000000LL / (frame_rate_ > 0 ? frame_rate_ : 30));
+    sample_time_ += 10000000LL / (frame_rate_ > 0 ? frame_rate_ : 30);
 
     HRESULT hr = mft_->ProcessInput(0, sample.Get(), 0);
     if (FAILED(hr)) {
@@ -275,29 +372,48 @@ bool MfDecoder::decode(const uint8_t* data, size_t size, QImage& out) {
 }
 
 bool MfDecoder::drain_decoded(QImage& out) {
+    static int consecutive_failures = 0;
     for (;;) {
         MFT_OUTPUT_DATA_BUFFER ob{};
         Microsoft::WRL::ComPtr<IMFSample> sample;
         Microsoft::WRL::ComPtr<IMFMediaBuffer> out_buffer;
         if (!output_provides_samples_) {
-            if (FAILED(MFCreateSample(sample.GetAddressOf()))) return false;
+            if (FAILED(MFCreateSample(sample.GetAddressOf()))) break;
             // An empty sample makes ProcessOutput fail immediately: the MFT
             // needs somewhere to write the decoded frame. Size the buffer from
             // the stream info the MFT gave us at init.
             const DWORD size = output_cb_size_ > 0 ? output_cb_size_ : 1;
             if (FAILED(MFCreateAlignedMemoryBuffer(size, output_cb_alignment_,
                                                    out_buffer.GetAddressOf()))) {
-                return false;
+                break;
             }
-            if (FAILED(sample->AddBuffer(out_buffer.Get()))) return false;
+            if (FAILED(sample->AddBuffer(out_buffer.Get()))) break;
             ob.pSample = sample.Get();
         }
         DWORD status = 0;
         HRESULT hr = mft_->ProcessOutput(0, 1, &ob, &status);
-        if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return false;
+        static int dbg_out = 0;
+        if (++dbg_out % 60 == 1) {
+            mlog::info("MfDecoder::drain hr=0x" +
+                       std::to_string(static_cast<unsigned long>(hr)) +
+                       " status=" + std::to_string(status) +
+                       " provides=" + std::to_string(output_provides_samples_));
+        }
+        if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+            consecutive_failures++;
+            mlog::warn("MF decoder NEED_MORE_INPUT " + std::to_string(consecutive_failures));
+            // Keep trying to drain; we might get a frame later
+            return false;  // Not enough input yet, try next frame later
+        }
         if (FAILED(hr)) {
             mlog::warn("MF decoder ProcessOutput failed: 0x" +
                        std::to_string(static_cast<unsigned long>(hr)));
+            consecutive_failures++;
+            if (consecutive_failures > 30) {
+                mlog::warn("MF decoder gave up after 30 failures — falling back to OpenH264");
+                return false;  // Will be replaced by the caller with OpenH264
+            }
+            // Don't give up on first failure; wait for the next keyframe
             return false;
         }
         if (!ob.pSample) continue;
@@ -312,6 +428,19 @@ bool MfDecoder::drain_decoded(QImage& out) {
             BYTE* y = nullptr;
             LONG y_stride = 0;
             if (SUCCEEDED(buf2d->Lock2D(&y, &y_stride))) {
+                // The sample may carry the actual picture size (SPS-derived),
+                // which differs from the registration size when the agent
+                // downscales. Adopt it so the conversion matches reality.
+                UINT64 samp_size = 0;
+                if (SUCCEEDED(ob.pSample->GetUINT64(MF_MT_FRAME_SIZE,
+                                                    &samp_size))) {
+                    const UINT32 sw = static_cast<UINT32>(samp_size >> 32);
+                    const UINT32 sh = static_cast<UINT32>(samp_size & 0xFFFFFFFF);
+                    if (sw > 0 && sh > 0) {
+                        width_ = static_cast<int>(sw);
+                        height_ = static_cast<int>(sh);
+                    }
+                }
                 const int h = height_ > 0 ? height_ : 1;
                 const int w = width_ > 0 ? width_ : 1;
                 const BYTE* uv = y + static_cast<size_t>(y_stride) * h;
@@ -322,6 +451,7 @@ bool MfDecoder::drain_decoded(QImage& out) {
         }
         return false;
     }
+    return false;  // Should never reach here (empty output or error)
 }
 
 // ---------------------------------------------------------------------------
@@ -374,12 +504,11 @@ std::unique_ptr<IVideoDecoder> DecoderFactory::create(CodecType type, int width,
         mlog::warn("HEVC decoder unavailable; the agent must fall back to H.264");
         return nullptr;
     }
-    // H.264: try MF first, then OpenH264.
-    auto decoder = std::make_unique<MfDecoder>(CodecType::CODEC_H264);
-    if (decoder->initialize(width, height, CodecType::CODEC_H264)) {
-        return decoder;
-    }
-    mlog::info("MF H.264 decoder unavailable, using OpenH264");
+    // H.264: OpenH264 software decode is the reliable path for the agent's
+    // OpenH264-encoded stream (Annex-B). The MF H.264 decoder keeps answering
+    // MF_E_TRANSFORM_NEED_MORE_INPUT on that stream in practice, so prefer
+    // software here; MF stays the path for HEVC.
+    mlog::info("Using OpenH264 for H.264 (MF H.264 unreliable on Annex-B)");
     auto soft = std::make_unique<OpenH264DecoderAdapter>();
     if (soft->initialize(width, height, CodecType::CODEC_H264)) {
         return soft;

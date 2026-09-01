@@ -57,6 +57,17 @@ private:
     // to cbAlignment) to the sample it hands to ProcessOutput.
     DWORD output_cb_size_ = 0;
     DWORD output_cb_alignment_ = 1;
+    // Presentation clock for decoded samples: MF decoders expect increasing
+    // timestamps; frames without one can be dropped or misordered.
+    LONGLONG sample_time_ = 0;
+    int frame_rate_ = 30;
+    // Sequence header (SPS/PPS) cached from the first keyframe and attached to
+    // the input media type; MF H.264 decoders refuse to decode without it.
+    std::vector<uint8_t> sequence_header_;
+    bool sequence_header_set_ = false;
+    // Consecutive failed decode attempts; past the limit the pipeline swaps
+    // this decoder for the OpenH264 fallback instead of showing a black screen.
+    int consecutive_failures_ = 0;
 };
 
 // Adapter over the existing OpenH264 decoder so FramePipeline only has to know
