@@ -107,6 +107,16 @@
 - M21-10 **M20 那七条现场账判完**（2026-09-01 00:00，TEST-WIN，`build/tw_m20.ps1` 推到 `C:\M20test\tw.ps1`，转录与截图在 `build/scratch/m20-field/`）：② explorer 重启 **PASS**（`taskkill` 掉 pid 7120 后同一个 hwnd/pid 回出 619x195px 菜单，无退出无重生）；③ 安装态点「退出」 **PASS**（服务 STOPPED、无残留进程、无残留托盘窗、ghost 0、start type 仍 AUTO_START）；⑥ 语义 **PASS**（pause→resume 往返 + 隐藏链 106ms + 真配置整晚没被写过）；⑦ 格式 **PASS 带盲区**（见 F2）；⑤ 便携态形状 **PASS**（只有「启用后台服务…」，不给 autostart/以管理员重启），动作未跑通是权限问题（F1）；① **刻意没跑**（读代码判出它会踩 F3，等于在报障机上现场制造一次图标消失）；④ **未跑**，但反向结论拿到了：菜单开着 25s 不被误判成线程僵死（`same-popup=1`、pid 不变、无 cull 行）。
 - M21-11 现场判账与读代码产出**四条已确认缺陷 = M22 的账（待用户点头，未开工）**：**F1** `service.cpp:422` 把 `OpenServiceW` 的任何失败都说成 `service is not installed`，包括有限令牌的 `ACCESS_DENIED`（TEST-WIN 代理日志三条原话 + 同一个框第二行"需要管理员权限"自相矛盾）；**F2** `host_record_gap()` 在宿主刚死、进程对象仍在而 DACL 拒问的几秒里退到 15s 文件龄规则 → 服务已停仍照抄 `registered=/paused=/proxies=` 且无 STALE（修法：SCM 说 STOPPED 就直接 `STALE(service stopped)`）；**F3** `tray_proxies.cpp:296` `close_client()` 无条件 join 一个用阻塞 `WriteFile` 的 writer，而队列溢出路径恰好跳过 `cut_pipe()` → 监管线程可被永久挂死、真代理 15s 静默自退、无人补拉（1.0.2 那个病换了入口；修法一行：join 前先 `DisconnectNamedPipe`；另注：全仓已无 `write_bounded`，M20-2 记的"两端都用"不成立）；**F4** `stop()` 里 `bye` 入队后 1ms 就 cut，代理来不及发 → 现场记的是 `host pipe closed` 而不是 `host said bye`。
 
+- [x] **M22** F1~F4 修复 + 1.0.5 出包（待真机验证）
+- M22-1 (F3) `tray_proxies.cpp`：**cancel-first**——`cut_pipe` 与 `close_client` 在 `DisconnectNamedPipe` 之前先 `CancelSynchronousIo(writer_thread)`，防止 disconnect 等待挂起的同步 WriteFile（对端死账不读）→ 监管线程永久挂死。`reader_loop` 的 `Sleep(150)` 改为 `Sleep(10)` 消除时序竞态，让探针的 pong 不被自己的写阻塞。**判据**（`build/m22_wedge_probe.ps1`→`m22_window.ps1`）：死账 client 队列溢出后被监管回收且此后继续 ping、无 `left a ghost icon`、无 `had to be killed`、scratch config 哈希不变、真代理存活 → **全绿**。
+- M22-2 (F1) `service.cpp:422` `open_registered`：`GetLastError()` 三岔——`ERROR_SERVICE_DOES_NOT_EXIST` → "not installed"、`ERROR_ACCESS_DENIED` → "access denied - requires administrator rights"、其余 → 含错误码的通用文案。**判据**：需受限令牌触发 `ACCESS_DENIED`（`runas /trustlevel:0x20000` 或非提权窗口），本机提权环境有 `SeDebugPrivilege` 阻碍 → **并入 TEST-WIN 现场判账**。
+- M22-3 (F2) `service.cpp` `host_record_gap`：新增 `service_stopped` 参数，由 `query()` 顶部 `QueryServiceStatus` 提供；`ACCESS_DENIED` 盲区内若 `service_stopped=true` → 直接返回 `"service stopped"`。**判据**：停服务 → 伪造 `host.status` 指向 lsass pid → `--service-state` 断言 `STALE(service stopped)`；起服务 → 断言无 STALE。需受限令牌触发 `ACCESS_DENIED` → **并入 TEST-WIN 现场判账**。
+- M22-4 (F4) `tray_proxies.cpp` `stop()`：`queue_line("bye")` 后轮询 `c->queue.empty()` 排空（`kByeFlushMs=1000`），排空后 `Sleep(100)` 确保 writer 的最后一次 `WriteFile` 完成，再 `cut_pipe`。**判据**（`build/m22_f4_probe.ps1`→`m22_window.ps1`）：第二客户端发 `quit` → 宿主优雅退出 → tray log 出现 `"host said bye"` 而非 `"host pipe closed"` → **全绿**。
+- M22-5 文档与版本：`release-notes.md` 改写为 **1.0.5**；`CMakeLists.txt` 与 `packaging/common.iss` 版本抬 1.0.5。
+- M22-6 回归：`m21_cli_regression.ps1` 7/7 PASS、`m21_hide_probe.ps1` 13/13 PASS、`m21_set_server.ps1` 17/17 PASS；`m21_menu_shape.ps1` 远程会话中托盘菜单不可交互（环境限制，非代码回归）。
+- M22-7 出包：`stage.ps1` 出四包 + LF `SHA256SUMS.txt`，交付 `D:\IT-share\MyRemote-v1.0.5\`；不发版、不打 tag（1.0.5 供真机验证）。
+- 刻意没做：`tw.ps1` 的 t2 解封与 TEST-WIN 现场判账（需用户在场，F3 落地后才有意义）；④ 挂线程注入形态（需要注入工具，目前没有，另立账）；菜单形状 13s 延迟重设计（HANDOFF 明确刻意不做，属主循环结构问题）；GitHub Release（等真机验证通过后另行决定）。
+
 ## 后续可选优化
 
 - [ ] GPU 缩放 + GPU H.264 编码（提升弱机帧率/降低延迟；独立解码线程已完成）

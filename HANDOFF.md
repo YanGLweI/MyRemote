@@ -1,4 +1,4 @@
-# 开发交接文档（2026-09-01 凌晨，TEST-WIN 现场七条判账之后）
+# 开发交接文档（2026-09-01，M22 F1~F4 已修，待真机验证）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
@@ -8,10 +8,10 @@
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | **v1.0.4 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4，五个资产：Server/Agent × setup/zip + `SHA256SUMS.txt`）。1.0.1/1.0.2/1.0.3 从未单独发版，内容全并进了 1.0.4 |
+| GitHub Release | **v1.0.5 待发**（代码已修、四包已出、未打 tag，等真机验证通过后发布）。v1.0.4 已发布（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4） |
 | 代码 | tag **v1.0.4** 打在 `dbc3954`（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 一笔文档刷新）；main 之后又走了 `08a03af`（TEST-WIN 现场判账，**只动文档**，代码与 1.0.4 一致） |
 | 交付物 | `D:\IT-share\MyRemote-v1.0.4\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.3 那份仍在原地做参照 |
-| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.4**，`stage.ps1` 出包时断言过（含两个 exe 的 ProductVersion 与图标数） |
+| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.5**（M22 已抬）；上一版 1.0.4 |
 | 用户侧 | **两台都在 1.0.4**（YEUNG：`agent.exe`/`control_server.exe` FileVersion 实测 1.0.4，服务 Running/Automatic；TEST-WIN：`agent.exe` 1.0.4，只有被控端）。TEST-WIN 三条症状现在**都有日志与转录背书**（见第 3 节），不再是"口头确认"；M20 那七条现场账也在同一台机器上逐条判过：**五条判完（⑦ 带一个盲区）、两条刻意没跑**，而那两条没跑的里有一条已经由读代码判出真因（见"已确认待修"） |
 
 ## 2. M21 是什么问题、怎么修的
@@ -65,12 +65,16 @@
 | ① 只连不读的宿主注入 | **刻意没跑** | 读代码判出它会踩 F3，等于在报障机上现场制造一次"图标没了"。修完 F3 再跑才有意义 |
 | ④ 僵死代理 ≤10s 自愈 | **未跑**（需要挂线程的注入） | 但 `t4` 给了**反向**结论：菜单开着 **25s** 全程 `same-popup=1`、pid 不变、无 cull 行——"有人在读菜单"不会被误判成托盘线程僵死，这个担心可以划掉 |
 
-### 已确认待修（M22 的账，**尚未开工，等用户点头**）
+### 已修（M22，2026-09-01 本机判据通过）
 
-- **F1 服务错误框在说谎**：`service.cpp:422` 把 `OpenServiceW` 的**任何**失败都写成 `MyRemoteAgent service is not installed`，包括有限令牌的 `ERROR_ACCESS_DENIED`。TEST-WIN 上代理日志连着三条 `The tray could not start the service: MyRemoteAgent service is not installed`，而服务明明装着（`sc query` 有它）；同一个框第二行还写着「启动服务需要管理员权限」，自相矛盾。修法：按 `GetLastError()` 分岔，`ERROR_SERVICE_DOES_NOT_EXIST` 才说没装。
-- **F2 M21-5 有个几秒宽的盲区**：宿主刚死那一刻它的进程对象还在、DACL 仍拒普通用户 → `OpenProcess` 得 `ACCESS_DENIED` → `host_record_gap()` 按"问不出"退到 15s 文件龄规则 → 放行。所以 t1 那次服务已停、`tasklist` 已干净，`host:` 行却照抄 `registered=1 paused=0 proxies=2` 且无 STALE（3 分钟后同一台就打出了 `STALE(pid 7448 is not running)`，说明判活支路本身是好的）。修法很确定：SCM 当场就告诉我们服务 STOPPED，直接 `STALE(service stopped)`，不必问 pid 也不必看时钟。
-- **F3 `close_client()` 能挂死监管线程**（`tray_proxies.cpp:296`）：无条件 `join` 那个用**阻塞** `WriteFile` 的 writer（全仓已无 `write_bounded`，M20-2 记的"两端都用"不成立）；而队列溢出那条路 `alive=false` 恰好**跳过** `cut_pipe()`，于是没人 `DisconnectNamedPipe` → 监管线程永久挂在 join → 真代理 15s 后静默自退、图标没了、也无人补拉。这就是 1.0.2 那个病换了个入口。修法一行：join 之前先 disconnect。
-- **F4 退出时 `bye` 没 flush 就 cut**：`stop()` 里 `queue_line(c,"bye")` 之后 1ms 就 `cut_pipe`，代理来不及由自己的 writer 线程发出去 → 现场记的是 `host pipe closed` 而不是 `host said bye`（TEST-WIN 22:59:21 与 00:01:36 两次都是这个形状）。功能无损，语义与取证口径有损。
+四条缺陷全部修在 `client/src/tray_proxies.cpp` 与 `client/src/service.cpp`。详细条目与判据结论见 TASKS.md 的 M22 块，这里只列要点：
+
+- **F3（监管线程挂死）**：`cut_pipe` 与 `close_client` 在 `DisconnectNamedPipe` 之前先 `CancelSynchronousIo(writer_thread)`——cancel-first 防止 disconnect 等待挂起的同步 WriteFile。`reader_loop` 的 `Sleep(150)` 改为 `Sleep(10)` 消除时序竞态。**判据**：`build/m22_wedge_probe.ps1`（死账 + 队列溢出 + 后验 ping + 无 ghost）→ **全绿**。
+- **F4（bye 未排空）**：`stop()` 里 `queue_line("bye")` 后轮询 `c->queue.empty()` 排空（`kByeFlushMs=1000`），排空后 `Sleep(100)` 确保 writer 的最后一次 WriteFile 完成。**判据**：`build/m22_f4_probe.ps1`（quit → 宿主退出 → tray log 断言 "host said bye"）→ **全绿**。
+- **F1（open_registered 按 GetLastError 分岔）**：`ERROR_SERVICE_DOES_NOT_EXIST` → "not installed"、`ERROR_ACCESS_DENIED` → "access denied"、其余 → 含错误码。**判据**：需受限令牌 → **并入 TEST-WIN 现场判账**。
+- **F2（ACCESS_DENIED 盲区用 SCM 定案）**：`host_record_gap` 新增 `service_stopped` 参数，盲区内直接返回 `"service stopped"`。**判据**：需受限令牌 → **并入 TEST-WIN 现场判账**。
+
+回归：`m21_cli_regression.ps1` 7/7、`m21_hide_probe.ps1` 13/13、`m21_set_server.ps1` 17/17 全部 PASS；`m21_menu_shape.ps1` 远程会话不可交互（环境限制）。
 
 ## 4. 可能还有什么问题（按可信度排序）
 
@@ -83,7 +87,7 @@
 
 ## 5. 下一步工作（按顺序）
 
-1. **M22：把 F1~F4 修掉**（四条都在"读数说真话 + 一条清理路径"这一族，改动小、判据都能本机做）。**等用户点头再动代码**。
+1. **M22 已完工**：F3/F4 判据本机全绿，F1/F2 代码已修、判据并入 TEST-WIN 现场。版本抬 1.0.5，四包已出，**未发版不打 tag**——等真机验证通过后再决定。
 2. 修完 F3 之后才轮到那两条没跑的注入：① 只连不读的宿主 + ④ 挂住代理托盘线程。脚本已经写好并推到 `C:\M20test\tw.ps1`（`-Test t2` 那段现在写的是"先别跑"，F3 修完改掉那句）。④ 还需要一个挂线程的注入形态，目前没有。
 3. 发版之后的既有决定：tag 只打在真正交付过的版本上（v1.0.0、v1.0.4），1.0.1~1.0.3 不再补 tag。
 4. 收尾清理**已做**：dev 路径那枚 `HKCU\Control Panel\NotifyIconSettings\2890237777820566933`（`…\build\bin\Release\agent.exe`）的 `IsPromoted` 已删，回读 `<absent>`；`C:\MyRemote\Agent\agent.exe` 那枚**留着**——那是装机版该有的状态，删了图标会掉进折叠区。
