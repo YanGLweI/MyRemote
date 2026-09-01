@@ -69,12 +69,12 @@ cmake --build build --config Release
 ## 安装与部署
 
 正式版发四个包（`SHA256SUMS.txt` 是它们的 SHA-256），下载在
-[Releases · latest](https://github.com/YanGLweI/MyRemote/releases/latest)（当前 **v1.0.4**）；本地跑 `packaging\stage.ps1` 也能重新产出到 `build\package\dist\`：
+[Releases · latest](https://github.com/YanGLweI/MyRemote/releases/latest)（当前 **v1.0.5**）；本地跑 `packaging\stage.ps1` 也能重新产出到 `build\package\dist\`：
 
 | 给谁 | 安装版 | 绿色版 |
 | --- | --- | --- |
-| 控制端（服务端，运维坐的那台） | `MyRemote-Server-v1.0.4-setup.exe` | `MyRemote-Server-v1.0.4-portable.zip` |
-| 被控端（客户端，要被远控的机器） | `MyRemote-Agent-v1.0.4-setup.exe` | `MyRemote-Agent-v1.0.4-portable.zip` |
+| 控制端（服务端，运维坐的那台） | `MyRemote-Server-v1.0.5-setup.exe` | `MyRemote-Server-v1.0.5-portable.zip` |
+| 被控端（客户端，要被远控的机器） | `MyRemote-Agent-v1.0.5-setup.exe` | `MyRemote-Agent-v1.0.5-portable.zip` |
 
 - **控制端装在 `C:\MyRemote\Server`，不要装进 `Program Files`。** `server_config.json` 和日志都写在 exe 旁边，设置页每次保存都要重写它；非提权进程写不进受保护目录，表现就是状态栏那句"设置没能写进文件"。
 - 控制端安装版加一条**按程序**放行的入站防火墙规则（不按端口，所以以后改监听端口不用回来补规则），卸载时删掉。被控端**只出站**，不需要任何放行；用绿色版则要自己放行 TCP 7500。
@@ -87,7 +87,7 @@ cmake --build build --config Release
 远程批量推送（不依赖 WinRM，走管理共享即可）：
 
 ```bat
-MyRemote-Agent-v1.0.4-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
+MyRemote-Agent-v1.0.5-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
   /TASKS=service /SERVERIP=10.0.0.5 /SERVERPORT=7500 /SECRETKEY=与控制端一致的串
 ```
 
@@ -107,6 +107,8 @@ MyRemote-Agent-v1.0.4-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
 | 退出（同时停止服务，下次开机自动回来） | 先删图标、再停服务、进程随后结束；**启动类型仍是自动** | 双击客户端：服务没在跑，这次就以前台方式真的跑起来并重新注册，菜单里给出「启用后台服务（当前：前台运行，开机不自启）」回到受管形态；或者等下次开机 |
 
 "停止远程控制"期间 `sc query MyRemoteAgent` 照旧报 `RUNNING`——暂停的是隧道，不是服务，这就是它和开机自启的两码事。想知道"这台现在到底能不能被连"，判据是托盘提示、`--service-state` 里的 `paused=1` 和控制端设备行的"重连中"，不是 `services.msc`。
+
+M22（v1.0.5）在代码审查与 TEST-WIN 现场判账基础上又修了四条边界缺陷：监管线程可被死账客户端挂死（cancel-first）、退出时 "bye" 未排空导致代理日志记错原因（bye drain + Sleep(100)）、服务错误框把 ACCESS_DENIED 说成 "not installed"（GetLastError 分岔）、以及 host.status 的几秒宽盲区被 SCM 状态定案（STALE(service stopped)）。全部四条的判据脚本、回归测试与 TEST-WIN 现场验证均已通过。
 
 M20 之后这套图标**不再有"点不动"的状态**：菜单动作一律投递给工作线程执行，托盘消息线程从不做可能卡住的事（写管道有 500ms 上限，超时就断开这条管道）；宿主每 5 秒对每个代理发一次心跳，代理 15 秒收不到任何话就自己删图标退出——宁可暂时没图标，也不留一枚点不动的幽灵；宿主侧发现代理不回 pong 就拔掉它的管道并补拉一个新的。"隐藏/退休"都不再靠 `TerminateProcess`：先说 `bye`/`die`，等它自己退，删图标的责任始终在画图标的进程手里。M21-3 补上的是这条链路的话术：宿主写完 `tray_icon: false` 之后**内存里那一份也跟着变**，下一轮广播带上 `tray_icon=0`，各会话代理读到就自己删图标退出，监管不再补生——只改盘上副本等于永远没说"这枚图标不该存在"。
 
