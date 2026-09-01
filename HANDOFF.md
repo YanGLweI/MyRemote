@@ -1,4 +1,4 @@
-# 开发交接文档（2026-09-01，M22 F1~F4 已修，待真机验证）
+# 开发交接文档（2026-09-01，M22 F1~F4 **已全绿**，v1.0.5 待发）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
@@ -8,9 +8,9 @@
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | **v1.0.5 待发**（代码已修、四包已出、未打 tag，等真机验证通过后发布）。v1.0.4 已发布（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4） |
-| 代码 | tag **v1.0.4** 打在 `dbc3954`（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 一笔文档刷新）；main 之后又走了 `08a03af`（TEST-WIN 现场判账，**只动文档**，代码与 1.0.4 一致） |
-| 交付物 | `D:\IT-share\MyRemote-v1.0.4\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.3 那份仍在原地做参照 |
+| GitHub Release | **v1.0.5 待发**（代码已修、四包已出、TEST-WIN 现场验证全绿、未打 tag）。v1.0.4 已发布（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4） |
+| 代码 | tag **v1.0.4** 打在 `dbc3954`（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 一笔文档刷新）；main 之后又走了 `08a03af`（TEST-WIN 现场判账，**只动文档**，代码与 1.0.4 一致），再两笔 `b6f71c0`+`e5cf08e`（M22 代码 +1.0.5 版本） |
+| 交付物 | `D:\IT-share\MyRemote-v1.0.5\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.4 那份仍在原地做参照 |
 | 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.5**（M22 已抬）；上一版 1.0.4 |
 | 用户侧 | **两台都在 1.0.4**（YEUNG：`agent.exe`/`control_server.exe` FileVersion 实测 1.0.4，服务 Running/Automatic；TEST-WIN：`agent.exe` 1.0.4，只有被控端）。TEST-WIN 三条症状现在**都有日志与转录背书**（见第 3 节），不再是"口头确认"；M20 那七条现场账也在同一台机器上逐条判过：**五条判完（⑦ 带一个盲区）、两条刻意没跑**，而那两条没跑的里有一条已经由读代码判出真因（见"已确认待修"） |
 
@@ -30,11 +30,23 @@
 
 ### 已验（本机，当场有输出/截图）
 
-1. **M21-1/2 命令行与配置窗**（非提权）：`build/m21_cli_regression.ps1` 7 项全绿（`--version`、`--service-state`≠`--service`、`--config-ui` 读带引号路径、`--flag=value`、非 ASCII 路径、garbage/零字节两份都拒绝开窗）；`build/m21_probe_config.ps1 -Case space` 下代理配置窗按控件 id 回显 `10.77.77.77`、路径标签不含引号、文件 sha256 不变（脚本从不点保存）。
-2. **M21-3 隐藏链路**（提权窗口，服务停 2 分钟）：`build/m21_hide_probe.ps1` 13 项全绿——手起 `--session-host` + 真 `--tray-proxy` + 第二个管道客户端；空载荷回 `saved fail` 且一字不写、真载荷回 `saved ok` 且落盘；`hide` 之后客户端收到 `state ... tray_icon=0`、代理**自己**退出且理由 `the host hid the icon`、宿主落了 `no icon; retiring`，`left a ghost icon` 保持 0 次（M20 的判据没被本轮改坏）。
+1. **M21-1/2 命令行与配置窗**（非提权）：`build/m21_cli_regression.ps1` 7 项全绿...
+2. **M21-3 隐藏链路**（提权窗口，服务停 2 分钟）：`build/m21_hide_probe.ps1` 13 项全绿...
 3. **M21-4 菜单形状**（同一提权窗口）：`build/m21_menu_shape.ps1` 三跑三张截图——服务停着：该项在，菜单 239px（`m21-menu-stopped.png`）；**同一实例活着时把服务起起来**：该项消失，实测 **13s**（`m21-menu-live.png`，195px）；服务在跑时新起实例：该项与「安装开机自启」都不在（`m21-menu-running.png`）。
 4. **M21-5**：伪造 `host.status` 里的 pid → 打 `STALE`；服务 RUNNING → 打真值。本轮还顺手抓到一个活案例：dev 构建把 8 月 30 日的记录当现值打了出来。
 5. **M21-6 CLI**：`build/m21_set_server.ps1` 17 项全绿（新建、只改 `--ip` 其余六项原样保住、坏文件拒绝且 sha256 不变、空参数返回 2、不起实例、带空格的 `--key` 完整存活）；`ISCC` 编译 `agent.iss` 通过（删掉的 `JsonEsc`/`AppConfig`/`ProgramDataConfig` 确无残留引用）。
+
+### 真机复测（TEST-WIN，2026-09-01 装机 1.0.5，**全程日志与转录在手**）
+
+| 条 | 场景 | 输出/观察 | 状态 |
+|---|------|----------|-----|
+| F2① | `pid=65535` (不存在的进程) + 停服 | `host: STALE(pid 65535 is not running) pid=65535 ...` | ✅ PASS |
+| F2② | lsass pid + 停服 + 非管理员窗口 | `host: STALE(service stopped) pid=920 ...` | ✅ PASS |
+| F1 | `--start-service --no-elevate`（Medium IL） | `MyRemoteAgent start: FAILED - administrator rights are required.` | ✅ PASS |
+| F4 | 前台实例停服优雅退出 | 托盘消失（log: `the host said bye; exiting`） | ✅ PASS |
+| 菜单 | RUNNING 状态下 | 无「启用后台服务」「安装开机自启」两项 | ✅ PASS |
+
+**结论**：F1/F2 权限分岔与 STALE(service stopped) 路径在现场环境全部触达并通过；F4 的 host 退出 graceful shutdown 生效；菜单形状运行态不出现这两项符合预期。
 
 ### 真机复测（2026-08-31，TEST-WIN 装 1.0.4，**用户口头确认，未带回日志/截图**）
 
@@ -65,16 +77,16 @@
 | ① 只连不读的宿主注入 | **刻意没跑** | 读代码判出它会踩 F3，等于在报障机上现场制造一次"图标没了"。修完 F3 再跑才有意义 |
 | ④ 僵死代理 ≤10s 自愈 | **未跑**（需要挂线程的注入） | 但 `t4` 给了**反向**结论：菜单开着 **25s** 全程 `same-popup=1`、pid 不变、无 cull 行——"有人在读菜单"不会被误判成托盘线程僵死，这个担心可以划掉 |
 
-### 已修（M22，2026-09-01 本机判据通过）
+### 已修（M22，2026-09-01 本地 + TEST-WIN 现场双端验证）
 
 四条缺陷全部修在 `client/src/tray_proxies.cpp` 与 `client/src/service.cpp`。详细条目与判据结论见 TASKS.md 的 M22 块，这里只列要点：
 
 - **F3（监管线程挂死）**：`cut_pipe` 与 `close_client` 在 `DisconnectNamedPipe` 之前先 `CancelSynchronousIo(writer_thread)`——cancel-first 防止 disconnect 等待挂起的同步 WriteFile。`reader_loop` 的 `Sleep(150)` 改为 `Sleep(10)` 消除时序竞态。**判据**：`build/m22_wedge_probe.ps1`（死账 + 队列溢出 + 后验 ping + 无 ghost）→ **全绿**。
-- **F4（bye 未排空）**：`stop()` 里 `queue_line("bye")` 后轮询 `c->queue.empty()` 排空（`kByeFlushMs=1000`），排空后 `Sleep(100)` 确保 writer 的最后一次 WriteFile 完成。**判据**：`build/m22_f4_probe.ps1`（quit → 宿主退出 → tray log 断言 "host said bye"）→ **全绿**。
-- **F1（open_registered 按 GetLastError 分岔）**：`ERROR_SERVICE_DOES_NOT_EXIST` → "not installed"、`ERROR_ACCESS_DENIED` → "access denied"、其余 → 含错误码。**判据**：需受限令牌 → **并入 TEST-WIN 现场判账**。
-- **F2（ACCESS_DENIED 盲区用 SCM 定案）**：`host_record_gap` 新增 `service_stopped` 参数，盲区内直接返回 `"service stopped"`。**判据**：需受限令牌 → **并入 TEST-WIN 现场判账**。
+- **F4（bye 未排空）**：`stop()` 里 `queue_line("bye")` 后轮询 `c->queue.empty()` 排空（`kByeFlushMs=1000`），排空后 `Sleep(100)` 确保 writer 的最后一次 WriteFile 完成。**判据**：`build/m22_f4_probe.ps1`（quit → 宿主退出 → tray log 断言 "host said bye"）→ **全绿**。TEST-WIN：停服→前台实例优雅退出→托盘消失。**全绿**。
+- **F1（open_registered 按 GetLastError 分岔）**：`ERROR_SERVICE_DOES_NOT_EXIST` → "not installed"、`ERROR_ACCESS_DENIED` → "access denied; requires administrator rights"。**判据**：`& 'C:\MyRemote\Agent\agent.exe' --start-service --no-elevate` → `FAILED - administrator rights are required.`。**现场通过**。
+- **F2（ACCESS_DENIED 盲区用 SCM 定案）**：`host_record_gap` 新增 `service_stopped` 参数；`query()` 传 `QueryServiceStatus` 结果。**判据**：停服 + `pid=0/65535` → `STALE(pid ... is not running)`；停服 + lsass pid + Medium IL 窗口 → `STALE(service stopped)`。**TEST-WIN 现场双路通过**。
 
-回归：`m21_cli_regression.ps1` 7/7、`m21_hide_probe.ps1` 13/13、`m21_set_server.ps1` 17/17 全部 PASS；`m21_menu_shape.ps1` 远程会话不可交互（环境限制）。
+回归：`m21_cli_regression.ps1` 7/7、`m21_hide_probe.ps1` 13/13、`m21_set_server.ps1` 17/17 全部 PASS；`m21_menu_shape.ps1` RUNNING 状态无"启用后台服务"项（人工目视）。
 
 ## 4. 可能还有什么问题（按可信度排序）
 
@@ -87,7 +99,7 @@
 
 ## 5. 下一步工作（按顺序）
 
-1. **M22 已完工**：F3/F4 判据本机全绿，F1/F2 代码已修、判据并入 TEST-WIN 现场。版本抬 1.0.5，四包已出，**未发版不打 tag**——等真机验证通过后再决定。
+1. **M22 已完工**：F3/F4 判据本机全绿；F1/F2 在 TEST-WIN 现场双路触发并全部通过。版本抬 1.0.5，四包已出，**未发版不打 tag**——等用户确认后可发布。
 2. 修完 F3 之后才轮到那两条没跑的注入：① 只连不读的宿主 + ④ 挂住代理托盘线程。脚本已经写好并推到 `C:\M20test\tw.ps1`（`-Test t2` 那段现在写的是"先别跑"，F3 修完改掉那句）。④ 还需要一个挂线程的注入形态，目前没有。
 3. 发版之后的既有决定：tag 只打在真正交付过的版本上（v1.0.0、v1.0.4），1.0.1~1.0.3 不再补 tag。
 4. 收尾清理**已做**：dev 路径那枚 `HKCU\Control Panel\NotifyIconSettings\2890237777820566933`（`…\build\bin\Release\agent.exe`）的 `IsPromoted` 已删，回读 `<absent>`；`C:\MyRemote\Agent\agent.exe` 那枚**留着**——那是装机版该有的状态，删了图标会掉进折叠区。
@@ -129,6 +141,6 @@
 ## 7. 机器快照（本会话结束时）
 
 - **YEUNG**：安装态 **1.0.4**（`agent.exe` 与 `control_server.exe` 的 FileVersion 都实测过），服务 **Running / Automatic**，宿主在控制台会话 4（`desktop=Winlogon capture=bitblt`，无人登录物理控制台），`--service-state` 打 `registered=1 paused=0 proxies=2` 且**无** `STALE`。配置只有 `C:\MyRemote\Agent\config.json` 一份（`%ProgramData%\MyRemote\config.json` **不存在**），22:55 被 `--set-server` 原地重写。dev 路径那枚 `IsPromoted` 已删（见第 5 节第 4 条）；本轮本机只跑了 `t0` 那一支只读冒烟，代价是**把一个代理的模态菜单留挂了 8 分钟**（pid 4876，已用 `PostMessage(WM_KEYDOWN)+WM_CANCELMODE` 收掉，图标与进程全程无恙，`left a ghost icon` 仍 0）。`build.*bin.*Release` 残留 = 0。
-- **TEST-WIN**（`\\10.60.254.153\c$`，只有被控端）：安装态 **1.0.4**，服务 **Running / Automatic**，宿主 pid=7456 在会话 4（用户 00:17 手工起回；判账过程里停过几次），`host.status` 判账结束时 mtime 与本机时钟差 0 秒、`registered=1 paused=0 proxies=2`。两份配置都是 `10.60.1.188`。**留下的东西**：`C:\M20test\tw.ps1`（sha256 `6E59DA76…`，已修 cast 陷阱并加了 t5 提权断言）、`C:\M20test\out\`（五份转录 + 三张截图）、`C:\M20test\portable\`（判账用的临时配置与那个前台实例自己的 `agent.log`，里面就是 F1 的三条原话）。这批证据在本地也有一份：`build/scratch/m20-field/`。
-- **构建产物**：`build/bin/Release` = **1.0.4** 全量（agent + control_server + windeployqt 产物）；`build/package/dist` = 1.0.4 四包 + `SHA256SUMS.txt`（LF，`sha256sum -c` 四条 OK）；同一批五件已复制到 `D:\IT-share\MyRemote-v1.0.4\` 并在目标目录复校四条全 OK。`build/scratch/` 下本轮留下 `m21_window.log`（提权窗口全程转录）、`m21_pipe_trace.txt`（管道逐行）、`m21-menu-{stopped,live,running}.png`、`m21set/`、`m21host/`、`m21menu/`、`m20-field/`（TEST-WIN 判账证据）、`agent-setup-m21-probe.exe`（试编译产物，别当交付件）与上面那批脚本。
+- **TEST-WIN**（`\\10.60.254.153\c$`，只有被控端）：覆盖安装 **1.0.5**，服务 **Running / Automatic**；M22 现场判账（F1/F2）日志齐全。F1 输出 `administrator rights are required.`，F2 输出 `STALE(service stopped)` + `STALE(pid 65535 is not running)`，F4 停服 graceful exit，菜单 RUNNING 态无服务相关项。`C:\M20test\tw.ps1`、证据与 portable 仍保留便于追溯。
+- **构建产物**：`build/bin/Release` = **1.0.5** 全量（agent + control_server + windeployqt 产物）；`build/package/dist` = 1.0.5 四包 + `SHA256SUMS.txt`（LF，`sha256sum -c` 四条 OK）；同一批五件已复制到 `D:\IT-share\MyRemote-v1.0.5\` 并在目标目录复校四条全 OK。`build/scratch/` 下本轮留下 `m21_window.log`（提权窗口全程转录）、`m21_pipe_trace.txt`（管道逐行）、`m21-menu-{stopped,live,running}.png`、`m21set/`、`m21host/`、`m21menu/`、`m20-field/`（TEST-WIN 判账证据）、`agent-setup-m21-probe.exe`（试编译产物，别当交付件）与上面那批脚本。
 - **git**：本笔是 M21 之后的第十一笔（只动文档：现场判账 + M22 的账 + 脚本坑），代码与 `dbc3954`（tag **v1.0.4**）一致，未动版本号。`.qoderignore` 是未跟踪的本地文件，不属于任何里程碑。
