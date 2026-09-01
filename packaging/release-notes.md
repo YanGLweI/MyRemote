@@ -55,7 +55,7 @@
 批量推送（不需要 WinRM）：
 
 ```bat
-MyRemote-Agent-v1.0.4-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
+MyRemote-Agent-v1.0.5-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
   /TASKS=service /SERVERIP=<控制端地址> /SERVERPORT=7500 /SECRETKEY=<与设置里一致的串>
 ```
 
