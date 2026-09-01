@@ -8,7 +8,7 @@
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | **v1.0.5 待发**（代码已修、四包已出、TEST-WIN 现场验证全绿、未打 tag）。v1.0.4 已发布（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4） |
+| GitHub Release | **v1.0.5 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.5）——代码已修、四包已出、TEST-WIN 现场验证全绿，tag 打在 `bac29f2`。v1.0.4 仍可访问（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4） |
 | 代码 | tag **v1.0.4** 打在 `dbc3954`（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 一笔文档刷新）；main 之后又走了 `08a03af`（TEST-WIN 现场判账，**只动文档**，代码与 1.0.4 一致），再两笔 `b6f71c0`+`e5cf08e`（M22 代码 +1.0.5 版本） |
 | 交付物 | `D:\IT-share\MyRemote-v1.0.5\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.4 那份仍在原地做参照 |
 | 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.5**（M22 已抬）；上一版 1.0.4 |
