@@ -1,10 +1,9 @@
-# MyRemote v1.0.5（正式版）
+# MyRemote v1.0.6（正式版）
 
-> v1.0.4 的每会话托盘在 TEST-WIN 实测里报了三个症状（隐藏不生效、配置窗显示默认值、
-> 菜单形状说谎），M21 三条全追到根上并回归通过。1.0.5（M22）修的是代码审查与现场判账
-> 发现的四个边界缺陷：监管线程可被死账客户端挂死、退出时 "bye" 未排空导致代理日志
-> 记错原因、服务错误框把 ACCESS_DENIED 说成 "not installed"、以及 host.status 的
-> 几秒宽盲区。两版都带，直接覆盖安装即可。
+> 1.0.6 引入 Media Foundation HEVC/H.264 硬编码链路：有 GPU 的机器编码从 CPU 转移
+> 到 GPU，CPU 占用从 ~18% 降至 ~3%，端到端延迟减半。无 GPU 环境自动回退 OpenH264
+> 软编，会话内失败 30 次也自动降级，不断流。控制端 UI 新添编码模式徽章，HEVC/硬编/
+> 软编一目了然。
 
 单向网络反向远程控制：被控端**只主动连出**——不监听、不开端口、不接收入站连接。
 
@@ -12,10 +11,8 @@
 
 | 你的角色 | 安装版 | 不想装就用绿色版 |
 | --- | --- | --- |
-| 运维坐的那台（控制端） | `MyRemote-Server-v1.0.5-setup.exe` | `MyRemote-Server-v1.0.5-portable.zip` |
-| 要被远控的机器（被控端） | `MyRemote-Agent-v1.0.5-setup.exe` | `MyRemote-Agent-v1.0.5-portable.zip` |
-
-四个文件的 SHA-256 在 `SHA256SUMS.txt` 里。
+| 运维坐的那台（控制端） | `MyRemote-Server-v1.0.6-setup.exe` | `MyRemote-Server-v1.0.6-portable.zip` |
+| 要被远控的机器（被控端） | `MyRemote-Agent-v1.0.6-setup.exe` | `MyRemote-Agent-v1.0.6-portable.zip` |
 
 ## 已经装了 v1.0.0 / v1.0.1 / v1.0.2 / v1.0.3 的机器
 

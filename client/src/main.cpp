@@ -57,7 +57,22 @@ AgentState g_state;
 std::string g_control_password;
 std::unique_ptr<Connection> g_connection;
 std::unique_ptr<DesktopCapturer> g_capturer;
-std::unique_ptr<VideoEncoder> g_encoder;
+// The live encoder. Pointer swaps happen on the stream thread only (see
+// recreate_encoder); every other reader goes through g_encoder_mutex so a
+// swap can never race a frame in flight.
+std::unique_ptr<IStreamEncoder> g_encoder;
+std::mutex g_encoder_mutex;
+// Set by the receive thread (StartStream / CodecSwitchReq), acted on by the
+// stream thread at the top of its loop: encoder recreation never races encode.
+std::atomic<bool> g_encoder_recreate{false};
+// The control centre can veto HEVC when it cannot decode it.
+std::atomic<int> g_encoder_forced_h264{0};
+// A hardware encoder that already failed a session: this session is locked
+// to OpenH264 until the next one starts.
+std::atomic<int> g_encoder_force_soft{0};
+// Consecutive failed encodes; a hardware encoder that keeps failing is
+// swapped for OpenH264 instead of freezing the picture.
+std::atomic<uint64_t> g_encoder_failures{0};
 std::unique_ptr<HeartbeatKeeper> g_heartbeat;
 InputSimulator g_input;
 
@@ -156,7 +171,13 @@ void configure_pipeline(int fps, int bitrate_kbps, int max_encode_width) {
     ec.fps = fps;
     ec.bitrate_kbps = bitrate_kbps;
     ec.max_encode_width = max_encode_width;
-    g_capturer->configure(ec);
+    bool prefer_gpu = false;
+    {
+        std::lock_guard<std::mutex> lock(g_encoder_mutex);
+        prefer_gpu =
+            g_encoder->backend() != EncoderBackend::SOFTWARE_OPENH264;
+    }
+    g_capturer->configure(ec, prefer_gpu);
     g_capturer->encode_size(&ec.width, &ec.height);
     if (ec.width <= 0 || ec.height <= 0) {
         // No desktop yet (logon screen / detached session); the pipeline is
@@ -164,7 +185,101 @@ void configure_pipeline(int fps, int bitrate_kbps, int max_encode_width) {
         mlog::info("No desktop to encode yet, pipeline not configured");
         return;
     }
+    ec.gpu_input_format = g_capturer->gpu_texture_format();
+    if (prefer_gpu && ec.gpu_input_format == 0) {
+        // The encoder wants GPU frames but the capturer cannot make them
+        // (VideoProcessor unavailable): rebuild as software on the stream
+        // thread instead of waiting out the failure counter.
+        g_encoder_recreate.store(true);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_encoder_mutex);
     g_encoder->initialize(ec);
+}
+
+// Tell the control centre what this machine can encode and which encoder is
+// live right now, so it can pick a matching decoder before frames arrive.
+void send_codec_capabilities() {
+    if (!g_connection || !g_encoder) {
+        return;
+    }
+    static const CodecInfo caps = EncoderFactory::probe_capabilities();
+    uint8_t mode = proto::kEncoderModeSoft;
+    switch (g_encoder->backend()) {
+        case EncoderBackend::HARDWARE_HEVC_MF:
+            mode = proto::kEncoderModeHevcHard;
+            break;
+        case EncoderBackend::HARDWARE_H264_MF:
+            mode = proto::kEncoderModeH264Hard;
+            break;
+        default:
+            break;
+    }
+    g_connection->send(proto::MessageType::CodecCapabilities,
+                       proto::make_codec_capabilities_payload(
+                           caps.supported_codecs, mode));
+}
+
+// Build the encoder for the current session. Runs on the stream thread only.
+// Preference order: HEVC hard -> H.264 hard -> OpenH264, unless the control
+// centre asked us to stay on H.264 (CodecSwitchReq) or the GPU path proved
+// broken (hard-failure downgrade).
+void recreate_encoder() {
+    EncoderConfig ec;
+    ec.fps = g_state.target_fps.load();
+    ec.bitrate_kbps = g_state.target_bitrate_kbps.load();
+    ec.max_encode_width = g_max_encode_width.load();
+    if (!g_capturer) {
+        return;
+    }
+    // Stand the GPU path up first: the encoder choice depends on what the
+    // capturer can actually produce (NV12 via VideoProcessor).
+    g_capturer->configure(ec, /*prefer_gpu_path=*/true);
+    g_capturer->encode_size(&ec.width, &ec.height);
+    if (ec.width <= 0 || ec.height <= 0) {
+        // Nothing to encode yet; the soft default already covers us and the
+        // next configure_pipeline re-initialises whatever is live.
+        return;
+    }
+    ec.gpu_input_format = g_capturer->gpu_texture_format();
+
+    std::unique_ptr<IStreamEncoder> next;
+    if (g_encoder_force_soft.load()) {
+        next = EncoderFactory::create_backend(EncoderBackend::SOFTWARE_OPENH264,
+                                              ec);
+    } else if (g_encoder_forced_h264.load()) {
+        // The control centre cannot decode HEVC: H.264 hard (GPU permitting)
+        // first, software otherwise.
+        if (ec.gpu_input_format != 0) {
+            next = EncoderFactory::create_backend(
+                EncoderBackend::HARDWARE_H264_MF, ec);
+        }
+        if (!next) {
+            next = EncoderFactory::create_backend(
+                EncoderBackend::SOFTWARE_OPENH264, ec);
+        }
+    } else {
+        // create_selected walks HEVC hard -> H.264 hard -> soft on its own;
+        // with gpu_input_format == 0 the hard backends refuse to initialise
+        // and it lands on software by construction.
+        next = EncoderFactory::create_selected(ec);
+    }
+    if (!next) {
+        mlog::error("No encoder could be created; keeping the current one");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_encoder_mutex);
+        g_encoder = std::move(next);
+    }
+    // The capturer must mirror the final choice: GPU frames for a hard
+    // encoder, CPU I420 for the software one.
+    g_capturer->configure(ec,
+                          g_encoder->backend() !=
+                              EncoderBackend::SOFTWARE_OPENH264);
+    g_encoder_failures.store(0);
+    mlog::info("Encoder ready: " + g_encoder->backend_name());
+    send_codec_capabilities();
 }
 
 std::wstring to_wide(const std::string& s) {
@@ -465,6 +580,7 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
             uint8_t fps = 30;
             uint16_t bitrate = 2048;
             std::optional<uint16_t> wire_cap;
+            const bool was_streaming = g_state.streaming.load();
             if (proto::parse_start_stream_payload(payload, fps, bitrate,
                                                   wire_cap)) {
                 // Only an absent field (old control center) falls back to the
@@ -481,6 +597,11 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
                 }
             }
             g_state.streaming.store(true);
+            if (!was_streaming) {
+                // A new session may pick a better encoder (HEVC/H.264 hard);
+                // the stream thread does the swap so it cannot race frames.
+                g_encoder_recreate.store(true);
+            }
             mlog::info("Stream started by server (fps=" +
                       std::to_string(g_state.target_fps.load()) + ", bitrate=" +
                       std::to_string(g_state.target_bitrate_kbps.load()) + "kbps, cap=" +
@@ -489,10 +610,23 @@ void on_message(proto::MessageType type, std::vector<uint8_t> payload) {
         }
         case proto::MessageType::StopStream:
             g_state.streaming.store(false);
+            g_encoder_forced_h264.store(0);  // a fresh session re-negotiates
+            g_encoder_force_soft.store(0);
             mlog::info("Stream stopped by server");
             break;
-        case proto::MessageType::RequestKeyframe:
-            g_encoder->force_keyframe();
+        case proto::MessageType::RequestKeyframe: {
+            std::lock_guard<std::mutex> lock(g_encoder_mutex);
+            if (g_encoder) {
+                g_encoder->force_keyframe();
+            }
+            break;
+        }
+        case proto::MessageType::CodecSwitchReq:
+            // The control centre cannot decode HEVC here; drop to H.264 and
+            // let the stream thread swap the encoder.
+            mlog::warn("Server asked to stop using HEVC; switching to H.264");
+            g_encoder_forced_h264.store(1);
+            g_encoder_recreate.store(true);
             break;
         case proto::MessageType::InputEvent: {
             proto::InputEvent ev;
@@ -755,6 +889,13 @@ void stream_loop() {
     };
 
     while (g_state.running.load()) {
+        // New encoder requested? Swap it now on this thread so a frame never
+        // races a swap.
+        if (g_encoder_recreate.exchange(false)) {
+            mlog::info("Recreating encoder (HEVC/H.264 switch)");
+            recreate_encoder();
+        }
+
         bool desktop_changed = false;
         if (g_follow_desktop) {
             follower.update(nullptr, &desktop_changed);
@@ -766,10 +907,12 @@ void stream_loop() {
                 if (g_capturer) {
                     g_capturer->on_desktop_switched();
                 }
-                reported_w = 0;
                 reported_h = 0;
-                if (g_encoder) {
-                    g_encoder->force_keyframe();
+                {
+                    std::lock_guard<std::mutex> lock(g_encoder_mutex);
+                    if (g_encoder) {
+                        g_encoder->force_keyframe();
+                    }
                 }
                 configure_pipeline(g_state.target_fps.load(),
                                    g_state.target_bitrate_kbps.load(),
@@ -811,11 +954,36 @@ void stream_loop() {
                            std::to_string(frame.source_height) + ")");
             }
             QueryPerformanceCounter(&t0);
-            bool encoded = g_encoder->is_initialized() &&
-                           g_encoder->encode_frame(frame);
+            bool encoded = false;
+            int skips_before = g_encoder_failures.fetch_add(1);
+            {  
+                std::lock_guard<std::mutex> lock(g_encoder_mutex);      
+                if (g_encoder && g_encoder->is_initialized()) {
+                    encoded = g_encoder->encode_frame(frame);
+                } else {
+                    skips_before = 30;  // fake "already exceeded" to trigger fallback
+                }
+            }
             QueryPerformanceCounter(&t1);
             enc_us += static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) *
                                             us_per_tick);
+            // Hardware encoder keeps failing: fall back to OpenH264 to keep
+            // streaming, then tell the control centre about the downgrade.
+            if (!encoded && skips_before + 1 >= 30 &&
+                g_encoder->backend() != EncoderBackend::SOFTWARE_OPENH264) {
+                mlog::warn("Hardware encoder failed 30+ consecutive times; "
+                           "downgrading to OpenH264 for stability");
+                g_encoder_force_soft.store(1);
+                recreate_encoder();
+                configure_pipeline(g_state.target_fps.load(),
+                                   g_state.target_bitrate_kbps.load(),
+                                   g_max_encode_width.load());
+                std::lock_guard<std::mutex> lock(g_encoder_mutex);
+                if (g_encoder) {
+                    g_encoder->force_keyframe();
+                }
+                skips_before = 0;
+            }
             if (encoded && !frame.h264_data.empty()) {
                 ++encodes;
                 uint32_t seq = g_state.frame_seq.fetch_add(1) + 1;
@@ -1461,7 +1629,22 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                (g_capturer->using_bitblt_fallback() ? "BitBlt (DXGI unavailable)"
                                                    : "DXGI Desktop Duplication"));
     g_max_encode_width.store(cfg.max_encode_width);
-    g_encoder = std::make_unique<VideoEncoder>();
+    // First encoder: create best available (HEVC->H.264->soft). The capture
+    // may not have a desktop yet, so we pick defaults and re-initialise on
+    // the first frame.
+    {
+        EncoderConfig ec;
+        ec.fps = 30;
+        ec.bitrate_kbps = 2048;
+        ec.max_encode_width = cfg.max_encode_width;
+        ec.width = 1920;
+        ec.height = 1080;
+        g_encoder = EncoderFactory::create_selected(ec);
+        if (!g_encoder) {
+            mlog::error("Failed to create any video encoder; starting with OpenH264");
+            g_encoder = std::make_unique<VideoEncoder>();
+        }
+    }
     configure_pipeline(g_state.target_fps.load(),
                        g_state.target_bitrate_kbps.load(),
                        cfg.max_encode_width);

@@ -284,6 +284,26 @@ bool parse_set_display_mode_payload(const std::vector<uint8_t>& payload, uint16_
     return read_u16(payload, offset, width) && read_u16(payload, offset, height);
 }
 
+// Codec capability negotiation helpers
+std::vector<uint8_t> make_codec_capabilities_payload(uint16_t codec_mask, 
+                                                       uint8_t preferred_mode) {
+    std::vector<uint8_t> payload;
+    payload.reserve(3);
+    put_u16(payload, codec_mask);
+    payload.push_back(preferred_mode);
+    return payload;
+}
+
+bool parse_codec_capabilities_payload(const std::vector<uint8_t>& payload,
+                                      uint16_t& codec_mask, uint8_t& mode) {
+    if (payload.size() < 3) return false;
+    size_t offset = 0;
+    if (!read_u16(payload, offset, codec_mask)) return false;
+    if (payload.size() - offset < 1) return false;
+    mode = payload[offset];
+    return true;
+}
+
 namespace {
 void put_u8(std::vector<uint8_t>& out, uint8_t v) { out.push_back(v); }
 }

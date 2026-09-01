@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "frame_pipeline.hpp"
 
@@ -75,6 +76,9 @@ signals:
     // The agent's mode list with the mode it is currently in; empty list means
     // an agent too old to answer, and the toolbar keeps showing "--".
     void display_modes_ready(QVector<QSize> modes, QSize current);
+    // Human-readable badge text for the toolbar, e.g. "HEVC 硬编". Emitted
+    // when a session starts and after every encoder switch.
+    void encoder_mode_changed(QString badge_text);
 
 public slots:
     // Connected directly: runs on the tunnel session thread and only hands the
@@ -89,6 +93,9 @@ public slots:
     // round-trip state below is plain members on purpose.
     void on_pong(QString device_id, quint64 t0_us, quint64 t3_us);
     void on_display_modes(QString device_id, QByteArray payload);
+    // The agent's encoder capabilities and its live pick. May trigger a decoder
+    // rebuild when the pick changed mid-session.
+    void on_codec_capabilities(QString device_id, quint16 codec_mask, quint8 mode);
 
 private:
     bool do_start(const std::string& device_id);
@@ -102,6 +109,10 @@ private:
     // does not answer.
     void ping();
     void query_display_modes();
+    // Rebuild the decoder for the agent's reported mode; no-op when the mode
+    // already matches. Returns true when the pipeline is ready for frames.
+    bool apply_codec_locked(const std::string& device_id, uint16_t codec_mask,
+                            uint8_t mode);
 
     TunnelManager& tunnels_;
     DisplayRenderer& renderer_;
@@ -124,6 +135,11 @@ private:
     // The next DisplayModes reply is the acknowledgement: same current mode means
     // the far side could not do it.
     QSize pending_set_mode_;
+    // Per-device encoder capability masks, updated on every CodecCapabilities.
+    std::mutex codec_mutex_;
+    std::unordered_map<std::string, uint16_t> device_codec_masks_;
+    // The codec the live pipeline was built for.
+    CodecType pipeline_codec_ = CodecType::CODEC_H264;
     // Smoothed round trip to the controlled agent, -1 until it answers once.
     int rtt_ms_ = -1;
     // The stamp of the one Ping we are waiting on; 0 means none is in flight.

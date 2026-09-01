@@ -4,6 +4,7 @@
 #include <QSize>
 #include <QVector>
 #include <QWidget>
+#include <string>
 
 class QComboBox;
 class QLabel;
@@ -33,6 +34,8 @@ public:
     void set_zoomed(bool zoomed);
     void set_stats(int fps, int latency_ms);
     void set_quality_index(int index);
+    // Encoder mode indicator (HEVC/H.264/soft badge)
+    void set_encoder_mode(const QString& mode_string);
     // The display modes the remote machine offered; an empty list (agent too
     // old to answer) leaves the picker on "--".
     void set_modes(const QVector<QSize>& modes, const QSize& current);
@@ -44,6 +47,8 @@ signals:
     void start_requested();
     void logon_requested();
     void fullscreen_toggled(bool on);
+    // Emitted when encoder mode changes (UI update hook)
+    void encoder_info_updated(const std::string& info);
 
 private:
     void refresh_capture_tip();
@@ -60,6 +65,7 @@ private:
     QPushButton* stop_button_ = nullptr;
     QLabel* stats_ = nullptr;
     bool streaming_ = false;
+    QLabel* encoder_badge_ = nullptr;  // HEVC/H.264 mode indicator
     // Only ever read to word the tooltip; the gateway is what acts on it.
     QKeySequence release_key_;
 };

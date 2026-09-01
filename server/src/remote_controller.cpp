@@ -6,6 +6,7 @@
 #include "log.hpp"
 #include "messages.hpp"
 #include "tunnel_manager.hpp"
+#include "video_decoder.hpp"
 
 const QualityPreset kQualityPresets[] = {
     {"流畅", "30fps · 1.5M · 720p", 30, 1500, 1280},
@@ -16,6 +17,12 @@ const int kQualityPresetCount =
     static_cast<int>(sizeof(kQualityPresets) / sizeof(kQualityPresets[0]));
 
 namespace {
+
+// Short badge text for the session toolbar, keyed by the pipeline's codec.
+QString badge_for_codec(CodecType codec) {
+    return codec == CodecType::CODEC_HEVC ? QStringLiteral("HEVC 硬编")
+                                          : QStringLiteral("H.264");
+}
 
 // An agent that has never answered will not start answering: it is older than
 // this message. Asking again would also cost its log a warning every second.
@@ -120,10 +127,35 @@ bool RemoteController::do_start(const std::string& device_id) {
     auto request_keyframe = [this, device_id] {
         tunnels_.send_to_device(device_id, proto::MessageType::RequestKeyframe);
     };
-    if (!pipeline_.start(device_id, width, height, request_keyframe)) {
-        return false;
+
+    // Prefer HEVC when the agent advertised a HEVC encoder and this machine
+    // can decode it; otherwise H.264, which OpenH264 always covers.
+    uint16_t mask = 0;
+    {
+        std::lock_guard<std::mutex> lock(codec_mutex_);
+        auto it = device_codec_masks_.find(device_id);
+        if (it != device_codec_masks_.end()) mask = it->second;
+    }
+    CodecType codec_type = CodecType::CODEC_H264;
+    if ((mask & proto::kCodecMaskHEVC_Hardware) &&
+        DecoderFactory::is_mf_decoder_available(CodecType::CODEC_HEVC)) {
+        codec_type = CodecType::CODEC_HEVC;
+    }
+    pipeline_codec_ = codec_type;
+    if (!pipeline_.start(device_id, width, height, codec_type, request_keyframe)) {
+        // HEVC decoder gone between probe and start: retry once on H.264.
+        if (codec_type == CodecType::CODEC_HEVC) {
+            pipeline_codec_ = CodecType::CODEC_H264;
+            if (!pipeline_.start(device_id, width, height, CodecType::CODEC_H264,
+                                 request_keyframe)) {
+                return false;
+            }
+        } else {
+            return false;
+        }
     }
     renderer_.set_remote_size(width, height);
+    emit encoder_mode_changed(badge_for_codec(pipeline_codec_));
 
     auto payload = proto::make_start_stream_payload(fps_, bitrate_kbps_,
                                                    max_encode_width_);
@@ -330,6 +362,70 @@ void RemoteController::on_display_modes(QString device_id, QByteArray payload) {
         pending_set_mode_ = QSize();
     }
     emit display_modes_ready(modes, current);
+}
+
+void RemoteController::on_codec_capabilities(QString device_id,
+                                             quint16 codec_mask, quint8 mode) {
+    const std::string device = device_id.toStdString();
+    {
+        std::lock_guard<std::mutex> lock(codec_mutex_);
+        device_codec_masks_[device] = codec_mask;
+    }
+    // Only the live session reacts to a live encoder switch; every other
+    // report is cached for the next session.
+    if (device != controlled_device() || !is_controlling()) {
+        return;
+    }
+    apply_codec_locked(device, codec_mask, mode);
+}
+
+bool RemoteController::apply_codec_locked(const std::string& device_id,
+                                          uint16_t codec_mask, uint8_t mode) {
+    // mode is the agent's live pick: kEncoderModeHevcHard, kEncoderModeH264Hard
+    // or kEncoderModeSoft. The pipeline only has to change when the codec
+    // family changed; HEVC vs H.264 is the one boundary that matters.
+    const bool agent_hevc = (mode == proto::kEncoderModeHevcHard);
+    const CodecType wanted =
+        agent_hevc ? CodecType::CODEC_HEVC : CodecType::CODEC_H264;
+    if (wanted == pipeline_codec_) {
+        // Same family: nothing to rebuild. Refresh the badge so a soft<->hard
+        // move is still visible.
+        emit encoder_mode_changed(badge_for_codec(pipeline_codec_));
+        return true;
+    }
+    if (agent_hevc &&
+        !DecoderFactory::is_mf_decoder_available(CodecType::CODEC_HEVC)) {
+        // The agent switched to HEVC but we cannot decode it: tell it to drop
+        // back to H.264 instead of shipping frames nobody can read.
+        tunnels_.send_to_device(device_id, proto::MessageType::CodecSwitchReq);
+        return false;
+    }
+
+    // Rebuild the decoder and ask for a fresh keyframe so the first frame of
+    // the new codec paints immediately.
+    int width = 0;
+    int height = 0;
+    for (const auto& info : tunnels_.online_devices()) {
+        if (info.device_id == device_id) {
+            width = info.screen_width;
+            height = info.screen_height;
+            break;
+        }
+    }
+    auto request_keyframe = [this, device_id] {
+        tunnels_.send_to_device(device_id, proto::MessageType::RequestKeyframe);
+    };
+    if (width <= 0 || height <= 0 ||
+        !pipeline_.start(device_id, width, height, wanted, request_keyframe)) {
+        mlog::error("Decoder rebuild failed for codec switch on " + device_id);
+        return false;
+    }
+    pipeline_codec_ = wanted;
+    request_keyframe();
+    emit encoder_mode_changed(badge_for_codec(pipeline_codec_));
+    mlog::info(std::string("Codec switched to ") +
+               (agent_hevc ? "HEVC" : "H.264") + " for " + device_id);
+    return true;
 }
 
 void RemoteController::request_control(const std::string& device_id,

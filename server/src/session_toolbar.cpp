@@ -105,6 +105,12 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
         "延迟＝本机到对端的一次网络往返，每秒测一次，与画面是否在动无关。它不含采集、\n"
         "编码与解码，只反映链路。显示 -- 表示还没收到回答，或对端版本不认这个探测。"));
 
+    // Encoder mode badge (HEVC/H.264/Soft indicator)
+    encoder_badge_ = new QLabel(QString());
+    encoder_badge_->setStyleSheet("QLabel { color: #88cc88; font-weight: bold; padding: 2px 6px; border-radius: 3px; background-color: transparent; }");
+    encoder_badge_->setFixedHeight(16);
+    actions->addWidget(encoder_badge_);
+
     actions->addWidget(title_, 1);
     actions->addWidget(quality_);
     actions->addWidget(resolution_);
@@ -116,11 +122,15 @@ SessionToolbar::SessionToolbar(QWidget* parent) : QWidget(parent) {
     status->addWidget(capture_);
     status->addWidget(detail_, 1);
     status->addWidget(stats_);
-
+    
     reserve(state_, QStringLiteral("重连中"));
     reserve(capture_, QStringLiteral("键盘 · 远程"));
     reserve(stats_, QStringLiteral("帧率 100 · 延迟 1234ms"));
     stats_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // The badge starts empty: only a live session knows which encoder is
+    // actually running, and guessing here would promise HEVC on an OpenH264
+    // machine before the first CodecCapabilities ever arrives.
+    encoder_badge_->clear();
     reserve_button(stop_button_, QStringLiteral("重新连接"));
     reserve_button(fullscreen_button_, QStringLiteral("退出全屏"));
 
@@ -225,6 +235,12 @@ void SessionToolbar::set_stats(int fps, int latency_ms) {
                                    ? QStringLiteral("<1ms")
                                    : QStringLiteral("%1ms").arg(latency_ms));
     stats_->setText(QStringLiteral("帧率 %1 · 延迟 %2").arg(fps).arg(rtt));
+}
+
+// Set encoder mode indicator (HEVC/H.264/Soft badge)
+void SessionToolbar::set_encoder_mode(const QString& mode_string) {
+    if (!streaming_) return;
+    encoder_badge_->setText(mode_string);
 }
 
 void SessionToolbar::set_quality_index(int index) {

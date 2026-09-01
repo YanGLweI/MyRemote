@@ -108,6 +108,9 @@ signals:
     // The agent's answer to a mode query, and its acknowledgement after every
     // set attempt: raw DisplayModes payload, parsed by the controller.
     void display_modes(QString device_id, QByteArray payload);
+    // The agent's encoder report: which codecs its GPU can do and which one
+    // it is using right now. Arrives on registration and after every switch.
+    void codec_capabilities(QString device_id, quint16 codec_mask, quint8 mode);
 
 private:
     void on_new_connection(SOCKET socket);

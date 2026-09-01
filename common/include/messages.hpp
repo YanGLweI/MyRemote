@@ -39,6 +39,8 @@ enum class MessageType : uint8_t {
     QueryDisplayModes = 0x13,  // S→C empty: list the desktop modes you can do
     DisplayModes      = 0x14,  // C→S [2B cur_w][2B cur_h][1B n][n×(2B w)(2B h)]
     SetDisplayMode    = 0x15,  // S→C [2B w][2B h] switch the remote desktop mode
+    CodecCapabilities = 0x16,  // C→S  capability report [2B codec_mask][1B preferred_mode]
+    CodecSwitchReq    = 0x17,  // S→C request encoder switch (e.g., decode failure)
 };
 
 enum class RegisterStatus : uint8_t {
@@ -55,6 +57,18 @@ constexpr uint8_t kFlagIsSystem = 0x04;          // LocalSystem (implies Elevate
 constexpr uint8_t kFlagConsoleOwner = 0x08;      // this session owns the console
 constexpr uint8_t kFlagSecureDesktop = 0x10;     // can follow Winlogon (SeTcb)
 constexpr uint8_t kFlagLogonScreen = 0x20;       // input desktop is not "Default"
+
+// Codec capability masks (uint16_t bitfield in CodecCapabilities message)
+constexpr uint16_t kCodecMaskH264_Hardware = (1 << 0);  // H.264 hardware enc (MF/NVENC/QSV/VCE)
+constexpr uint16_t kCodecMaskHEVC_Hardware  = (1 << 1);  // HEVC hardware enc (preferred)
+constexpr uint16_t kCodecMaskH264_Software  = (1 << 2);  // H.264 software enc (OpenH264/MF soft)
+constexpr uint16_t kCodecMaskHEVC_Software  = (1 << 3);  // HEVC software enc (optional future)
+
+// Encoder mode hints for capability negotiation
+constexpr uint8_t kEncoderModeAuto     = 0;  // auto-select best available
+constexpr uint8_t kEncoderModeHevcHard = 1;  // force HEVC hardware encode
+constexpr uint8_t kEncoderModeH264Hard = 2;  // force H.264 hardware encode
+constexpr uint8_t kEncoderModeSoft     = 3;  // use software encoder only
 
 struct RegisterInfo {
     uint16_t protocol_version = 0;
@@ -162,4 +176,10 @@ std::vector<uint8_t> make_set_display_mode_payload(uint16_t width, uint16_t heig
 bool parse_set_display_mode_payload(const std::vector<uint8_t>& payload, uint16_t& width,
                                     uint16_t& height);
 
-}  // namespace proto
+// Codec capability negotiation helpers
+std::vector<uint8_t> make_codec_capabilities_payload(uint16_t codec_mask, 
+                                                       uint8_t preferred_mode);
+bool parse_codec_capabilities_payload(const std::vector<uint8_t>& payload,
+                                      uint16_t& codec_mask, uint8_t& mode);
+
+}

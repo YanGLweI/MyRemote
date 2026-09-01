@@ -1,0 +1,21 @@
+1. 停止旧版服务端（如果正在运行）：
+   taskkill /f /im control_server.exe
+
+2. 重新编译（已在 build 目录配置好）：
+   cd /d C:\Users\YLW\Documents\PJ\MyRemote
+   call build.bat
+
+   或手动运行：
+   set PATH=C:\vcpkg\downloads\tools\cmake-4.4.2-windows\cmake-4.4.2-windows-x86_64\bin;%PATH%
+   call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64
+   cmake --build build --config Release --target agent control_server
+   C:\Qt\6.7.3\msvc2019_64\bin\windeployqt.exe --release build\bin\Release\control_server.exe
+
+3. 验证版本号：
+   build\bin\Release\agent.exe --version
+   应输出：MyRemote agent 1.0.6
+
+4. 运行安装测试：
+   - 启动服务端：start "" build\bin\Release\control_server.exe
+   - 启动被控端子台模式：build\bin\Release\agent.exe --console --ip 127.0.0.1 --port 7500 --key default_secret_key_12345
+   - 观察日志确认编码器选择（HEVC/H.264硬编）

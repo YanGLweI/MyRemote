@@ -23,6 +23,9 @@ struct EncoderConfig {
     // Long edge of the encoded picture; wider desktops are downscaled to it.
     // 0 keeps the native resolution.
     int max_encode_width = 1920;
+    // Pixel format of the GPU texture handed to a hardware encoder:
+    // 0 = no GPU path (soft encode), 1 = NV12, 2 = BGRA.
+    int gpu_input_format = 0;
 };
 
 struct CapturedFrame {
@@ -34,6 +37,7 @@ struct CapturedFrame {
     std::vector<uint8_t> i420;     // Y + U + V, strides width / width/2
     std::vector<uint8_t> h264_data;  // encoded output (post-encode)
     bool is_keyframe = false;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_texture;  // GPU texture (for hardware encoder path)
 };
 
 // Desktop capture via Desktop Duplication API (DXGI 1.2+),
@@ -49,12 +53,20 @@ public:
     DesktopCapturer& operator=(const DesktopCapturer&) = delete;
 
     bool initialize(int monitor_index = 0);
-    void configure(const EncoderConfig& config);
+    // prefer_gpu_path: when true, capture produces a GPU texture for a
+    // hardware encoder (zero CPU conversion); when false the classic
+    // staged BGRA->I420 path feeds the software encoder.
+    void configure(const EncoderConfig& config, bool prefer_gpu_path = false);
 
     // Returns true when a new frame was captured; false when unchanged.
     bool capture_frame(CapturedFrame& frame, DWORD wait_ms = 100);
 
     bool using_bitblt_fallback() const { return use_bitblt_; }
+
+    // Pixel format of the GPU texture that capture_frame fills, or 0 when the
+    // GPU path is unavailable: 1 = NV12 (VideoProcessor), 2 = BGRA (native
+    // size passthrough).
+    int gpu_texture_format() const;
 
     // The desktop underneath us changed (session switch, secure-desktop hop,
     // monitor reset): throw away the cached geometry and rebuild now instead
@@ -78,6 +90,11 @@ private:
     // Recompute encode_width_/encode_height_ from source_size + the cap.
     // Caller must already hold mutex_ (it is reached from initialize()).
     void apply_encode_size();
+    // GPU path: VideoProcessor converts/scales the duplicated BGRA texture to
+    // an NV12 texture the encoder can consume without leaving the GPU.
+    bool init_video_processor();
+    void teardown_video_processor();
+    bool gpu_convert_frame(ID3D11Texture2D* source, CapturedFrame& frame);
     // Box-filter the mapped BGRA straight into the frame's I420 buffer,
     // splitting the destination rows over a few threads.
     void convert_to_i420(const uint8_t* src, int src_pitch,
@@ -89,6 +106,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<IDXGIOutputDuplication> duplication_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_;
+    // GPU conversion path (prefer_gpu_path_ == true).
+    Microsoft::WRL::ComPtr<ID3D11VideoDevice> video_device_;
+    Microsoft::WRL::ComPtr<ID3D11VideoContext> video_context_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorEnumerator> vp_enumerator_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessor> video_processor_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorOutputView> vp_output_view_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> nv12_texture_;
+    int vp_width_ = 0;
+    int vp_height_ = 0;
+    bool prefer_gpu_path_ = false;
 
     EncoderConfig config_;
     mutable std::mutex mutex_;

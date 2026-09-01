@@ -3,6 +3,8 @@
 #include <QByteArray>
 #include <QObject>
 
+#include "video_decoder.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -11,7 +13,6 @@
 #include <string>
 #include <thread>
 
-class H264Decoder;
 class DisplayRenderer;
 
 // Decodes video payloads on a dedicated thread and publishes only the newest
@@ -26,7 +27,7 @@ public:
 
     // on_stall runs on the decode thread when nothing decoded for a while.
     bool start(const std::string& device_id, int width, int height,
-               std::function<void()> on_stall);
+               CodecType codec_type, std::function<void()> on_stall);
     void stop();
 
     // Called from the tunnel session thread; keeps only the latest payload.
@@ -43,7 +44,8 @@ private:
     void run();
 
     DisplayRenderer& renderer_;
-    std::unique_ptr<H264Decoder> decoder_;
+    std::unique_ptr<IVideoDecoder> decoder_;
+    CodecType codec_type_ = CodecType::CODEC_H264;
     std::thread thread_;
     std::mutex mutex_;
     std::condition_variable cv_;

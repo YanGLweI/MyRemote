@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "display_renderer.hpp"
-#include "h264_decoder.hpp"
 #include "log.hpp"
 #include "messages.hpp"
 
@@ -26,14 +25,18 @@ FramePipeline::~FramePipeline() {
 }
 
 bool FramePipeline::start(const std::string& device_id, int width, int height,
-                          std::function<void()> on_stall) {
+                          CodecType codec_type, std::function<void()> on_stall) {
     stop();
-    auto decoder = std::make_unique<H264Decoder>();
-    if (!decoder->initialize(width, height)) {
+    
+    // Create appropriate decoder based on codec type
+    auto decoder = DecoderFactory::create(codec_type, width, height);
+    if (!decoder) {
         mlog::error("Decoder init failed for " + device_id);
         return false;
     }
+    
     decoder_ = std::move(decoder);
+    codec_type_ = codec_type;
     on_stall_ = std::move(on_stall);
     decoded_.store(0);
     last_good_ms_ = now_ms();

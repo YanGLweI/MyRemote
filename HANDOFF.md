@@ -1,4 +1,4 @@
-# 开发交接文档（2026-09-01，M22 F1~F4 **已全绿**，v1.0.5 待发）
+# 开发交接文档（2026-09-01，M23 HEVC/H.264 GPU 硬编 **已实现**，v1.0.6 已发）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
@@ -8,11 +8,12 @@
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | **v1.0.5 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.5）——代码已修、四包已出、TEST-WIN 现场验证全绿，tag 打在 `bac29f2`。v1.0.4 仍可访问（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.4） |
-| 代码 | tag **v1.0.4** 打在 `dbc3954`（M21 九笔：`9dd9c3c` `19df922` `a116d77` `647b7ea` `f759b4c` `b34708c` `e02320d` `dbc3954` + 一笔文档刷新）；main 之后又走了 `08a03af`（TEST-WIN 现场判账，**只动文档**，代码与 1.0.4 一致），再两笔 `b6f71c0`+`e5cf08e`（M22 代码 +1.0.5 版本） |
-| 交付物 | `D:\IT-share\MyRemote-v1.0.5\`（四包 + LF 校验，目标目录复校四条全 OK）；1.0.4 那份仍在原地做参照 |
-| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.5**（M22 已抬）；上一版 1.0.4 |
-| 用户侧 | **两台都在 1.0.4**（YEUNG：`agent.exe`/`control_server.exe` FileVersion 实测 1.0.4，服务 Running/Automatic；TEST-WIN：`agent.exe` 1.0.4，只有被控端）。TEST-WIN 三条症状现在**都有日志与转录背书**（见第 3 节），不再是"口头确认"；M20 那七条现场账也在同一台机器上逐条判过：**五条判完（⑦ 带一个盲区）、两条刻意没跑**，而那两条没跑的里有一条已经由读代码判出真因（见"已确认待修"） |
+| GitHub Release | **v1.0.6 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.6）——M23 四包已出、HEVC/H.264 GPU 硬编代码已实现。v1.0.5 仍可访问（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.5） |
+| 代码 | tag **v1.0.6**；M23 硬编笔全部在 main 上（协议扩展、IStreamEncoder 抽象、MfHardwareEncoder、VideoProcessor 零拷贝路径、MfDecoder/OpenH264 兜底链、CodecSwitchReq 热切换、UI 徽章） |
+| 交付物 | `D:\IT-share\MyRemote-v1.0.6\`（四包 + LF 校验，目录已清理旧版本）；1.0.5 那份仍在原地做参照 |
+| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.6**（M23 已抬）；上一版 1.0.5 |
+| 用户侧 | 本机已卸载旧版（MyRemoteAgent 服务已删）；TEST-WIN/LAPTOP 等远端仍跑旧版 agent，仅连控制端。**M23 硬编的真机画面验证待做**（沙盒无法停止服务、无法拉起 GUI 会话）：需在真机装 v1.0.6 后确认画面、确认 Agent 日志出现 `Encoder probe`/`Encoder ready` 与硬编启用 |
+
 
 ## 2. M21 是什么问题、怎么修的
 

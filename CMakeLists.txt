@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyRemoteControl VERSION 1.0.5 LANGUAGES CXX)
+project(MyRemoteControl VERSION 1.0.6 LANGUAGES CXX)
 enable_language(RC)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -87,6 +87,7 @@ if(BUILD_CLIENT)
         client/src/input_simulator.cpp
         client/src/heartbeat.cpp
         client/src/device_id.cpp
+        client/src/hardware_encoder.cpp  # New: HEVC/H.264 hard encoding
     )
     target_link_libraries(agent PRIVATE
         common_lib
@@ -94,6 +95,7 @@ if(BUILD_CLIENT)
         iphlpapi shell32 userenv
         d3d11 dxgi dwmapi
         openh264
+        mfplat mfreadwrite mfuuid  # Media Foundation encoder libraries
     )
     set_target_properties(agent PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -143,6 +145,7 @@ if(BUILD_SERVER)
         server/include/settings_dialog.hpp
         server/src/frame_pipeline.cpp
         server/src/h264_decoder.cpp
+        server/src/video_decoder.cpp  # Media Foundation decoder + OpenH264 adapter
         # Q_OBJECT headers must be listed so AUTOMOC generates their moc files
         server/include/tunnel_manager.hpp
         server/include/main_window.hpp
@@ -164,6 +167,8 @@ if(BUILD_SERVER)
         ${WINDOWS_SYS_LIBS}
         d3d11 dxgi
         openh264
+        # Media Foundation libraries (Windows built-in)
+        mfplat mfreadwrite mfuuid
     )
     set_target_properties(control_server PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

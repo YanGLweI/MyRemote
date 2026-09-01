@@ -278,6 +278,18 @@ void TunnelManager::session_loop(SOCKET socket, const std::string& peer_ip) {
                                            frame.payload.data()),
                                        static_cast<int>(frame.payload.size())));
                         break;
+                    case proto::MessageType::CodecCapabilities: {
+                        uint16_t codec_mask = 0;
+                        uint8_t mode = 0;
+                        if (!proto::parse_codec_capabilities_payload(
+                                frame.payload, codec_mask, mode)) {
+                            break;
+                        }
+                        emit codec_capabilities(
+                            QString::fromStdString(session->device_id),
+                            codec_mask, mode);
+                        break;
+                    }
                     case proto::MessageType::AuthResponse: {
                         std::vector<uint8_t> salt;
                         std::string password;

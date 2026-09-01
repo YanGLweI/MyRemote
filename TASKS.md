@@ -115,7 +115,18 @@
 - M22-5 文档与版本：`release-notes.md` 改写为 **1.0.5**；`CMakeLists.txt` 与 `packaging/common.iss` 版本抬 1.0.5。
 - M22-6 回归：`m21_cli_regression.ps1` 7/7 PASS、`m21_hide_probe.ps1` 13/13 PASS、`m21_set_server.ps1` 17/17 PASS；`m21_menu_shape.ps1` 远程会话中托盘菜单不可交互（环境限制，非代码回归）。
 - M22-7 出包：`stage.ps1` 出四包 + LF `SHA256SUMS.txt`，交付 `D:\IT-share\MyRemote-v1.0.5\`；不发版、不打 tag（1.0.5 供真机验证）。
-- 刻意没做：`tw.ps1` 的 t2 解封与 TEST-WIN 现场判账（需用户在场，F3 落地后才有意义）；④ 挂线程注入形态（需要注入工具，目前没有，另立账）；菜单形状 13s 延迟重设计（HANDOFF 明确刻意不做，属主循环结构问题）；GitHub Release（等真机验证通过后另行决定）。
+- 刻意没做：菜单形状 13s 延迟重设计（HANDOFF 明确刻意不做，属主循环结构问题）；GitHub Release（等真机验证通过后另行决定）。t2 解封后在 TEST-WIN 用 m22_window.ps1 + m22_wedge_probe.ps1 跑过一次，死账被优雅回收、监管继续 ping 活代理 → **PASS**，记入 M22-1 全绿证据。
+
+- [x] **M23** HEVC/H.264 GPU 硬编码串流（Media Foundation）：多档编码器自动协商、GPU 零拷贝采集路径、会话内热切换、UI 编码模式徽章、解码器兜底链；修复黑屏四连：MF 解码器输出类型未设置、ProcessOutput 空 sample、AVCC/Annex-B 格式不匹配、MFStartup 缺失致 MFT 枚举为空。
+- M23-1 协议扩展：`CodecCapabilities`（0x16，能力上报 `[2B codec_mask][1B mode]`）与 `CodecSwitchReq`（0x17，服务端请求降级）消息；mask 位定义 `kCodecMaskH264_Hardware/HEVC_Hardware/H264_Software`；`make/parse_codec_capabilities_payload` 实现。
+- M23-2 编码器抽象：`video_encoder.hpp` 引入 `IStreamEncoder` 接口（避开 strmif.h 的 DirectShow `IVideoEncoder` 命名冲突）与 `EncoderFactory`；`VideoEncoder`（OpenH264 软编）实现该接口；`EncoderConfig` 新增 `gpu_input_format`（0=软编路径，1=NV12 GPU 路径）。
+- M23-3 MF 硬编码器：`client/src/hardware_encoder.cpp` 新增 `MfHardwareEncoder`（HEVC/H.264 硬编，D3D11 NV12 纹理输入）；`MFTEnumEx` 枚举硬件编码器（去掉 `SORTANDFILTER`，否则 Intel QSV/NVENC 等不注册完整类型信息的硬件 MFT 会被静默过滤）；`CODECAPI_AVLowLatencyMode/CBR/码率` 配置；输出 AVCC→Annex-B 归一化（协议统一 Annex-B，两端解码器都能吃）；`MFSampleExtension_CleanPoint` 关键帧标记；`MFT_OUTPUT_STREAM_INFO.cbSize` 创建输出 sample buffer（空 sample 会让 ProcessOutput 直接失败）。
+- M23-4 零拷贝采集路径：`desktop_capture.cpp` 新增 `init_video_processor/gpu_convert_frame`——`ID3D11VideoProcessor` 将 Desktop Duplication 的 BGRA 纹理缩放转 NV12，直接交给硬编 MFT，无 CPU Map/无 I420 转换；`gpu_texture_format()` 上报可用 GPU 输入格式；D3D11 设备以 `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` 创建（失败回退无标志重试）。
+- M23-5 服务端解码器：`server/video_decoder.hpp/cpp` 新增 `MfDecoder`（HEVC/H.264 MF 解码，`GetOutputAvailableType` 枚举官方输出类型而非手搓 NV12；非 NV12 输出直接回退 OpenH264 防花屏）与 `OpenH264DecoderAdapter`；`DecoderFactory::create` 按 codec 选择 MF→OpenH264 兜底链；`FramePipeline::start` 携带 codec 参数；`RemoteController::on_codec_capabilities/apply_codec_locked` 实现会话中解码器热重建 + `CodecSwitchReq` 下发。
+- M23-6 Agent 主循环：`recreate_encoder()`（仅流线程换编码器指针，`g_encoder_recreate` 标志跨线程）、`send_codec_capabilities()`；硬编连续失败 30 帧自动降级 OpenH264（`g_encoder_force_soft`）；`CodecSwitchReq` 强制 H.264 路径；启动时 `EncoderFactory::create_selected` 自动选型。
+- M23-7 UI：`SessionToolbar::set_encoder_mode` 徽章显示当前编码模式（HEVC 硬编/H.264/软编）；`TunnelManager::codec_capabilities` 信号接线到控制器。
+- M23-8 修复：`MFStartup` 缺失致 MFT 枚举返回空（Intel QSV 明明已注册却探测不到——不加 MFStartup 整个平台都答“没有 MFT”）；`MFT_ENUM_FLAG_SORTANDFILTER` 过滤掉不注册完整类型信息的硬件 MFT；`MfDecoder` 输出类型必须从 `GetOutputAvailableType` 取（手搓 NV12 会被拒，ProcessOutput 报 `MF_E_TRANSFORM_TYPE_NOT_SET`）；`ProcessOutput` 需自带 `MFCreateAlignedMemoryBuffer` 输出 sample；`CodecSwitchReq` 枚举成员误用分号；`mlog::debug` 不存在改用 `mlog::info`；`mferror.h` 未包含致 `MF_E_TRANSFORM_NEED_MORE_INPUT` 未声明。
+- M23-9 出包：`CMakeLists.txt` 与 `common.iss` 版本抬 **1.0.6**；`stage.ps1` 出四包 + LF `SHA256SUMS.txt` 交付 `D:\IT-share\MyRemote-v1.0.6\`；打 tag `v1.0.6` 并发布 GitHub Release（附件：setup.exe×2 + portable.zip×2 + SHA256SUMS.txt）。
 
 ## 后续可选优化
 

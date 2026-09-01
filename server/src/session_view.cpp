@@ -82,6 +82,10 @@ SessionView::SessionView(std::string device_id, TunnelManager& tunnels,
     });
     connect(controller_.get(), &RemoteController::display_modes_ready, toolbar_,
             &SessionToolbar::set_modes);
+    connect(&tunnels_, &TunnelManager::codec_capabilities, controller_.get(),
+            &RemoteController::on_codec_capabilities);
+    connect(controller_.get(), &RemoteController::encoder_mode_changed, toolbar_,
+            &SessionToolbar::set_encoder_mode);
     connect(toolbar_, &SessionToolbar::resolution_selected, this,
             [this](int w, int h) { controller_->set_display_mode(w, h); });
     connect(toolbar_, &SessionToolbar::stop_requested, this, [this] {

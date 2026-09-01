@@ -1,5 +1,7 @@
 #include "desktop_capture.hpp"
 
+#include <dxgicommon.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -36,9 +38,20 @@ bool DesktopCapturer::init_d3d() {
     device_.Reset();
     context_.Reset();
     D3D_FEATURE_LEVEL feature_levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+    // The VideoProcessor path (GPU BGRA->NV12 for the hardware encoder) needs
+    // the device created with video support; without it the CPU I420 path is
+    // still there, so a retry without the flag is the graceful fallback.
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                   D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                    feature_levels, ARRAYSIZE(feature_levels),
                                    D3D11_SDK_VERSION, &device_, nullptr, &context_);
+    if (FAILED(hr)) {
+        device_.Reset();
+        context_.Reset();
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                               feature_levels, ARRAYSIZE(feature_levels),
+                               D3D11_SDK_VERSION, &device_, nullptr, &context_);
+    }
     if (FAILED(hr)) {
         mlog::error("D3D11CreateDevice failed");
         return false;
@@ -98,7 +111,7 @@ bool DesktopCapturer::init_duplication(int monitor_index) {
     return true;
 }
 
-void DesktopCapturer::configure(const EncoderConfig& config) {
+void DesktopCapturer::configure(const EncoderConfig& config, bool prefer_gpu_path) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Resolution comes from the capture backend; adopt only the quality
     // parameters and the encode cap from the caller.
@@ -106,9 +119,160 @@ void DesktopCapturer::configure(const EncoderConfig& config) {
     config_.bitrate_kbps = config.bitrate_kbps;
     config_.quality_level = config.quality_level;
     config_.max_encode_width = config.max_encode_width;
+    prefer_gpu_path_ = prefer_gpu_path;
+    if (!prefer_gpu_path_) {
+        teardown_video_processor();
+    }
     if (source_width_ > 0 && source_height_ > 0) {
         apply_encode_size();
+        if (prefer_gpu_path_) {
+            // Stand the VideoProcessor up right away so gpu_texture_format()
+            // answers truthfully before the encoder is created.
+            init_video_processor();
+        }
     }
+}
+
+int DesktopCapturer::gpu_texture_format() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!prefer_gpu_path_ || !device_ || use_bitblt_) {
+        return 0;
+    }
+    if (video_processor_ && nv12_texture_ && vp_width_ == encode_width_ &&
+        vp_height_ == encode_height_ && encode_width_ > 0) {
+        return 1;  // NV12 via VideoProcessor
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// GPU conversion path: duplicated BGRA texture -> NV12 texture, scaled to the
+// encode size, via ID3D11VideoProcessor. The pixels never leave the GPU and
+// the hardware encoder consumes the result directly.
+// ---------------------------------------------------------------------------
+void DesktopCapturer::teardown_video_processor() {
+    vp_output_view_.Reset();
+    nv12_texture_.Reset();
+    video_processor_.Reset();
+    vp_enumerator_.Reset();
+    video_context_.Reset();
+    video_device_.Reset();
+    vp_width_ = 0;
+    vp_height_ = 0;
+}
+
+bool DesktopCapturer::init_video_processor() {
+    teardown_video_processor();
+    if (!device_ || encode_width_ < kMinEncodeDimension ||
+        encode_height_ < kMinEncodeDimension || source_width_ <= 0 ||
+        source_height_ <= 0) {
+        mlog::warn("VideoProcessor skipped: device=" +
+                   std::to_string(device_ != nullptr) + " size=" +
+                   std::to_string(encode_width_) + "x" +
+                   std::to_string(encode_height_));
+        return false;
+    }
+    if (FAILED(device_.As(&video_device_)) || FAILED(context_.As(&video_context_)) ||
+        !video_device_ || !video_context_) {
+        mlog::warn("VideoProcessor: D3D11 device lacks video support "
+                   "(D3D11_CREATE_DEVICE_VIDEO_SUPPORT not granted)");
+        teardown_video_processor();
+        return false;
+    }
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC desc{};
+    desc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+    desc.InputWidth = static_cast<UINT>(source_width_);
+    desc.InputHeight = static_cast<UINT>(source_height_);
+    desc.OutputWidth = static_cast<UINT>(encode_width_);
+    desc.OutputHeight = static_cast<UINT>(encode_height_);
+    desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+    if (FAILED(video_device_->CreateVideoProcessorEnumerator(&desc,
+                                                             &vp_enumerator_)) ||
+        FAILED(video_device_->CreateVideoProcessor(vp_enumerator_.Get(), 0,
+                                                   &video_processor_))) {
+        mlog::warn("VideoProcessor unavailable; hardware encoding will fall back");
+        teardown_video_processor();
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC out{};
+    out.Width = static_cast<UINT>(encode_width_);
+    out.Height = static_cast<UINT>(encode_height_);
+    out.MipLevels = 1;
+    out.ArraySize = 1;
+    out.Format = DXGI_FORMAT_NV12;
+    out.SampleDesc.Count = 1;
+    out.Usage = D3D11_USAGE_DEFAULT;
+    out.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&out, nullptr, &nv12_texture_))) {
+        teardown_video_processor();
+        return false;
+    }
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ov{};
+    ov.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+    ov.Texture2D.MipSlice = 0;
+    if (FAILED(video_device_->CreateVideoProcessorOutputView(
+            nv12_texture_.Get(), vp_enumerator_.Get(), &ov, &vp_output_view_))) {
+        teardown_video_processor();
+        return false;
+    }
+    vp_width_ = encode_width_;
+    vp_height_ = encode_height_;
+    mlog::info("VideoProcessor ready: " + std::to_string(source_width_) + "x" +
+               std::to_string(source_height_) + " -> " +
+               std::to_string(encode_width_) + "x" + std::to_string(encode_height_) +
+               " NV12");
+    return true;
+}
+
+bool DesktopCapturer::gpu_convert_frame(ID3D11Texture2D* source,
+                                        CapturedFrame& frame) {
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorInputView> input_view;
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC iv{};
+    iv.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    iv.Texture2D.MipSlice = 0;
+    iv.Texture2D.ArraySlice = 0;
+    if (FAILED(video_device_->CreateVideoProcessorInputView(
+            source, vp_enumerator_.Get(), &iv, &input_view))) {
+        return false;
+    }
+
+    // Desktop sRGB in, BT.601 limited-range NV12 out: what both the hardware
+    // encoder and the Media Foundation decoder expect.
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs{};
+    in_cs.Usage = 0;                       // playback
+    in_cs.RGB_Range = 0;                   // full range
+    in_cs.YCbCr_Matrix = 1;                // BT.709
+    in_cs.YCbCr_xvYCC = 0;
+    in_cs.Nominal_Range = 0;               // 0-255
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE out_cs{};
+    out_cs.Usage = 0;
+    out_cs.RGB_Range = 0;
+    out_cs.YCbCr_Matrix = 0;               // BT.601
+    out_cs.YCbCr_xvYCC = 0;
+    out_cs.Nominal_Range = 1;              // 16-235 limited
+    video_context_->VideoProcessorSetStreamColorSpace(video_processor_.Get(), 0,
+                                                      &in_cs);
+    video_context_->VideoProcessorSetOutputColorSpace(video_processor_.Get(),
+                                                      &out_cs);
+    RECT src_rect{0, 0, source_width_, source_height_};
+    RECT dst_rect{0, 0, encode_width_, encode_height_};
+    video_context_->VideoProcessorSetStreamSourceRect(video_processor_.Get(), 0,
+                                                      TRUE, &src_rect);
+    video_context_->VideoProcessorSetStreamDestRect(video_processor_.Get(), 0,
+                                                    TRUE, &dst_rect);
+
+    D3D11_VIDEO_PROCESSOR_STREAM stream{};
+    stream.Enable = TRUE;
+    stream.OutputIndex = 0;
+    stream.InputFrameOrField = 0;
+    stream.pInputSurface = input_view.Get();
+    if (FAILED(video_context_->VideoProcessorBlt(
+            video_processor_.Get(), vp_output_view_.Get(), 0, 1, &stream))) {
+        return false;
+    }
+    frame.d3d11_texture = nv12_texture_;
+    return true;
 }
 
 void DesktopCapturer::apply_encode_size() {
@@ -196,6 +360,7 @@ void DesktopCapturer::prepare_resampling(int src_width, int src_height,
 }
 
 // BT.601 limited-range coefficients, matching what the control server decodes.
+// Future: Add SSE2/AVX2 SIMD optimizations for BGRA->I420 conversion
 namespace {
 inline uint8_t clamp8(int v) {
     return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
@@ -362,6 +527,7 @@ bool DesktopCapturer::try_recover_dxgi() {
     // the whole chain rather than just the duplication object.
     duplication_.Reset();
     staging_.Reset();
+    teardown_video_processor();
     context_.Reset();
     device_.Reset();
     bool ok = init_d3d() && init_duplication(0);
@@ -387,6 +553,7 @@ void DesktopCapturer::on_desktop_switched() {
     next_dxgi_retry_ms_ = 0;  // a desktop hop is exactly when recovery is due
     staging_.Reset();
     duplication_.Reset();
+    teardown_video_processor();
     if (!(init_d3d() && init_duplication(0))) {
         use_bitblt_ = true;
         source_width_ = GetSystemMetrics(SM_CXSCREEN);
@@ -446,6 +613,38 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
         D3D11_TEXTURE2D_DESC desc{};
         frame_texture->GetDesc(&desc);
 
+        const bool size_changed = static_cast<int>(desc.Width) != source_width_ ||
+                                  static_cast<int>(desc.Height) != source_height_;
+        if (size_changed) {
+            source_width_ = static_cast<int>(desc.Width);
+            source_height_ = static_cast<int>(desc.Height);
+            apply_encode_size();
+        }
+        frame.source_width = source_width_;
+        frame.source_height = source_height_;
+        frame.width = encode_width_;
+        frame.height = encode_height_;
+        frame.is_keyframe = false;  // filled in by the encoder
+        frame.timestamp_us = proto::steady_us();
+        frame.d3d11_texture.Reset();
+
+        // GPU path: convert BGRA->NV12 with the VideoProcessor and hand the
+        // texture straight to the hardware encoder. No Map, no I420, no CPU.
+        if (prefer_gpu_path_) {
+            if (size_changed || !video_processor_ || vp_width_ != encode_width_ ||
+                vp_height_ != encode_height_) {
+                init_video_processor();
+            }
+            if (video_processor_ &&
+                gpu_convert_frame(frame_texture.Get(), frame)) {
+                duplication_->ReleaseFrame();
+                return true;
+            }
+            // VP unavailable or blit failed: drop through to the CPU path so
+            // the frame is not lost; the encoder failure counter handles a
+            // persistently broken GPU path by downgrading to software.
+        }
+
         if (ensure_staging_texture(static_cast<int>(desc.Width),
                                    static_cast<int>(desc.Height))) {
             context_->CopyResource(staging_.Get(), frame_texture.Get());
@@ -453,19 +652,6 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
             D3D11_MAPPED_SUBRESOURCE mapped{};
             hr = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
             if (SUCCEEDED(hr)) {
-                if (static_cast<int>(desc.Width) != source_width_ ||
-                    static_cast<int>(desc.Height) != source_height_) {
-                    source_width_ = static_cast<int>(desc.Width);
-                    source_height_ = static_cast<int>(desc.Height);
-                    apply_encode_size();
-                }
-                frame.source_width = source_width_;
-                frame.source_height = source_height_;
-                frame.width = encode_width_;
-                frame.height = encode_height_;
-                frame.is_keyframe = false;  // filled in by the encoder
-                frame.timestamp_us = proto::steady_us();
-
                 frame.i420.resize(static_cast<size_t>(frame.width) *
                                   frame.height * 3 / 2);
                 convert_to_i420(static_cast<const uint8_t*>(mapped.pData),
@@ -483,6 +669,7 @@ bool DesktopCapturer::capture_from_duplication(CapturedFrame& frame, DWORD wait_
 }
 
 bool DesktopCapturer::capture_with_bitblt(CapturedFrame& frame) {
+    frame.d3d11_texture.Reset();  // BitBlt never fills the GPU texture
     int src_w = GetSystemMetrics(SM_CXSCREEN);
     int src_h = GetSystemMetrics(SM_CYSCREEN);
     if (src_w < kMinEncodeDimension || src_h < kMinEncodeDimension) {
