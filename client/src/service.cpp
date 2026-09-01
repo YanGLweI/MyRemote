@@ -421,7 +421,18 @@ SC_HANDLE open_registered(DWORD access, std::wstring* why) {
     }
     SC_HANDLE handle = OpenServiceW(scm.get(), kServiceName, access);
     if (!handle && why) {
-        *why = L"MyRemoteAgent service is not installed";
+        // The tray menu acts on a limited token, so a denied open is the
+        // expected answer there - and "not installed" is the one thing it
+        // must not say when the service is right there behind the ACL.
+        const DWORD err = GetLastError();
+        if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
+            *why = L"MyRemoteAgent service is not installed";
+        } else if (err == ERROR_ACCESS_DENIED) {
+            *why = L"access denied - opening the service requires administrator rights";
+        } else {
+            *why = L"cannot open MyRemoteAgent (error " +
+                   std::to_wstring(err) + L")";
+        }
     }
     return handle;
 }
@@ -594,10 +605,13 @@ bool is_running() {
 // nobody deletes it when it dies, so read without asking it is the one record on
 // this machine that can report a dead host's registered=/paused=/proxies= as if
 // they were the current ones - which is what a stopped service leaves behind.
-// Two signals, because each one fails differently: whether that pid is still
-// running (which a limited token may not be able to ask) and how long ago the
-// file was last written.
-std::string host_record_gap(const std::string& text, HANDLE file) {
+// Three signals, because each one fails differently: whether that pid is still
+// running (which a limited token may not be able to ask), how long ago the file
+// was last written, and - for the seconds after the host dies, when its process
+// object is still there and the DACL still refuses a plain user - what the SCM
+// says the service is doing. The SCM never lies about the last one.
+std::string host_record_gap(const std::string& text, HANDLE file,
+                            bool service_stopped) {
     unsigned long pid = 0;
     if (sscanf(text.c_str(), "pid=%lu", &pid) == 1 && pid) {
         HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
@@ -608,6 +622,12 @@ std::string host_record_gap(const std::string& text, HANDLE file) {
             // like, and a fresh timestamp would otherwise wave it through.
             if (GetLastError() != ERROR_ACCESS_DENIED) {
                 return "pid " + std::to_string(pid) + " is not running";
+            }
+            // The blind spot has one authority that answers instantly: a stopped
+            // service cannot have a live host behind it, whatever the file says.
+            // A portable (no-service) host still has to argue by pid and age.
+            if (service_stopped) {
+                return "service stopped";
             }
         } else {
             const bool dead = WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
@@ -656,6 +676,7 @@ std::string query() {
         return "MyRemoteAgent: not installed\n";
     }
     SERVICE_STATUS status{};
+    bool service_stopped = false;
     if (QueryServiceStatus(service.get(), &status)) {
         const char* state = "unknown";
         switch (status.dwCurrentState) {
@@ -666,6 +687,7 @@ std::string query() {
             default: break;
         }
         out += std::string("MyRemoteAgent: ") + state + "\n";
+        service_stopped = status.dwCurrentState != SERVICE_RUNNING;
     }
     DWORD needed = 0;
     QueryServiceConfigW(service.get(), nullptr, 0, &needed);
@@ -708,7 +730,7 @@ std::string query() {
         while (ReadFile(file, chunk, sizeof(chunk) - 1, &read, nullptr) && read) {
             text.append(chunk, read);
         }
-        const std::string gap = host_record_gap(text, file);
+        const std::string gap = host_record_gap(text, file, service_stopped);
         CloseHandle(file);
         // The record itself stays on the line, fields intact: the verdict goes
         // in front of it so nobody can skim a dead host's readings as current.

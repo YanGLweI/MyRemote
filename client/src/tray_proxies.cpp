@@ -45,14 +45,37 @@ constexpr DWORD kPongTimeoutMs = 8000;    // no pong at all -> cut the pipe
 constexpr int kStalePongs = 3;            // pongs, but the pump is not moving
 constexpr DWORD kExitGraceMs = 3000;
 constexpr DWORD kAfterCutGraceMs = 2000;
+// How long a teardown waits for one of a client's own threads before it stops
+// waiting for it. Every other timing constant above is M20's and stays as it is.
+constexpr DWORD kCloseGraceMs = 1500;
+// How long stop() gives each writer to drain a queued "bye" before the pipe is
+// cut. A healthy proxy's writer finishes in milliseconds; a deadbeat's queue
+// never drains, and this bound is what lets the cut below end it.
+constexpr DWORD kByeFlushMs = 1000;
 
 struct Client {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     DWORD session = 0;
     std::atomic<bool> alive{true};
     std::atomic<bool> shutting_down{false};
+    // Which door this client went out of. Until now all three producers just
+    // cleared `alive`, so the one field the field has to read could not tell
+    // "we cut this proxy" from "the proxy left by itself" - and those are the
+    // two stories anybody debugging a missing icon needs to keep apart.
+    enum Death : int { Living = 0, QueueOverflow, WriteFailed, PipeGone, WeCutIt };
+    std::atomic<int> death{Living};
     std::thread reader;
     std::thread writer;
+    // std::thread's own handle cannot be waited on, so each thread signals this
+    // pair on the way out; that is what makes a join bounded. (TrayIcon::stop()
+    // solved the same problem the same way in M20.)
+    HANDLE reader_done = nullptr;
+    HANDLE writer_done = nullptr;
+    // The writer duplicates its own thread handle here so a teardown can cancel
+    // the synchronous WriteFile it may be parked inside. The pipe handle itself
+    // is shared with the reader, so a handle-wide CancelIoEx would take the
+    // reader's pending operation down with it.
+    std::atomic<HANDLE> writer_thread{nullptr};
     std::mutex qmu;
     std::condition_variable qcv;
     std::deque<std::string> queue;
@@ -61,6 +84,24 @@ struct Client {
     std::atomic<unsigned long long> last_pong_liveness{0};
     std::atomic<int> stale_pongs{0};
 };
+
+const char* death_name(int d) {
+    switch (d) {
+        case Client::QueueOverflow: return "queue overflow";
+        case Client::WriteFailed: return "write failed";
+        case Client::PipeGone: return "pipe gone";
+        case Client::WeCutIt: return "we cut it";
+        default: return "still connected";
+    }
+}
+
+// First reason wins. A write that fails and the broken pipe the reader trips
+// over microseconds later are cause and consequence, and a log that named both
+// would leave a reader guessing which one opened the door.
+void mark_death(Client* c, int why) {
+    int living = Client::Living;
+    c->death.compare_exchange_strong(living, why);
+}
 
 std::mutex g_mu;
 std::vector<Client*> g_clients;
@@ -101,6 +142,7 @@ void queue_line(Client* c, const std::string& line) {
         if (c->queue.size() >= kQueueLimit) {
             // It cannot drain faster than we talk to it. Drop the client rather
             // than grow without bound; the supervisor will cut and respawn it.
+            mark_death(c, Client::QueueOverflow);
             c->alive.store(false);
             return;
         }
@@ -117,6 +159,14 @@ bool raw_write(HANDLE pipe, const std::string& line) {
 }
 
 void writer_loop(Client* c) {
+    // A handle to ourselves, so a teardown can cancel the synchronous WriteFile
+    // this thread may be parked inside. THREAD_TERMINATE is what
+    // CancelSynchronousIo asks for; the thread outlives the handle's use because
+    // close_client() either joins it or abandons it outright.
+    HANDLE self_thread = nullptr;
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                    &self_thread, THREAD_TERMINATE, FALSE, 0);
+    c->writer_thread.store(self_thread);
     for (;;) {
         std::string line;
         {
@@ -126,7 +176,7 @@ void writer_loop(Client* c) {
             });
             if (c->queue.empty()) {
                 if (c->shutting_down.load()) {
-                    return;
+                    break;  // drained on the way out: everything was said
                 }
                 continue;
             }
@@ -134,10 +184,12 @@ void writer_loop(Client* c) {
             c->queue.pop_front();
         }
         if (!raw_write(c->pipe, line)) {
+            mark_death(c, Client::WriteFailed);
             c->alive.store(false);
-            return;
+            break;
         }
     }
+    SetEvent(c->writer_done);
 }
 
 void dispatch(Client* self, const std::string& line) {
@@ -182,7 +234,7 @@ void reader_loop(Client* c) {
             break;  // the proxy exited or the pipe broke
         }
         if (!avail) {
-            Sleep(150);
+            Sleep(10);
             continue;
         }
         DWORD n = 0;
@@ -199,7 +251,16 @@ void reader_loop(Client* c) {
             }
         }
     }
+    // `alive` is what the reap gate keys off, so every exit clears it: a client
+    // whose pipe we cut must still be collected. What the exit cannot tell on its
+    // own is *why* - the same broken pipe means "we cut it" right after
+    // cut_pipe() and "the proxy left" otherwise - so cut_pipe() records its own
+    // reason and only an unasked-for exit lands as PipeGone here.
+    if (!c->shutting_down.load()) {
+        mark_death(c, Client::PipeGone);
+    }
     c->alive.store(false);
+    SetEvent(c->reader_done);
 }
 
 HANDLE make_pipe_instance() {
@@ -247,6 +308,11 @@ void acceptor_loop() {
         const DWORD now = GetTickCount();
         c->since.store(now);
         c->last_pong_tick.store(now);
+        // Both threads signal these on the way out. close_client() waits on them
+        // rather than joining blind, because a join can only be bounded against
+        // something waitable and std::thread's native handle is not.
+        c->reader_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        c->writer_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         c->reader = std::thread(reader_loop, c);
         c->writer = std::thread(writer_loop, c);
         {
@@ -293,18 +359,77 @@ bool launch_proxy(DWORD session) {
     return true;
 }
 
-void close_client(Client* c) {
+// Wait for one of a client's threads to announce that it is done. `cancel`, when
+// given, is a handle to that thread so its pending synchronous I/O - the only
+// thing that can hold a WriteFile open against a peer that stopped reading - can
+// be released. False means "still inside its loop": the caller must abandon it
+// rather than keep waiting.
+bool reap_thread(std::thread& t, HANDLE done, HANDLE cancel, const char* what) {
+    if (!t.joinable()) {
+        return true;  // never started, or already collected
+    }
+    if (done && WaitForSingleObject(done, kCloseGraceMs) == WAIT_OBJECT_0) {
+        t.join();
+        return true;
+    }
+    if (cancel) {
+        mlog::warn(std::string("Tray proxies: the ") + what +
+                   " is still inside a write; cancelling its synchronous I/O");
+        CancelSynchronousIo(cancel);
+        if (done && WaitForSingleObject(done, kCloseGraceMs) == WAIT_OBJECT_0) {
+            t.join();
+            return true;
+        }
+    }
+    return false;
+}
+
+// Collect a client. The order is the whole of this function: break the pipe
+// **before** waiting for the writer, because nothing else releases a thread
+// parked in a synchronous WriteFile. Until now the overflow door reached these
+// joins without anyone ever having called DisconnectNamedPipe - `cut_pipe` is
+// skipped when `alive` is already false - so a proxy that stopped reading could
+// hang the supervisor permanently. That is the worst outcome available here: the
+// supervisor is the thing that repairs proxies, so every other icon on the
+// machine goes quiet behind it and nobody brings them back.
+void close_client(Client* c, const char* why) {
     c->shutting_down.store(true);
     c->qcv.notify_all();
+    // Cancel before disconnect - the same order as cut_pipe(): a writer parked
+    // in a synchronous WriteFile must be released before the pipe is broken,
+    // because the disconnect itself can wait for that pending write.
+    if (HANDLE t = c->writer_thread.load()) {
+        CancelSynchronousIo(t);
+    }
+    DisconnectNamedPipe(c->pipe);  // idempotent with cut_pipe()
+    const bool reader_out = reap_thread(c->reader, c->reader_done, nullptr, "reader");
+    const bool writer_out =
+        reap_thread(c->writer, c->writer_done, c->writer_thread.load(), "writer");
+    mlog::info(std::string("Tray proxies: session ") + std::to_string(c->session) +
+               " closed (reason=" + death_name(c->death.load()) + ", " + why + ")");
+    if (reader_out && writer_out) {
+        CloseHandle(c->pipe);
+        c->pipe = INVALID_HANDLE_VALUE;
+        CloseHandle(c->reader_done);
+        CloseHandle(c->writer_done);
+        c->reader_done = c->writer_done = nullptr;
+        delete c;
+        return;
+    }
+    // The last layer, and the one that makes "a teardown cannot be hung" true
+    // even if neither the disconnect nor the cancel is what frees the write:
+    // leak the Client instead of freeing an object a live thread is still using.
+    // Its pipe handle leaks with it on purpose - closing a handle another
+    // thread may still be writing through is the exact bug this file is about.
+    mlog::error("Tray proxies: a thread of the session " +
+                std::to_string(c->session) +
+                " proxy would not come back; it was abandoned, not joined");
     if (c->reader.joinable()) {
-        c->reader.join();
+        c->reader.detach();
     }
     if (c->writer.joinable()) {
-        c->writer.join();
+        c->writer.detach();
     }
-    CloseHandle(c->pipe);
-    c->pipe = INVALID_HANDLE_VALUE;
-    delete c;
 }
 
 // Cut the pipe instead of killing the process: the proxy's own read loop turns
@@ -313,8 +438,16 @@ void close_client(Client* c) {
 void cut_pipe(Client* c, const char* why) {
     mlog::info(std::string("Tray proxies: cutting the pipe to session ") +
                std::to_string(c->session) + " (" + why + ")");
+    mark_death(c, Client::WeCutIt);
     c->shutting_down.store(true);
     c->qcv.notify_all();
+    // Cancel before disconnect: DisconnectNamedPipe can wait for a synchronous
+    // WriteFile that is parked against a peer which stopped reading - the very
+    // wedge this file was written to make impossible. The cancel releases the
+    // write first, so the disconnect below returns at once.
+    if (HANDLE t = c->writer_thread.load()) {
+        CancelSynchronousIo(t);
+    }
     DisconnectNamedPipe(c->pipe);
 }
 
@@ -339,14 +472,19 @@ void supervisor_loop() {
         const DWORD now = GetTickCount();
 
         // Ping every proxy so a proxy whose pump stopped turning is visible.
+        // Snapshot under the lock, talk outside it - the same shape as
+        // broadcast_state, and the only way the promise on queue_line ("a proxy
+        // that stopped draining holds up nothing but its own queue") is true.
+        std::vector<Client*> to_ping;
         {
             std::lock_guard<std::mutex> lock(g_mu);
             if (static_cast<int32_t>(now - g_last_ping_tick) >= (int)kPingEveryMs) {
                 g_last_ping_tick = now;
-                for (Client* c : g_clients) {
-                    queue_line(c, "ping");
-                }
+                to_ping = g_clients;
             }
+        }
+        for (Client* c : to_ping) {
+            queue_line(c, "ping");
         }
 
         // Reap clients whose pipe closed, and ones that stopped answering.
@@ -372,7 +510,7 @@ void supervisor_loop() {
             }
         }
         for (Client* c : dead) {
-            close_client(c);
+            close_client(c, "supervisor reaped it");
         }
 
         std::vector<DWORD> to_spawn;
@@ -498,6 +636,31 @@ void stop() {
     for (Client* c : clients) {
         queue_line(c, "bye");
     }
+    // The words have to reach the wire before the pipe is cut. A proxy that
+    // hears "bye" logs "host said bye"; the same proxy that only sees the pipe
+    // break logs "host pipe closed" - two different stories for one healthy
+    // exit, and the field has been recording the wrong one.
+    for (Client* c : clients) {
+        const DWORD deadline = GetTickCount() + kByeFlushMs;
+        for (;;) {
+            bool drained = false;
+            {
+                std::lock_guard<std::mutex> lock(c->qmu);
+                drained = c->queue.empty();
+            }
+            if (drained) {
+                break;
+            }
+            if (static_cast<int>(GetTickCount() - deadline) >= 0) {
+                break;
+            }
+            Sleep(20);
+        }
+    }
+    // The queue is empty, but the writer may still be inside its WriteFile for
+    // the last line it popped. A short sleep gives it time to finish so the
+    // CancelSynchronousIo in cut_pipe() does not cancel the "bye" itself.
+    Sleep(100);
     if (g_acceptor.joinable()) {
         g_acceptor.join();
     }
@@ -513,7 +676,7 @@ void stop() {
         retire_proxy(kv.first, kv.second, "host shutting down");
     }
     for (Client* c : clients) {
-        close_client(c);
+        close_client(c, "host shutting down");
     }
     CloseHandle(g_stop_event);
     g_stop_event = nullptr;
