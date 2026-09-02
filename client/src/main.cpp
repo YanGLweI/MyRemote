@@ -575,8 +575,12 @@ void relaunch_elevated() {
 // 点下去才告诉人办不成，等于菜单上挂着一条只对自己诚实的说明。
 std::wstring start_service_label() {
     if (g_elevated) {
+        mlog::info("Tray menu service item wording: plain (this token can start "
+                   "the service itself)");
         return L"启用后台服务（当前：前台运行，开机不自启）";
     }
+    mlog::info("Tray menu service item wording: needs-administrator (clicking it "
+               "asks UAC)");
     return L"启用后台服务（当前：前台运行，开机不自启；需管理员批准）";
 }
 

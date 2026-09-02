@@ -4,6 +4,9 @@
 #include <tlhelp32.h>
 
 #include <memory>
+#include <string>
+
+#include "log.hpp"
 
 #pragma comment(lib, "shell32.lib")
 
@@ -320,7 +323,9 @@ void TrayIcon::ShowMenu() {
                     L"安装开机自启（管理员权限）");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    bool service_item = false;
     if (actions_.start_service && wanted(actions_.show_start_service)) {
+        service_item = true;
         // Unset means "no opinion registered", which keeps every caller that
         // predates this working verbatim.
         const std::wstring label =
@@ -335,6 +340,12 @@ void TrayIcon::ShowMenu() {
     if (actions_.quit) {
         AppendMenuW(menu, MF_STRING, kCmdQuit, actions_.quit_text.c_str());
     }
+    // No outside process can enumerate this popup: UIAutomation, MSAA and
+    // MN_GETHMENU all come back empty for a #32768 owned by another process, so
+    // the only reading of what was actually drawn is the one taken here.
+    mlog::info(std::string("Tray menu built: ") +
+               std::to_string(GetMenuItemCount(menu)) +
+               " entries, service item " + (service_item ? "present" : "absent"));
     POINT pt;
     GetCursorPos(&pt);
     int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x,
