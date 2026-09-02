@@ -18,10 +18,14 @@ extern const wchar_t* const kDisplayName;
 int run_as_service();
 
 // Registers (or re-points an already registered) service and starts it.
+// last_error, when given, carries the Win32 code that says *why*: "this token
+// may not ask" and "the service is stuck in a state no privilege can start"
+// look identical otherwise, and the tray once told an elevated process it was
+// missing administrator rights.
 bool install_or_update(std::wstring* why);
 bool uninstall(std::wstring* why);
-bool start(std::wstring* why);
-bool stop(std::wstring* why);
+bool start(std::wstring* why, DWORD* last_error = nullptr);
+bool stop(std::wstring* why, DWORD* last_error = nullptr);
 
 // True when the service is registered, whatever its state.
 bool is_installed();

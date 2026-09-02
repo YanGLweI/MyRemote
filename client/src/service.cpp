@@ -332,23 +332,41 @@ VOID WINAPI service_main(DWORD, LPWSTR*) {
 }
 
 bool wait_for_state(SC_HANDLE handle, DWORD target, DWORD timeout_ms,
-                    std::wstring* why) {
+                    std::wstring* why, DWORD* last_error = nullptr) {
     ULONGLONG deadline = GetTickCount64() + timeout_ms;
     SERVICE_STATUS status{};
+    bool observed = false;
     while (GetTickCount64() < deadline) {
         if (!QueryServiceStatus(handle, &status)) {
+            const DWORD err = GetLastError();
+            if (last_error) {
+                *last_error = err;
+            }
             if (why) {
-                *why = L"QueryServiceStatus failed";
+                *why = L"QueryServiceStatus failed (error " +
+                       std::to_wstring(err) + L")";
             }
             return false;
         }
+        observed = true;
         if (status.dwCurrentState == target) {
+            if (last_error) {
+                *last_error = ERROR_SUCCESS;
+            }
             return true;
         }
         Sleep(200);
     }
+    // A service that never settles and a token that may not ask look identical
+    // from here unless the code says otherwise, and the tray used to blame
+    // administrator rights for both. The last state observed is what tells them
+    // apart: 3 is STOP_PENDING, which no amount of privilege can start.
+    if (last_error) {
+        *last_error = ERROR_TIMEOUT;
+    }
     if (why) {
-        *why = L"service did not reach the requested state in time";
+        *why = L"service did not reach the requested state in time (last state " +
+               std::to_wstring(observed ? status.dwCurrentState : 0) + L")";
     }
     return false;
 }
@@ -411,20 +429,29 @@ void ensure_shared_directory() {
                            L"\"*S-1-5-32-544:(OI)(CI)F\" \"*S-1-5-4:(OI)(CI)MW\"");
 }
 
-SC_HANDLE open_registered(DWORD access, std::wstring* why) {
+SC_HANDLE open_registered(DWORD access, std::wstring* why,
+                          DWORD* last_error = nullptr) {
     ServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
     if (!scm) {
+        const DWORD err = GetLastError();
+        if (last_error) {
+            *last_error = err;
+        }
         if (why) {
-            *why = L"cannot open the service control manager";
+            *why = L"cannot open the service control manager (error " +
+                   std::to_wstring(err) + L")";
         }
         return nullptr;
     }
     SC_HANDLE handle = OpenServiceW(scm.get(), kServiceName, access);
+    const DWORD err = handle ? ERROR_SUCCESS : GetLastError();
+    if (last_error) {
+        *last_error = err;
+    }
     if (!handle && why) {
         // The tray menu acts on a limited token, so a denied open is the
         // expected answer there - and "not installed" is the one thing it
         // must not say when the service is right there behind the ACL.
-        const DWORD err = GetLastError();
         if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
             *why = L"MyRemoteAgent service is not installed";
         } else if (err == ERROR_ACCESS_DENIED) {
@@ -543,29 +570,40 @@ bool uninstall(std::wstring* why) {
     return true;
 }
 
-bool start(std::wstring* why) {
+bool start(std::wstring* why, DWORD* last_error) {
     ServiceHandle service(open_registered(SERVICE_START | SERVICE_QUERY_STATUS,
-                                          why));
+                                          why, last_error));
     if (!service) {
         return false;
     }
-    if (!StartServiceW(service.get(), 0, nullptr) &&
-        GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
-        if (why) {
-            *why = L"StartService failed";
+    if (!StartServiceW(service.get(), 0, nullptr)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+            if (last_error) {
+                *last_error = err;
+            }
+            if (why) {
+                // 1056 = already running, 1058 = disabled, 1062 = already
+                // stopping: which of these it was is the difference between
+                // "go enable it" and "you are not allowed to touch it".
+                *why = L"StartService failed, error " + std::to_wstring(err);
+            }
+            return false;
         }
-        return false;
     }
-    return wait_for_state(service.get(), SERVICE_RUNNING, 10000, why);
+    return wait_for_state(service.get(), SERVICE_RUNNING, 10000, why, last_error);
 }
 
-bool stop(std::wstring* why) {
+bool stop(std::wstring* why, DWORD* last_error) {
     ServiceHandle service(open_registered(SERVICE_STOP | SERVICE_QUERY_STATUS,
-                                          why));
+                                          why, last_error));
     if (!service) {
         return false;
     }
     const DWORD err = request_stop(service.get());
+    if (last_error) {
+        *last_error = err;
+    }
     if (err != ERROR_SUCCESS && err != ERROR_SERVICE_NOT_ACTIVE) {
         if (why) {
             // 5 = not allowed to stop it, 1052 = STOP is not accepted.
@@ -573,7 +611,7 @@ bool stop(std::wstring* why) {
         }
         return false;
     }
-    return wait_for_state(service.get(), SERVICE_STOPPED, 10000, why);
+    return wait_for_state(service.get(), SERVICE_STOPPED, 10000, why, last_error);
 }
 
 bool is_installed() {
@@ -668,16 +706,31 @@ std::string host_record_gap(const std::string& text, HANDLE file,
 std::string query() {
     std::string out;
     ServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+    const DWORD scm_err = scm ? ERROR_SUCCESS : GetLastError();
     ServiceHandle service(
         scm ? OpenServiceW(scm.get(), kServiceName,
                            SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG)
             : nullptr);
-    if (!service) {
-        return "MyRemoteAgent: not installed\n";
-    }
+    const DWORD open_err = service ? ERROR_SUCCESS : GetLastError();
     SERVICE_STATUS status{};
     bool service_stopped = false;
-    if (QueryServiceStatus(service.get(), &status)) {
+    if (!service) {
+        // F1 again, one file section later: every failure used to answer
+        // "not installed", which on a limited token reports a service that is
+        // sitting right there as absent. Only 1060 may say that word.
+        if (scm_err != ERROR_SUCCESS) {
+            out += "MyRemoteAgent: CANNOT_OPEN_SCM (error " +
+                   std::to_string(scm_err) + ")\n";
+        } else if (open_err == ERROR_SERVICE_DOES_NOT_EXIST) {
+            out += "MyRemoteAgent: not installed\n";
+        } else if (open_err == ERROR_ACCESS_DENIED) {
+            out += "MyRemoteAgent: ACCESS_DENIED (the service may be installed; "
+                   "this token cannot read it)\n";
+        } else {
+            out += "MyRemoteAgent: QUERY_FAILED (error " +
+                   std::to_string(open_err) + ")\n";
+        }
+    } else if (QueryServiceStatus(service.get(), &status)) {
         const char* state = "unknown";
         switch (status.dwCurrentState) {
             case SERVICE_STOPPED: state = "STOPPED"; break;
@@ -688,22 +741,31 @@ std::string query() {
         }
         out += std::string("MyRemoteAgent: ") + state + "\n";
         service_stopped = status.dwCurrentState != SERVICE_RUNNING;
+    } else {
+        out += "MyRemoteAgent: QUERY_FAILED (error " +
+               std::to_string(GetLastError()) + ")\n";
     }
-    DWORD needed = 0;
-    QueryServiceConfigW(service.get(), nullptr, 0, &needed);
-    std::vector<unsigned char> buffer(needed);
-    if (needed &&
-        QueryServiceConfigW(service.get(),
-                            reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(
-                                buffer.data()), needed, &needed)) {
-        auto* config = reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(buffer.data());
-        out += "  binPath: " + win32util::wide_to_utf8(config->lpBinaryPathName) + "\n";
-        out += "  start type: " +
-               std::string(config->dwStartType == SERVICE_AUTO_START
-                               ? "auto"
-                               : std::to_string(config->dwStartType)) +
-               "\n";
+    if (service) {
+        DWORD needed = 0;
+        QueryServiceConfigW(service.get(), nullptr, 0, &needed);
+        std::vector<unsigned char> buffer(needed);
+        if (needed &&
+            QueryServiceConfigW(service.get(),
+                                reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(
+                                    buffer.data()), needed, &needed)) {
+            auto* config =
+                reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(buffer.data());
+            out += "  binPath: " +
+                   win32util::wide_to_utf8(config->lpBinaryPathName) + "\n";
+            out += "  start type: " +
+                   std::string(config->dwStartType == SERVICE_AUTO_START
+                                   ? "auto"
+                                   : std::to_string(config->dwStartType)) +
+                   "\n";
+        }
     }
+    // Without a readable SCM only the 15-second file-age rule can judge
+    // host.status - the pre-F2 blind spot, now labelled rather than guessed.
     DWORD console = 0xFFFFFFFF;
     std::string how;
     std::string stations;
