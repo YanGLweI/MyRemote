@@ -321,8 +321,13 @@ void TrayIcon::ShowMenu() {
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     if (actions_.start_service && wanted(actions_.show_start_service)) {
-        AppendMenuW(menu, MF_STRING, kCmdStartService,
-                    L"启用后台服务（当前：前台运行，开机不自启）");
+        // Unset means "no opinion registered", which keeps every caller that
+        // predates this working verbatim.
+        const std::wstring label =
+            actions_.start_service_text
+                ? actions_.start_service_text()
+                : std::wstring(L"启用后台服务（当前：前台运行，开机不自启）");
+        AppendMenuW(menu, MF_STRING, kCmdStartService, label.c_str());
     }
     if (actions_.hide_icon) {
         AppendMenuW(menu, MF_STRING, kCmdHide, L"隐藏托盘图标");

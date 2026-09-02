@@ -54,6 +54,14 @@ public:
         // blocked by something that never came back.
         std::function<bool()> show_autostart_group;
         std::function<bool()> show_start_service;
+        // `show_start_service` says whether this item belongs on the menu; this
+        // says what it is worth on this token, so the item carries its own
+        // affordance instead of explaining itself after the click. Asked at menu
+        // build time for the same reason, and bound by the same rule: it may
+        // only read cached or constant state - this runs on the tray's message
+        // thread, and M20 is what happens when that thread is asked something
+        // slow. Empty falls back to the pre-F5 wording.
+        std::function<std::wstring()> start_service_text;
         // On the secure desktop a window we create is invisible to whoever is
         // typing at the machine, so opening the editor would only look broken.
         std::function<bool()> config_pointless_now;

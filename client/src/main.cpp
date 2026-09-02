@@ -530,14 +530,34 @@ std::wstring command_line_params() {
 
 // Starts a second agent with admin rights. The tray action passes --takeover so
 // the child waits for this process to release the single-instance mutex.
-bool start_elevated_agent(const std::wstring& params, int show_cmd) {
+// reason, when given, separates the three possible answers - launched, refused
+// at the prompt, never raised. ShellExecuteW's "above 32 means success" cannot:
+// a declined consent fails with ERROR_CANCELLED (1223), and 1223 is above 32,
+// so every "No" used to be logged as a launch.
+bool start_elevated_agent(const std::wstring& params, int show_cmd,
+                          DWORD* reason = nullptr) {
     wchar_t path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+        if (reason) {
+            *reason = GetLastError();
+        }
         return false;
     }
-    HINSTANCE result = ShellExecuteW(nullptr, L"runas", path, params.c_str(),
-                                     nullptr, show_cmd);
-    return reinterpret_cast<INT_PTR>(result) > 32;
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    // The worker thread that gets here may be about to be torn down with the
+    // rest of the process; NOASYNC keeps the call from returning to a shell
+    // thread we do not own.
+    info.fMask = SEE_MASK_NOASYNC;
+    info.lpVerb = L"runas";
+    info.lpFile = path;
+    info.lpParameters = params.c_str();
+    info.nShow = show_cmd;
+    const bool ok = ShellExecuteExW(&info) != FALSE;
+    if (reason) {
+        *reason = ok ? ERROR_SUCCESS : GetLastError();
+    }
+    return ok;
 }
 
 // Tray entry: hand over to an elevated copy and step aside.
@@ -548,6 +568,104 @@ void relaunch_elevated() {
     } else {
         mlog::warn("Elevated restart declined (user cancelled UAC or blocked by policy)");
     }
+}
+
+// 弹菜单那一刻现问，和 show_start_service 同一个规矩：只读 g_elevated 这个常量，
+// 绝不碰 SCM——托盘消息线程上慢一步就是 M20 重演。可供性必须写在这一项自己脸上：
+// 点下去才告诉人办不成，等于菜单上挂着一条只对自己诚实的说明。
+std::wstring start_service_label() {
+    if (g_elevated) {
+        return L"启用后台服务（当前：前台运行，开机不自启）";
+    }
+    return L"启用后台服务（当前：前台运行，开机不自启；需管理员批准）";
+}
+
+// Whether the service came up is the SCM's answer, not ours: the elevated child
+// is a hidden GUI-subsystem exe, so whatever verdict it prints reaches no one.
+bool wait_service_running(DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    while (GetTickCount64() < deadline) {
+        if (svc::is_running()) {
+            return true;
+        }
+        Sleep(200);
+    }
+    return svc::is_running();
+}
+
+// 托盘「启用后台服务」这一项现在真办得成：提权令牌直接开服务；受限令牌去要一次
+// 管理员批准，然后把"人按了否"和"框根本没弹起来"分成两条字面读得出的话，最后
+// 让 SCM 说是否起来了。凡是"需要管理员权限"这句都必须有 ERROR_ACCESS_DENIED
+// 撑着——现场对着一个卡死的 STOP_PENDING 连点三次，三次都被说成权限不够。
+void enable_background_service() {
+    // 自刷形状：采样器在隧道正常时 ≤1.2s，联系不上控制端时一轮含 10s 连接超时
+    // （实测 13s）。刚点完就再弹一次菜单的话，等它是不诚实的。
+    auto announce_running = [] {
+        g_service_shape.store(read_service_shape());
+    };
+
+    if (!g_elevated) {
+        DWORD reason = ERROR_SUCCESS;
+        // --no-elevate：子进程本来就是提权的，别再去问一次。--start-service 在
+        // 拿单实例互斥、在起托盘之前就被分发掉了，所以这一击既不会注册出第二个
+        // 设备号，也不会画出第二枚图标。
+        if (!start_elevated_agent(L"--start-service --no-elevate", SW_HIDE,
+                                  &reason)) {
+            if (reason == ERROR_CANCELLED) {
+                mlog::info("Service enable declined at the consent prompt; "
+                           "nothing changed");
+                MessageBoxW(nullptr,
+                            L"已取消，后台服务没有启动。\n\n这台机器仍以前台方式运行，"
+                            L"开机不会自启。",
+                            L"MyRemote", MB_OK | MB_ICONINFORMATION);
+            } else {
+                mlog::warn("The consent prompt could not be raised: error " +
+                           std::to_string(reason));
+                MessageBoxW(nullptr,
+                            (L"无法请求管理员权限（错误 " +
+                             std::to_wstring(reason) +
+                             L"）。\n\n请在管理员命令提示符里执行：\n"
+                             L"agent.exe --start-service").c_str(),
+                            L"MyRemote", MB_OK | MB_ICONWARNING);
+            }
+            return;
+        }
+        // 批了之后子进程自己可能还要在 SCM 里等满 10s。
+        if (wait_service_running(15000)) {
+            mlog::info("The background service is running; this instance is "
+                       "handing the machine over");
+            announce_running();
+            return;
+        }
+        mlog::warn("The service was not running after consent was granted");
+        const std::wstring text =
+            svc::is_installed()
+                ? L"已请求管理员批准，但后台服务没有进入运行状态。\n\n"
+                  L"这一条不是权限问题，可用 agent.exe --service-state 复核。"
+                : L"MyRemoteAgent 服务已经不在这台机器上了。\n\n"
+                  L"要回到受管形态，请用管理员权限执行：\nagent.exe --install-service";
+        MessageBoxW(nullptr, text.c_str(), L"MyRemote",
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    std::wstring why;
+    DWORD err = ERROR_SUCCESS;
+    if (svc::start(&why, &err)) {
+        mlog::info("Service re-enabled from the tray");
+        announce_running();
+        return;
+    }
+    std::wstring text = L"无法启动 MyRemoteAgent 服务：" + why +
+                        L"（错误 " + std::to_wstring(err) + L"）";
+    if (err == ERROR_ACCESS_DENIED) {
+        text += L"\n\n启动服务需要管理员权限。";
+    } else {
+        text += L"\n\n这一条不是权限问题：这个令牌已经够高了。";
+    }
+    mlog::warn("The tray could not start the service: " +
+               win32util::wide_to_utf8(why.c_str()));
+    MessageBoxW(nullptr, text.c_str(), L"MyRemote", MB_OK | MB_ICONWARNING);
 }
 
 // The mode list answers a query, and is re-sent after every set attempt so the
@@ -1560,20 +1678,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         if (!g_elevated) {
             tray_actions.elevate = relaunch_elevated;
         }
-        tray_actions.start_service = [] {
-            std::wstring why;
-            if (svc::start(&why)) {
-                mlog::info("Service re-enabled from the tray");
-                return;
-            }
-            const std::wstring text =
-                L"无法启动 MyRemoteAgent 服务：" + why +
-                L"\n\n启动服务需要管理员权限。";
-            mlog::warn("The tray could not start the service: " +
-                       win32util::wide_to_utf8(why.c_str()));
-            MessageBoxW(nullptr, text.c_str(), L"MyRemote",
-                        MB_OK | MB_ICONWARNING);
-        };
+        tray_actions.start_service = enable_background_service;
+        tray_actions.start_service_text = start_service_label;
         tray_actions.show_autostart_group = [] {
             return g_service_shape.load() == NoService;
         };
