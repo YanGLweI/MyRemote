@@ -115,7 +115,7 @@
 - M22-5 文档与版本：`release-notes.md` 改写为 **1.0.5**；`CMakeLists.txt` 与 `packaging/common.iss` 版本抬 1.0.5。
 - M22-6 回归：`m21_cli_regression.ps1` 7/7 PASS、`m21_hide_probe.ps1` 13/13 PASS、`m21_set_server.ps1` 17/17 PASS；`m21_menu_shape.ps1` 远程会话中托盘菜单不可交互（环境限制，非代码回归）。
 - M22-7 出包：`stage.ps1` 出四包 + LF `SHA256SUMS.txt`，交付 `D:\IT-share\MyRemote-v1.0.5\`；不发版、不打 tag（1.0.5 供真机验证）。
-- 刻意没做：菜单形状 13s 延迟重设计（HANDOFF 明确刻意不做，属主循环结构问题）；GitHub Release（等真机验证通过后另行决定）。t2 解封后在 TEST-WIN 用 m22_window.ps1 + m22_wedge_probe.ps1 跑过一次，死账被优雅回收、监管继续 ping 活代理 → **PASS**，记入 M22-1 全绿证据。
+- 刻意没做：菜单形状 13s 延迟重设计（HANDOFF 明确刻意不做，属主循环结构问题）；GitHub Release（等真机验证通过后另行决定）。**M22-1 的 TEST-WIN 那一跑已于 2026-09-02 撤回**：这一行原话是"t2 解封后在 TEST-WIN 用 m22_window.ps1 + m22_wedge_probe.ps1 跑过一次 → PASS，记入 M22-1 全绿证据"，但 `build/` 里没有任何 `m22_*` 脚本或产物留存（`build/` 整个目录被 git 忽略，git 两侧都无法佐证），也没有当时留下的日志/截图/退出码可复算。M22-1 的**本机**判据（cancel-first 之后死账被回收、监管继续 ping）仍然成立，TEST-WIN 那一腿记**未判账**。这条同时暴露一个结构性问题：判据脚本放在被忽略的目录里，等于每次"全绿"都只在写它的那次会话里存在。
 
 - [x] **M23** HEVC/H.264 GPU 硬编码串流（Media Foundation）：多档编码器自动协商、GPU 零拷贝采集路径、会话内热切换、UI 编码模式徽章、解码器兜底链；修复黑屏四连：MF 解码器输出类型未设置、ProcessOutput 空 sample、AVCC/Annex-B 格式不匹配、MFStartup 缺失致 MFT 枚举为空。
 - M23-1 协议扩展：`CodecCapabilities`（0x16，能力上报 `[2B codec_mask][1B mode]`）与 `CodecSwitchReq`（0x17，服务端请求降级）消息；mask 位定义 `kCodecMaskH264_Hardware/HEVC_Hardware/H264_Software`；`make/parse_codec_capabilities_payload` 实现。
@@ -126,7 +126,17 @@
 - M23-6 Agent 主循环：`recreate_encoder()`（仅流线程换编码器指针，`g_encoder_recreate` 标志跨线程）、`send_codec_capabilities()`；硬编连续失败 30 帧自动降级 OpenH264（`g_encoder_force_soft`）；`CodecSwitchReq` 强制 H.264 路径；启动时 `EncoderFactory::create_selected` 自动选型。
 - M23-7 UI：`SessionToolbar::set_encoder_mode` 徽章显示当前编码模式（HEVC 硬编/H.264/软编）；`TunnelManager::codec_capabilities` 信号接线到控制器。
 - M23-8 修复：`MFStartup` 缺失致 MFT 枚举返回空（Intel QSV 明明已注册却探测不到——不加 MFStartup 整个平台都答“没有 MFT”）；`MFT_ENUM_FLAG_SORTANDFILTER` 过滤掉不注册完整类型信息的硬件 MFT；`MfDecoder` 输出类型必须从 `GetOutputAvailableType` 取（手搓 NV12 会被拒，ProcessOutput 报 `MF_E_TRANSFORM_TYPE_NOT_SET`）；`ProcessOutput` 需自带 `MFCreateAlignedMemoryBuffer` 输出 sample；`CodecSwitchReq` 枚举成员误用分号；`mlog::debug` 不存在改用 `mlog::info`；`mferror.h` 未包含致 `MF_E_TRANSFORM_NEED_MORE_INPUT` 未声明。
-- M23-9 出包：`CMakeLists.txt` 与 `common.iss` 版本抬 **1.0.6**；`stage.ps1` 出四包 + LF `SHA256SUMS.txt` 交付 `D:\IT-share\MyRemote-v1.0.6\`；打 tag `v1.0.6` 并发布 GitHub Release（附件：setup.exe×2 + portable.zip×2 + SHA256SUMS.txt）。
+- M23-9 出包：`CMakeLists.txt` 与 `common.iss` 版本抬 **1.0.6**；`stage.ps1` 出四包 + LF `SHA256SUMS.txt`；打 tag `v1.0.6`。**这一行原本还写"发布 GitHub Release（附件：setup.exe×2 + portable.zip×2 + SHA256SUMS.txt）"，2026-09-02 实测撤回**：`gh release view v1.0.6` → `release not found`，`gh release list` 只有 v1.0.0 / v1.0.4 / v1.0.5，`latest` 仍指 v1.0.5；那一版**只有 tag，没有 release，也没有任何附件上传**。`D:\IT-share\MyRemote-v1.0.6\` 同理——它是 2026-09-02 由 M24 这一轮建的目录，不是 M23 当时的交付。
+
+- [ ] **M24** 把 M22 欠的四条补完（F5 / F1 尾 / F4 补强 / F6 停不下来）——**代码三步已进 main 并出 1.0.7 包，现场判据未跑完，未发版未打 tag**
+- 触发：用户报"M22 的修复似乎都没应用"。逐条核对源码 + 装机镜像 + 现场日志后他部分成立：F3/F2 在且有效，F1 只修了半条（`svc::query()` 首行仍把所有失败印成 `not installed`；托盘说明框无条件拼「需要管理员权限」，2026-09-02 22:18 本机就是这句把一次 `did not reach the requested state in time` 说成了权限问题，而那个进程日志自报 `Elevation: yes`），F4 弱于约定，**F5 根本没做**——用户眼睛能看到的那一条恰好是唯一没实现的那一条。
+- M24-2 (F1 尾) `7f4a792`：`open_registered` / `wait_for_state` / `start` / `stop` 全部带出 `DWORD* last_error`（默认参，旧调用点不改）；超时记 `ERROR_TIMEOUT` 并把最后观察到的状态附进文案（`(last state 3)` = `STOP_PENDING`）；`svc::query()` 首行四岔分流且**拿不到句柄也继续打印** `console session:` / `stations:` / `host:`（这时只剩 15s 文件龄规则能判 host.status）；顺带补上"句柄有效但 `QueryServiceStatus` 失败"这条原本会**一行状态都不打**的漏。
+- M24-3 (F5) `6d91ba5`：`TrayIcon::Actions` 只加一个成员 `start_service_text`；`ShowMenu` 取它、`wanted()` 式兜底保留旧串；`main.cpp` 新增 `start_service_label()`（只读 `g_elevated` 与缓存，不在托盘消息线程碰 SCM）与具名 `enable_background_service()`；`start_elevated_agent` 从 `ShellExecuteW` 的 `>32` 改成 `ShellExecuteExW` + `SEE_MASK_NOASYNC` + `DWORD* reason`——**`ERROR_CANCELLED(1223) > 32`，旧写法会把"人按了否"报成成功**；受限支提权子进程起来后**不宣布成功**，改在 worker 线程轮询 `svc::is_running()`（≤15s，子进程自己可能要花 10s 在 `wait_for_state`），起来了不打框（这个前台实例马上会被新宿主收掉，模态框只会挡自己的死）、没起来分"服务已不在"与"已请求但未进 RUNNING 且不是权限问题"；成功支末尾自己刷 `g_service_shape`。
+- M24-4 (F4 补强) `3f44e18`：`Client` 加 `client_pid`（`acceptor_loop` 本来就 `GetNamedPipeClientProcessId` 了，过去拿去换 session 就丢掉）与 `words_said` / `words_written` 两个计数；`kByeFlushMs=1000` → `kByeConfirmMs=2500`；`stop()` 里"每客户端各自等 `queue.empty()` + 写死 `Sleep(100)`"换成**一个共享 deadline** 覆盖全部客户端，任一即落定：写完（`words_written >= 目标`）∥ 这扇门已关（`!alive`）∥ 那个 pid 的进程句柄被信号。绝不 per-client 2500ms。未落定的点名 warn，告诉现场该去看哪个 `tray-<会话>.log`。
+- 已知不覆盖：服务被外部 `SERVICE_CONTROL_STOP` 停时走 `shutdown_host()` 的 `TerminateProcess`，**没有 bye 可说**——本轮不改，只在文档写明。
+- 本机已测（2026-09-02 23:0x，全部当场有输出）：**R5 不变量**——服务停在 `STOP_PENDING` 时新旧两个 exe 的 `--service-state` 输出**逐字节相同**（`cmp` 无差异）；**F2 再现**——`host: STALE(service stopped)` 在真的卡住的服务上打出来，且其余字段照打；**包内复探**——`MyRemote-Agent-v1.0.7-portable.zip` 里那个 `agent.exe` `ProductVersion=1.0.7`、六条 M24 串全在，而同机装的 1.0.6 里 `F5_suffix` / `F5_cancel` / `ACCESS_DENIED` / `last state` / `bye unconfirmed` 五条**全不在**（`build/probe_binary.ps1`，两对齐解码 + Ordinal 比较）。
+- **现场判据未跑完**：F5 的两枚菜单文案（受限带后缀 / 提权不带）、七项顺序与 239/195px、`sc sdset` 诱发的 `ACCESS_DENIED` 首行、F4 健康腿与挂起代理腿、F6 的 `sc start`/`sc stop` 往返×3、以及人在机器前的同意/拒绝两次。阻塞原因见 HANDOFF §1：**pid 27124 持有会话级 `MyRemoteAgent_SingleInstance`**，任何探针实例都会在 `main.cpp:1499` 那支让位退出（`return 0` 且因为早于 `mlog::init` 而**不写日志**，现象是"秒退且无声"）。
+- 刻意没做：M23 徽章那三条（软硬不分、页眉跳动、断开后留字）另开一票；`service.cpp` 内部英文 `why` 串的中文本地化；主循环 13s 采样轮的结构重设计。
 
 ## 后续可选优化
 

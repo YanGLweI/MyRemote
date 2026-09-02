@@ -1,18 +1,21 @@
-# 开发交接文档（2026-09-01，M23 HEVC/H.264 GPU 硬编 **已实现**，v1.0.6 已发）
+# 开发交接文档（2026-09-02，M24 代码三步已进 main，v1.0.7 本地出包，**现场判据未跑完**）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
 > 本文只写**状态、边界、下一步**。
 
-## 1. 发布与交付现状
+## 1. 发布与交付现状（2026-09-02 23:20 实测）
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | **v1.0.6 已发布**（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.6）——M23 四包已出、HEVC/H.264 GPU 硬编代码已实现。v1.0.5 仍可访问（https://github.com/YanGLweI/MyRemote/releases/tag/v1.0.5） |
-| 代码 | tag **v1.0.6**；M23 硬编笔全部在 main 上（协议扩展、IStreamEncoder 抽象、MfHardwareEncoder、VideoProcessor 零拷贝路径、MfDecoder/OpenH264 兜底链、CodecSwitchReq 热切换、UI 徽章） |
-| 交付物 | `D:\IT-share\MyRemote-v1.0.6\`（四包 + LF 校验，目录已清理旧版本）；1.0.5 那份仍在原地做参照 |
-| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.6**（M23 已抬）；上一版 1.0.5 |
-| 用户侧 | 本机已卸载旧版（MyRemoteAgent 服务已删）；TEST-WIN/LAPTOP 等远端仍跑旧版 agent，仅连控制端。**M23 硬编的真机画面验证待做**（沙盒无法停止服务、无法拉起 GUI 会话）：需在真机装 v1.0.6 后确认画面、确认 Agent 日志出现 `Encoder probe`/`Encoder ready` 与硬编启用 |
+| GitHub Release | **只有 v1.0.0 / v1.0.4 / v1.0.5 三个**，`latest` = **v1.0.5**（`gh release list` 当场读数）。**v1.0.6 没有 release**——只有 tag。本笔之前这里写的是"v1.0.6 已发布并给出链接"，那句是假账，已按实测更正；写它的时候那个 release 并不存在 |
+| tag | `v1.0.0 v1.0.4 v1.0.5 v1.0.6` 四个都在。**v1.0.7 未打**：现场判据没跑完不打 tag（沿用了 1.0.6 那次的教训——tag 比 release 跑得快的结果就是文档没法说清"到底发了什么"） |
+| 代码 | `main` = `origin/main` = **`3f44e18`**。M24 三笔：`7f4a792` F1 尾（错误码一路带话）、`6d91ba5` F5（文案自带可供性 + 真弹 UAC）、`3f44e18` F4（bye 等到送达） |
+| 交付物 | `build\package\dist\` = **1.0.7 四包 + LF `SHA256SUMS.txt`**（`stage exit=0`）。已从 zip 里取出 `agent.exe` 复探：`ProductVersion=1.0.7` 且六条 M24 串全在。**`D:\IT-share\MyRemote-v1.0.7\` 还没放**，且那里的 `MyRemote-v1.0.6\` 是 2026-09-02 本轮才建的目录，不是"上一轮已交付" |
+| 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.7**（本笔抬的） |
+| 本机现场 | 装的是 **1.0.6**（`C:\MyRemote\Agent\agent.exe`，服务 binPath 指着它）。服务 **`3 STOP_PENDING`** 卡了 1 小时以上（pid 4936，session 0，`service.log` 在 stop requested 之后无后续行）。前台还有一个提权实例 pid 27124（session 1，22:17:40 起）**持有 `MyRemoteAgent_SingleInstance`** |
+
+**这两条现场事实决定了剩下的判据怎么跑**：① 单例锁按会话生效，所以任何"起一个探针实例读它的托盘菜单"的脚本都会在 `parse_command_line` 之后立刻 `return 0`（现象：`instance exited early (code 0)` 且**不写日志**），要跑得先让 pid 27124 退掉；② 服务停在 `STOP_PENDING` 反而让 `g_service_shape = ServiceStopped` 成立，也就是 F5 那一项**正该出现在菜单上**——判据要的形状现在就有，别急着把它救活。
 
 
 ## 2. M21 是什么问题、怎么修的
@@ -100,12 +103,29 @@
 
 ## 5. 下一步工作（按顺序）
 
-1. **M22 已完工**：F3/F4 判据本机全绿；F1/F2 在 TEST-WIN 现场双路触发并全部通过。版本抬 1.0.5，四包已出，**未发版不打 tag**——等用户确认后可发布。
+1. **M22 未完工，欠的已由 M24 补上代码但现场判据没跑完**。M24 三步已进 `main`（`7f4a792`/`6d91ba5`/`3f44e18`），1.0.7 四包已 stage 且包内 exe 复探通过；未发版、未打 tag、未放 `D:\IT-share`。**按顺序差的现场腿**：
+   1. 清场——用户托盘点「退出」或让它自然结束，把 pid 27124 腾出来（它持有会话级单例锁，见 §6）；服务那枚 `STOP_PENDING` 的 pid 4936 需要提权 `taskkill /f` 才能解。
+   2. **F6 实测**：`sc start` / `sc stop` 往返各 3 次，判据是 `sc query` ≤10s 落到 `4 RUNNING` / `1 STOPPED`，且 `service.log` 每次在 stop 之后仍有后续行。跑在**装的 1.0.6** 上（先判断这是不是产品缺陷），再跑在 1.0.7 上对照。
+   3. **F5 两枚文案 + 形状无回归**：`build/m24_menu.ps1 -Case limited` 与 `-Case elevated`（后者整支脚本要提权跑，UIA 读不到高于自己的菜单），判据是受限带「需管理员批准」、提权不带、七项顺序不变、239px/195px 与 M21-4 一致。结果落在 `build/scratch/m24_menu/menu-<case>.txt`（UTF-8，中文原样）。
+   4. **F1 四岔**：`sc sdshow` 存原 DACL → `sc sdset` 摘掉读取权 → `--service-state` 必须打 `ACCESS_DENIED (...)` 且 `console session:` / `stations:` / `host:` 三行仍在 → 还原并逐字节比对。**这一条会临时改服务安全描述符，跑之前必须跟用户点头。**
+   5. **F4 两腿**：健康腿看 `tray-<会话>.log` 记 `host said bye` 且退出耗时不再是固定 ≥1100ms；挂起腿手动起第二代理、`NtSuspendProcess` 住它再退宿主，判据是总耗时 ≤2500ms、warn 点名那个 session、F3 不破。
+   6. 人在机器前两次：同意一次（服务 RUNNING、下一枚菜单里这一项自己消失）、拒绝一次（弹的是「已取消」而不是「需要管理员权限」，事后 2s 内右键仍能弹菜单）。**注意本机 2026-09-01 实测过 `Start-Process -Verb RunAs` 能静默过**，"拒绝"这一腿可能根本没有框可点——先做 §计划里的 R1 探针确认这台机器的行为，别把"没弹框"当成产品缺陷。
+   7. 全绿之后再抬交付：`D:\IT-share\MyRemote-v1.0.7\` + 目标端复算哈希；GitHub release 仍等真机通过。
 2. 修完 F3 之后才轮到那两条没跑的注入：① 只连不读的宿主 + ④ 挂住代理托盘线程。脚本已经写好并推到 `C:\M20test\tw.ps1`（`-Test t2` 那段现在写的是"先别跑"，F3 修完改掉那句）。④ 还需要一个挂线程的注入形态，目前没有。
 3. 发版之后的既有决定：tag 只打在真正交付过的版本上（v1.0.0、v1.0.4），1.0.1~1.0.3 不再补 tag。
 4. 收尾清理**已做**：dev 路径那枚 `HKCU\Control Panel\NotifyIconSettings\2890237777820566933`（`…\build\bin\Release\agent.exe`）的 `IsPromoted` 已删，回读 `<absent>`；`C:\MyRemote\Agent\agent.exe` 那枚**留着**——那是装机版该有的状态，删了图标会掉进折叠区。
 
 ## 6. 环境与工具备忘（会杀时间的坑）
+
+**2026-09-02 出 1.0.7 判据脚本这一轮新增，同样每一条都真咬过一次：**
+
+- **`powershell -File x.ps1 -Arr a,b,c` 不会给你三个元素**：`-File` 只交一个 argv，`[string[]]` 把它绑成**长度 1 的数组**，于是脚本拿 `"a,b,c"` 整串去匹配，条条报"缺失"——这是最像"修复没生效"的一种假 FAIL。重复 `-Arr a -Arr b` 也不行（`ParameterAlreadyBound`）。判据脚本的数组入参要么设计成**逗号串 + 脚本内 `-split`**，要么走 `-Command`。
+- **`-Pid` 这个参数名不存在**：`$PID` 是 PowerShell 只读自动变量，`param([int] $Pid)` 在脚本体执行**之前**就抛"无法覆盖变量 PID"。改名 `-OwnerPid`。
+- **`[char]0x9700 + [char]0x7BA1` 是加法，不是拼接**：得到的是一个整数和再转成的单个字符。非 ASCII 串一律 `-join (@(0x9700,0x7BA1,...) | ForEach-Object { [char]$_ })`。
+- **整文件按 UTF-16 解码只解一次会漏一半**：`.rdata` 里的字面量落在**奇数字节偏移**时，offset 0 的解码看不见它 → 又是一个假 FAIL。要么两对齐都解，要么用字节级搜索。另外 **PS 5.1 的 `String.Contains` 走当前区域**，对 CJK 针不是"有没有这段字节"的意思，必须 `IndexOf($needle, [StringComparison]::Ordinal)`。
+- **码点针脚写错一个字，"存在"就读成"不存在"**：`需管理员批准` 我少写了 `员`(U+5458)，于是 1.0.7 里明明有的 F5 后缀被判成没做。**判据必须能真的失败**：同一支脚本对**旧装机镜像（1.0.6）**跑一遍，那些应当全是 False——两边一对照，探针自己在不在说谎当场就出来了。这次就是这么发现我自己的针错了，不是二进制错。
+- **bash 会把 `-File build\x.ps1` 的反斜杠吃掉**（变成 `buildx.ps1`）。走 `-File` 的路径用正斜杠。
+- **会话级单例锁让"起一个探针实例"这条路必须先清场**：`main.cpp:1477` 对非提权、无 `--takeover` 的实例只试 **1 次** `CreateMutexW(MyRemoteAgent_SingleInstance)`；拿不到就走 1499 那支——给**别人的**托盘窗 `PostMessage(WM_SHOW_CONFIG)` 然后 `return 0`。两个后果：① 它早于 1538 的 `mlog::init`，所以**一行日志都不写**，脚本只看到"秒退且 code 0"；② 那次 `WM_SHOW_CONFIG` 若是 Medium→High/ SYSTEM，UIPI 会**悄悄丢掉**（`PostMessage` 照样返回 TRUE）。所以"探针实例起不来"永远先查谁会话里已经有一个 agent；本次跑之前必须先让用户的实例退掉。
 
 **2026-09-01 现场判账这一轮新增，每一条都真咬过我一次：**
 

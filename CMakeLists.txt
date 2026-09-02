@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyRemoteControl VERSION 1.0.6 LANGUAGES CXX)
+project(MyRemoteControl VERSION 1.0.7 LANGUAGES CXX)
 enable_language(RC)
 
 set(CMAKE_CXX_STANDARD 17)
