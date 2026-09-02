@@ -48,14 +48,20 @@ constexpr DWORD kAfterCutGraceMs = 2000;
 // How long a teardown waits for one of a client's own threads before it stops
 // waiting for it. Every other timing constant above is M20's and stays as it is.
 constexpr DWORD kCloseGraceMs = 1500;
-// How long stop() gives each writer to drain a queued "bye" before the pipe is
-// cut. A healthy proxy's writer finishes in milliseconds; a deadbeat's queue
-// never drains, and this bound is what lets the cut below end it.
-constexpr DWORD kByeFlushMs = 1000;
+// How long stop() waits for each proxy to actually hear the "bye". The gate is
+// the completed-write counter below, not the queue: an empty queue only proves
+// the writer took the word. A healthy proxy answers in milliseconds; the bound
+// exists for the one that will not, and it is shared across all of them so two
+// proxies cannot cost five seconds on an exit path that is already on a timer.
+constexpr DWORD kByeConfirmMs = 2500;
 
 struct Client {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     DWORD session = 0;
+    // Kept for the teardown wait: the proxy map is keyed by session, while a
+    // session can hold a dead client and its replacement at the same time. Only
+    // a pid can say which process went away.
+    DWORD client_pid = 0;
     std::atomic<bool> alive{true};
     std::atomic<bool> shutting_down{false};
     // Which door this client went out of. Until now all three producers just
@@ -79,6 +85,11 @@ struct Client {
     std::mutex qmu;
     std::condition_variable qcv;
     std::deque<std::string> queue;
+    // Two counters and the gap between them is the only honest answer to "did
+    // the proxy hear it": a line that left the queue is invisible there while it
+    // is still inside a blocking WriteFile.
+    std::atomic<unsigned long long> words_said{0};
+    std::atomic<unsigned long long> words_written{0};
     std::atomic<DWORD> since{0};             // when we accepted it
     std::atomic<DWORD> last_pong_tick{0};
     std::atomic<unsigned long long> last_pong_liveness{0};
@@ -147,6 +158,7 @@ void queue_line(Client* c, const std::string& line) {
             return;
         }
         c->queue.push_back(line);
+        c->words_said.fetch_add(1);
     }
     c->qcv.notify_one();
 }
@@ -188,6 +200,7 @@ void writer_loop(Client* c) {
             c->alive.store(false);
             break;
         }
+        c->words_written.fetch_add(1);
     }
     SetEvent(c->writer_done);
 }
@@ -304,6 +317,7 @@ void acceptor_loop() {
         c->pipe = h;
         DWORD pid = 0;
         GetNamedPipeClientProcessId(h, &pid);
+        c->client_pid = pid;
         ProcessIdToSessionId(pid, &c->session);
         const DWORD now = GetTickCount();
         c->since.store(now);
@@ -640,27 +654,54 @@ void stop() {
     // hears "bye" logs "host said bye"; the same proxy that only sees the pipe
     // break logs "host pipe closed" - two different stories for one healthy
     // exit, and the field has been recording the wrong one.
+    std::vector<unsigned long long> target;
+    target.reserve(clients.size());
     for (Client* c : clients) {
-        const DWORD deadline = GetTickCount() + kByeFlushMs;
-        for (;;) {
-            bool drained = false;
-            {
-                std::lock_guard<std::mutex> lock(c->qmu);
-                drained = c->queue.empty();
-            }
-            if (drained) {
-                break;
-            }
-            if (static_cast<int>(GetTickCount() - deadline) >= 0) {
-                break;
-            }
-            Sleep(20);
+        target.push_back(c->words_said.load());
+    }
+    std::vector<HANDLE> process(clients.size(), nullptr);
+    for (size_t i = 0; i < clients.size(); ++i) {
+        if (clients[i]->client_pid) {
+            process[i] = OpenProcess(
+                SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                clients[i]->client_pid);
         }
     }
-    // The queue is empty, but the writer may still be inside its WriteFile for
-    // the last line it popped. A short sleep gives it time to finish so the
-    // CancelSynchronousIo in cut_pipe() does not cancel the "bye" itself.
-    Sleep(100);
+    const ULONGLONG bye_deadline = GetTickCount64() + kByeConfirmMs;
+    for (;;) {
+        bool all_settled = true;
+        for (size_t i = 0; i < clients.size(); ++i) {
+            Client* c = clients[i];
+            if (c->words_written.load() >= target[i]) {
+                continue;  // said and heard
+            }
+            if (!c->alive.load()) {
+                continue;  // this door is shut; nothing more will ever be said
+            }
+            if (process[i] &&
+                WaitForSingleObject(process[i], 0) == WAIT_OBJECT_0) {
+                continue;  // the proxy is gone; there is nobody left to tell
+            }
+            all_settled = false;
+        }
+        if (all_settled || GetTickCount64() >= bye_deadline) {
+            break;
+        }
+        Sleep(20);
+    }
+    for (size_t i = 0; i < clients.size(); ++i) {
+        if (process[i]) {
+            CloseHandle(process[i]);
+        }
+        Client* c = clients[i];
+        if (c->words_written.load() < target[i]) {
+            mlog::warn("Tray proxies: session " + std::to_string(c->session) +
+                       " bye unconfirmed at " +
+                       std::to_string(static_cast<unsigned long long>(kByeConfirmMs)) +
+                       "ms (" + death_name(c->death.load()) +
+                       "); its tray log will read \"host pipe closed\"");
+        }
+    }
     if (g_acceptor.joinable()) {
         g_acceptor.join();
     }
