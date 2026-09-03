@@ -1,4 +1,4 @@
-# 开发交接文档（2026-09-03 16:2x，M24 三条欠腿全部有账：**F4 挂起腿量到了门（2500ms 花完 + 1ms 交接 + 2596ms 落定）、F5 提权侧到像素、装机已逐字节还原 1.0.6**；同一跑逼出一条**新缺陷**（对端缓冲区灌满时宿主连 `quit` 都收不到，服务 25s 停不下来），1.0.7 仍未发版——**发版卡在"1.0.7 从没上过 TEST-WIN"**）
+# 开发交接文档（2026-09-03 16:4x，M24 三条欠腿全部有账：**F4 挂起腿量到了门（2500ms 花完 + 1ms 交接 + 2596ms 落定）、F5 提权侧到像素、装机已逐字节还原 1.0.6**；同一跑逼出一条**新缺陷，已确诊**——一个客户端的读写共用同一个非重叠管道句柄，对端不读则该客户端的命令一律进不来，`quit` 随之被当作超时丢弃；1.0.7 仍未发版——**发版卡在"1.0.7 从没上过 TEST-WIN"**）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
@@ -56,7 +56,7 @@
 | F1 四岔 | `sc sdset` 摘掉读取权 → 首行 `ACCESS_DENIED (...)` 且 `console session:`/`stations:`/`host:` 照打 | 原 DACL 含 `(A;;CCLCSWLOCRRC;;;IU)`；`sdset` 后**回读**该 IU ACE 已消失（断言读的是 `sc sdshow` 的回读，不读 `sc` 那句话——本机中文系统打的是「成功」，认 `SUCCESS` 会假红）；受限 token 跑 `--service-state` 打 `MyRemoteAgent: ACCESS_DENIED (the service may be installed; this token cannot read it)`，而 `console session: 1 (console station)`、`stations: 0 Services(4); 1 Console(0); 65536 RDP-Tcp(6)`、`host: STALE(...)` **三行照打**；跑完描述符**逐字节还原 = True**。反面基线（完整 DACL 时同一条命令打 `MyRemoteAgent: STOPPED` + binPath + start type）也已跑，否则这条判据是空转 | ✅ PASS |
 | F4 健康腿 | `host said bye` + 门不再固定 ≥1100ms | 仪器自己当一枚代理客户端连上真宿主（1.0.7）：`bye` 到线上 **201ms**、SCM `STOPPED` 在 `quit` 后 **166ms**、真代理 `tray-1.log` 打 `Tray proxy: host said bye; exiting`，四条断言全 True，收尾服务 0ms 回 Running | ✅ PASS |
 | F4 挂起腿（门） | 挂住不读的代理：门花完 2500ms、之后立刻交接、总耗时框住 | **入账，读数是反向对照那一跑给的**（16:19:51，`-PumpLimitSeconds 1` → 缓冲区只到 `avail=525/4096`，可这支客户端**照样一次都没读过管道**，而门看的就是"有没有人确认"）：`16:19:56.085 WARN Tray proxies: session 1 bye unconfirmed at 2500ms (still connected); its tray log will read "host pipe closed"` → `16:19:56.086 INFO cutting the pipe to session 1 (host shutting down)` = **1ms 交接**；`service STOPPED 2596ms after quit`（一把秒表从 `quit` 走到 SCM `Stopped`）。断言四条全 True（`ok_full` 这一条**应当** False，见下一行）。注意 warn 的**死因文案与 10:47 那跑不同**：这里是 `(still connected)`，10:47 是 `(write failed)` | ✅ PASS |
-| F4 灌满分支 | 把对端缓冲区真灌满（`avail=4139/4096`）会怎样 | **仪器能红，产品翻车**：16:20:02 那一跑 `ok_full True`、`ok_nodrain True`（4139→4139 一次没泄），但 **`quit` 根本没被宿主处理**——`16:20:17.929 cutting the pipe to session 1 (no pong)` + `session 1 closed (reason=we cut it, supervisor reaped it)`，监管线程 6 秒后把这个客户端当死的收了，**SCM 在 25000ms 内始终没到 STOPPED**（`stoppedMs=-1`）。同一支脚本 10:47 灌满时却走到了 `bye unconfirmed ... (write failed)` + 同毫秒 `cutting the pipe`——**同一前提两种结局**，所以"写线程被 park 住"这一岔不是确定性的，而它发生时**宿主连停都停不下来**（那道 2500ms 的门根本没轮到跑）。这条不在 M24 的判据里，另立 §4 第一条。（这一跑的报告里还夹着一行 `ERROR: ...ParseExact...`——修在 `93d3cfb`，晚于这一跑；它跳过的是 delta，与这一行的两条 False 无关） | ⚠️ 新缺陷，未修 |
+| F4 灌满分支 | 把对端缓冲区真灌满（`avail=4139/4096`）会怎样 | **仪器能红，产品翻车**：16:20:02 那一跑 `ok_full True`、`ok_nodrain True`（4139→4139 一次没泄），但 **`quit` 根本没被宿主处理**——`16:20:17.929 cutting the pipe to session 1 (no pong)` + `session 1 closed (reason=we cut it, supervisor reaped it)`，监管线程 6 秒后把这个客户端当死的收了，**SCM 在 25000ms 内始终没到 STOPPED**（`stoppedMs=-1`）。同一支脚本 10:47 灌满时却走到了 `bye unconfirmed at 2500ms (write failed)` + 同毫秒 `cutting the pipe`。（这一跑的报告里还夹着一行 `ERROR: ...ParseExact...`——修在 `93d3cfb`，晚于这一跑；它跳过的是 delta，与这一行的两条 False 无关） **两条当时下的结论已于 16:4x 撤回**：①"不是确定性的"错——两跑的差别只是 `quit` 落在灌满之前还是之后；②"25s 停不下来"里的 25s 是脚本的等待上限，不是产品门限。真机制与三阶段复判见 §4 第一条（跑在装机的 1.0.6 上，**不是 M24 带来的**）。这条不在 M24 的判据里 | ⚠️ 新缺陷，已确诊，未修 |
 | 人在机器前 | 同意一次 / 拒绝一次 | **拒绝**：11:06 那一跑他点了「否」→ 同 pid 新增 `Service enable declined at the consent prompt; nothing changed`、SCM 全程 `STOPPED`、且屏幕上真出现了 `已取消，后台服务没有启动。` 那枚框（340x187，`notice-decline.png` 里逐字可读）。**同意**：14:50 那一跑 → +5667ms `START_PENDING`、再 +262ms `RUNNING`，同 pid 打 `The background service is running; this instance is handing the machine over`，**不弹框**。两跑之间：14:34 那次他按了「否」而腿判 `FAIL: the menu item was there but did not do what it says (click=approve)`——**这条 FAIL 是对的**，那枚腿就是要在"点了否却没办成"时变红；更早还有一跑 `waited 180188ms … noticed=False`，因为人当时不在机器前 | ✅ PASS（两向都有像素） |
 
 **顺手抓到的一条 F4 反面证据（不用跑就有）**：`C:\ProgramData\MyRemote\tray-1.log` 同一枚代理、两种死法——22:17:29.953 用户点「退出」那次是 `host said bye; exiting`，00:18:36.883 本轮 `sc stop` 那次是 `host pipe closed; exiting`。所以"外部停服务没有 bye 可说"不是推测，是现场读得出来的两行字。
@@ -115,7 +115,11 @@
 
 ## 4. 可能还有什么问题（按可信度排序）
 
-1. **对端缓冲区灌满时，宿主连"停"这个命令都收不到**（2026-09-03 16:20 现场逼出来的，最高可信度：同一台机器、同一份 1.0.7、当天两跑）。把某会话代理的入站缓冲灌到 `avail=4139/4096` 之后，`quit` 写进去**不再被处理**——6 秒后监管线程按 `no pong` 把这个客户端收了（`cutting the pipe to session 1 (no pong)` / `session 1 closed (reason=we cut it, supervisor reaped it)`），而 **SCM 在 25000ms 内始终没到 STOPPED**。同一支脚本同一份镜像 10:47 那一跑走的是另一岔（`bye unconfirmed at 2500ms (write failed)` + 同毫秒 `cutting the pipe`），**所以这一岔不是确定性的**。边界要说清：① 这是**人为制造的"只连不读"**，真实代理会不会走到这个形状没量过（M22-F3 修的是写侧挂死）；② M24-4 改的是 `stop()` 的等待，**没碰读侧**，所以这条是不是 M24 之前就存在**未测**；③ 那道 2500ms 的门在这一岔里**根本没轮到跑**。要修先回答：读线程为什么会被同一个客户端的写侧堵住（`queue_line` 的容量？锁？），以及 `no pong` 收人之前该不该先把积压命令读完。
+1. **一个客户端的读与写共用同一个非重叠管道句柄：对端一旦不读，这个客户端的命令就再也进不来**（2026-09-03 16:4x 确诊，仪器 `tools/harness/m24_wedge.ps1`，报告 `build\scratch\m24_wedge\wedge.txt`）。
+   - **机制**：`client/src/tray_proxies.cpp:344-345` 给每个客户端起 `reader_loop` 与 `writer_loop` 两个线程，**共用一个 `c->pipe`（`PIPE_WAIT`，没有 OVERLAPPED）**。对端不读 → 管道缓冲写满 → 写线程停在 `WriteFile`（`:205`）→ **同一句柄上的 `PeekNamedPipe`/`ReadFile`（`:260`/`:268`）一起被钉住**。这正是这个文件开头承诺不会发生的事（"nothing on the host's own threads may block waiting for a proxy"），也与 `queue_line` 上那句"一个不排空的代理只该拖住它自己的队列"相反。
+   - **三阶段读数**（同一台机器、同一个宿主，一个变量＝这条连接的入站缓冲满不满）：**A** 缓冲 760B 时发 8 次 toggle → 宿主日志 **8/8**，另发的 1 条垃圾标记也读到（标记只要读侧就答复，所以它兼作"这条查询能报非 0"的证明）；**B** 灌到 4165B、先 settle 1.5s，再发 **6 次 toggle + 3 条标记** → 宿主日志 **0 toggle、0 标记**——不是 pause 处理块住，是**一个字节都没读走**；**C** 把缓冲排空 → **6/6 toggle + 3/3 标记两秒内全数落地，顺序完好** → 命令一直躺在管道里，读者只是被钉住，松开就来。
+   - **后果**：这条连接上已写下却没人读的 `quit`（现场就是托盘点"退出"那一下），会在 `kPongTimeoutMs=8000` 之后被监管按 `no pong` 收走，**连同积压的命令一起丢**。用户看到的是"点了退出，图标闪一下又回来（宿主马上又拉起一个代理），服务照旧在跑"。16:20 那一跑的 `stoppedMs=-1` 就是这个形状：**不是停得慢，是根本没轮到停**——25s 是脚本自己的等待上限，先前写成"服务 25s 停不下来"是把仪器当成了产品。同理，"同一前提两种结局/不是确定性的"也撤回：两跑的区别只是 `quit` 落在灌满之前还是之后，机制本身是确定的（B 阶段两次都是 0）。
+   - **还开着的边界**：① **不是 M24 带来的**——本次跑在装机的 **1.0.6** 上复现，且这段读/写线程结构自 `edf3cfa`（M20-2）起未变、`git show v1.0.6` 里逐字相同，M24-4 只动了 `stop()` 的等待；② **真实代理会不会把缓冲灌满，没量过**——代理侧是 `PeekNamedPipe`+`ReadFile`+`Sleep(150)` 的轮询循环（`tray_proxy.cpp:251-308`），只要它在轮询就灌不满，所以要它**同时**卡在别处（模态菜单、配置框、CPU 饿死）**且**宿主话多（隧道反复掉线让 `broadcast_state` 停不下来）。窄，但不是零，而且失败方式是"静默吞掉一次用户点击"；③ 修法要先定形：给写线程单独 `DuplicateHandle` 一份句柄（三行，且本条腿可直接复判），还是两端改重叠 I/O（动整个文件的 I/O 形状）。
 2. **菜单跟随延迟 = 一轮主循环**。控制端连不上时那一轮里含 10s 连接超时，实测 13s（隧道正常时 ≤1.2s）。这不是缓存 bug，是循环结构；要压到 1s 内只能把形状采样挪出主循环（新线程或独立定时器线程），本轮刻意没做——M20 的全部教训就是往消息线程上放慢调用。
 3. **`state` 行刻意没加 `config_ok=0/1`**：修好引号之后，"代理读到的是不是真配置"已经由代理自己那行 `Tray proxy config: <path> (found|missing)` 与开窗/拒绝行为说清，再加一个字段只是多一处会各自说谎的读数。若现场仍判断不了，再补。
 4. **管道 DACL 是全机交互用户**（`(A;;GRGW;;;IU)`），不是"该会话用户"——文档本轮已改口。所以 `secret_key`/`control_password` 绝不推上管道；`save_config` 走的是宿主自己那份真配置。任何本地进程仍能连管道发 `pause/hide/quit`，这是定案（托盘是操作入口，不是权威凭据）。
@@ -131,7 +135,7 @@
    3. ~~F5 两枚文案 + 形状~~ **两侧都到像素了**：受限侧 `menu-limited-approve.png`（带「需管理员批准」）、提权侧 `menu-elevated.png`（16:20，同一锚点、同一镜像，**没有**那串后缀），两张放一起就是这条判据的全部。**"服务 RUNNING 时这一项自己消失"这一判据本机依旧没做成**：会话级单例锁 + `--force` 的组合让前台探针在服务运行时起不了托盘，见 §6 那条；能做的替代是 `m24_menu_live.ps1` 读活的会话代理（它的菜单按构造永远不带那一项，且那台是 1.0.6）。
    4. ~~前置：把 dev 构建放进服务指向的那份 + 还原~~ **两头都做完**：16:20:39 `m24_swap -Mode restore` 打印 `installed sha=D0279D07733DA71A expected=D0279D07733DA71A byte-identical=True`、`failures=0`，服务回 `RUNNING`/`AUTO_START`，dev 构建挪成 `agent-swapped-1.0.7.exe` 留在同目录（**没删**），托盘代理 16:20:40 重连。
    5. ~~F1 四岔~~ **已做**（`m24_f1_acl.ps1` + 非提权那半 `m24_f1_caller.ps1`），描述符已逐字节还原，不用再点头。
-   6. ~~F4 挂起腿复测~~ **已做，而且比预期多问出一件事**：门本身入账了（16:19 那一跑：`bye unconfirmed at 2500ms (still connected)` → 1ms 后 `cutting the pipe` → `STOPPED 2596ms`，见 §3）。**同一跑在"缓冲区真灌满"那一岔里翻出来一条新缺陷**——宿主的读侧一起被堵住，`quit` 丢失，服务 25s 停不下来（§3 的"F4 灌满分支"行 + §4 第一条）。**这一条要不要在发版前处理，是个决定，不是个任务**。
+   6. ~~F4 挂起腿复测~~ **已做，而且比预期多问出一件事**：门本身入账了（16:19 那一跑：`bye unconfirmed at 2500ms (still connected)` → 1ms 后 `cutting the pipe` → `STOPPED 2596ms`，见 §3）。**同一跑在"缓冲区真灌满"那一岔里翻出来一条新缺陷**——宿主在这条连接上的读侧一起被钉住，`quit` 丢失。**16:4x 已确诊**（`tools/harness/m24_wedge.ps1` 三阶段 A/B/C，跑在装机的 1.0.6 上，不用提权、跑完服务仍 RUNNING、`paused=0`、`proxies=1`）：机制是 `reader_loop`/`writer_loop` 共用一个非重叠句柄，**不是 M24 带来的**，详见 §4 第一条。**这一条要不要在发版前处理，是个决定，不是个任务**。
    7. ~~人在机器前两次~~ **已做**：同意一次（`START_PENDING`→`RUNNING` + 交接那行日志）、拒绝一次（「已取消」框有照片 + `declined at the consent prompt` + SCM 全程 STOPPED）。判据现在会在"点了否却没办成"时真变红（14:34 那一跑就是）。
    8. **剩下的只有两件，都不欠提权框**：① `D:\IT-share\MyRemote-v1.0.7\`（四包 + `SHA256SUMS.txt`，版式照 `MyRemote-v1.0.6\`）+ 目标端复算哈希——**点头才放**，且放之前先读 §4 第一条；② **1.0.7 上 TEST-WIN 跑一轮现场腿**——这才是 `v1.0.7` tag 与 GitHub release 的门槛（1.0.5 之后那台机器再没复核过，见 §7）。
 2. 修完 F3 之后才轮到那两条没跑的注入：① 只连不读的宿主 + ④ 挂住代理托盘线程。**"只连不读"这一形状今天从代理那一侧已经跑过一次**（16:20 挂起腿：客户端连上、一次都不读、还把缓冲灌满），结果就是 §4 第一条——所以①剩下的半边是**宿主作为客户端去连、不读**那一侧，④ 还需要一个挂线程的注入形态，目前没有。脚本已经写好并推到 `C:\M20test\tw.ps1`（`-Test t2` 那段现在写的是"先别跑"，F3 修完改掉那句）。
@@ -139,6 +143,13 @@
 4. 收尾清理**已做**：dev 路径那枚 `HKCU\Control Panel\NotifyIconSettings\2890237777820566933`（`…\build\bin\Release\agent.exe`）的 `IsPromoted` 已删，回读 `<absent>`；`C:\MyRemote\Agent\agent.exe` 那枚**留着**——那是装机版该有的状态，删了图标会掉进折叠区。
 
 ## 6. 环境与工具备忘（会杀时间的坑）
+
+**2026-09-03 16:4x（确诊 §4 第一条，新腿 `tools/harness/m24_wedge.ps1`）三条：**
+
+- **想判"有没有人读我的字节"，就发一条宿主会原样复述的垃圾**：`dispatch()` 对认不出的命令打 `unknown command from session N: <line>`——这行**只需要读侧**就能出现，不经过任何命令处理器。于是"1 条 toggle 都没落地"到底是读者没读、还是读完卡在下游，一次跑就分得开（本次：0 toggle + **0 标记** = 读者一个字节都没读走）。顺手还满足了"期望 0 的查询要先证明它能报非 0"：同一条标记在 A 阶段报 1/1。
+- **取日志 offset 之前先 settle**：灌满那一瞬，pump 自己最后一发 toggle 还在路上，不等一下就把这条**不属于灌满窗口**的落地算进去，读数成了 `2/6`（真值 `0/6`）。这类偏差**一律往"温和"的方向偏**，也就是最容易放走真缺陷的方向。修完第二次跑就是 0/6。
+- **"同一前提两种结局"要先怀疑前提没对齐**，别急着记成"不确定性"：16:20 与 10:47 两跑结论不同，当时的解释是"这一岔不是确定性的"，而真正的差别只是 `quit` 落在缓冲灌满**之前还是之后**。同理，**仪器自己的等待上限不是产品门限**——`$StopTimeoutMs=25000` 写出来的"25s 停不下来"读起来像产品有个 25s 的等待，其实产品那侧的界是 `kPongTimeoutMs=8000`。
+- 顺带两条便宜事实：① **这条腿不用提权**——管道 DACL 给交互用户读写，只要不发 `quit`，就能在装机的 1.0.6 上直接量活宿主；凡是能花 0 枚框量到的东西，就不要预订那一枚框。② PowerShell 函数里 `$tick += 1` 造的是**局部变量**（要 `$script:tick`），于是每次都发 `pong tray=0`，宿主按 `tray pump not turning` 收人——测的就不是产品而是作用域规则了。
 
 **2026-09-03 傍晚这一轮（`-Phase final`，16:19–16:20）新增。共同点还是老一句：坑在仪器身上，而这一轮的四条都是"看着像量过了"：**
 
