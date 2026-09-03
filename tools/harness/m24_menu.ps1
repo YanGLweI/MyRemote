@@ -34,6 +34,13 @@ param(
     # evidence about the item's wording is the target's own log line about
     # itself, which is a claim, not a reading.
     [string] $Shot = '',
+    # '' | approve | decline. When set, the menu stays open and a person at the
+    # machine picks the start-service item and answers the consent box. The click is not
+    # simulated: the box appears on the secure desktop, where no other process
+    # can see or reach it - which is the whole point of the leg.
+    [ValidateSet('', 'approve', 'decline')] [string] $Click = '',
+    [int] $ClickWaitMs = 180000,
+    [string] $Service = 'MyRemoteAgent',
     [switch] $KeepAlive   # leave the instance and its icon behind for a follow-up probe
 )
 
@@ -226,6 +233,7 @@ function Dismiss-Notice([uint32] $ownerPid, [IntPtr] $box) {
 
 $script:proc = $null
 $script:menu = [IntPtr]::Zero
+$script:clickFailed = $false
 
 function Close-Menu([IntPtr] $h) {
     if ($h -ne [IntPtr]::Zero -and [Win]::IsWindow($h)) {
@@ -240,6 +248,27 @@ function Fold([string] $s) {
     })
 }
 
+# The SCM's own word, asked from a limited token: whether the menu item did
+# anything is not this process's opinion to hold.
+function Get-AgentServiceState {
+    $q = & sc.exe query $Service 2>&1 | Out-String
+    if ($q -match 'STATE\s+:\s+\d+\s+(\w+)') { return $Matches[1] }
+    return 'unknown'
+}
+
+# Only the bytes gained since $offset, so a verdict cannot come from a previous
+# run's line sitting at the top of the same file.
+function Tail-From([string] $path, [long] $offset) {
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($fs.Length -le $offset) { return @() }
+        [void]$fs.Seek($offset, 'Begin')
+        $sr = New-Object IO.StreamReader($fs)
+        return @(($sr.ReadToEnd() -split "`r?`n") | Where-Object { $_ -ne '' })
+    } finally { $fs.Dispose() }
+}
+
 function Finish([string[]] $lines) {
     [IO.File]::WriteAllText($result, ($lines -join "`r`n") + "`r`n",
         (New-Object Text.UTF8Encoding($true)))
@@ -248,6 +277,10 @@ function Finish([string[]] $lines) {
 }
 
 try {
+    if ($Click -and (Get-AgentServiceState) -ne 'STOPPED') {
+        throw "FAIL: click=$Click needs the service stopped first (sc.exe stop $Service) - " +
+              "the item only exists while it is down, and STOPPED to RUNNING is the verdict"
+    }
     # Fresh log or no log: reading "Elevation: no" only proves anything if the
     # file cannot be holding last run's verdict.
     $log = Join-Path $work 'agent.log'
@@ -374,6 +407,73 @@ try {
     $lines += "ASSERT wording '$want' -> $ok_wording"
     $lines += "ASSERT service item present -> $ok_present"
 
+    # ---- the human half -------------------------------------------------------
+    # The consent box is drawn on the secure desktop: no other process can read
+    # it, photograph it or press it, and that refusal is exactly what F5 claims.
+    # So the verdict has to come from what is observable from here - the service's
+    # own state as the SCM reports it, and whatever notice box the instance puts
+    # up on the normal desktop afterwards.
+    if ($Click) {
+        $logAt = (Get-Item -LiteralPath $log).Length
+        $svc_before = Get-AgentServiceState
+        $lines += "click=$Click service_before=$svc_before log_bytes=$logAt"
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $svc_after = $svc_before
+        $noticed = $false
+        while ($sw.ElapsedMilliseconds -lt $ClickWaitMs) {
+            $box = [Win]::Find([uint32]$childPid, '#32770')
+            if ($box -ne [IntPtr]::Zero -and -not $touched.ContainsKey([long]$box)) {
+                $touched[[long]$box] = $true
+                $b = New-Object Win+RECT
+                [void][Win]::GetWindowRect($box, [ref]$b)
+                $noticeShot = Join-Path $work ("notice-$Click.png")
+                $shotArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                              (Join-Path $PSScriptRoot 'm24_shot.ps1'),
+                              '-Left', $b.Left, '-Top', $b.Top,
+                              '-Width', ($b.Right - $b.Left), '-Height', ($b.Bottom - $b.Top),
+                              '-Out', $noticeShot)
+                $shotOut = & powershell.exe @shotArgs 2>&1
+                $lines += "notice box=$([long]$box) $($b.Right - $b.Left)x$($b.Bottom - $b.Top) " +
+                          "at $($b.Left),$($b.Top) after=$($sw.ElapsedMilliseconds)ms " +
+                          "shot=$noticeShot exit=$LASTEXITCODE"
+                # The box's text is CJK, so it lands folded: the picture is the
+                # reading, this line only says a box was there and how it was
+                # built - one button, which is the only thing safe to click.
+                $statics = @([Win]::ChildLines([uint32]$childPid, $box, 'Static'))
+                $lines += "notice static: $(Fold ($statics -join ' / '))"
+                $btns = [Win]::ChildHandles([uint32]$childPid, $box, 'Button')
+                if ($btns.Count -eq 1) {
+                    [void][Win]::PostMessage($btns[0], $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+                } else {
+                    $lines += "notice-warning: $($btns.Count) buttons, left alone"
+                }
+                $noticed = $true
+            }
+            $svc_after = Get-AgentServiceState
+            if ($noticed -or ($svc_after -ne $svc_before)) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        $lines += "waited $($sw.ElapsedMilliseconds)ms for the click, service_after=$svc_after noticed=$noticed"
+        Start-Sleep -Milliseconds 400
+        foreach ($l in (Tail-From $log $logAt)) { $lines += "new-log: $(Fold $l)" }
+        $fresh = (Tail-From $log $logAt) -join "`n"
+        if ($Click -eq 'decline') {
+            $ok_log = ($fresh -match 'declined at the consent prompt')
+            $ok_state = ($svc_after -eq $svc_before)
+            $lines += "ASSERT the instance logged the refusal -> $ok_log"
+            $lines += "ASSERT the service is still $svc_before -> $ok_state"
+        } else {
+            $ok_log = ($fresh -match 'background service is running')
+            $ok_state = ($svc_after -eq 'RUNNING')
+            $lines += "ASSERT the instance logged the service coming up -> $ok_log"
+            $lines += "ASSERT the SCM now says RUNNING -> $ok_state"
+        }
+        if (-not ($ok_log -and $ok_state)) {
+            $script:clickFailed = $true
+        }
+    }
+    # ---- end of the human half ------------------------------------------------
+
     Close-Menu $script:menu
     $script:menu = [IntPtr]::Zero
 
@@ -381,6 +481,9 @@ try {
 
     if (-not ($ok_wording -and $ok_present)) {
         throw "FAIL: $Case-token menu did not read as expected (wording=$ok_wording present=$ok_present)"
+    }
+    if ($script:clickFailed) {
+        throw "FAIL: the menu item was there but did not do what it says (click=$Click)"
     }
     if (-not $KeepAlive) {
         Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
