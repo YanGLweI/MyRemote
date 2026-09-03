@@ -190,15 +190,19 @@ try {
             if ($avail -ge 4000) { break }
         }
         $pumped = $sw.ElapsedMilliseconds
-        $report += "pumped $toggles toggles for ${pumped}ms, inbound buffer now avail=$avail/4096"
-        if ($avail -lt 4000) {
-            $report += "NOTE the buffer never filled (avail=$avail) - the hung leg cannot be built this run"
-        }
+        $availAtQuit = $avail
+        $report += "pumped $toggles toggles for ${pumped}ms, inbound buffer now avail=$availAtQuit/4096"
         # Stop talking: the host's writer is parked in WriteFile, so the bye below
         # can only sit in the queue.
         Start-Sleep -Milliseconds 300
         $sw = [Diagnostics.Stopwatch]::StartNew()
         [void]$w.WriteLine('quit')
+        $report += "state at quit=$(Get-AgentState)"
+        # Peek, never Read: reading here would drain the very buffer the hang rests
+        # on. This is the second half of "the hang was built" - the first is that it
+        # was full when the quit went out.
+        $availAfterQuit = [PipeGauge]::Available($gauge)
+        $report += "peeked this connection right after quit: avail=$availAfterQuit/4096"
         # One clock for the whole leg: keep answering pings (a dead pid or a shut
         # door would settle the gate early for the wrong reason) and watch the
         # service from the same stopwatch that started at quit. Measuring the wait
@@ -214,7 +218,7 @@ try {
         }
     }
 
-    $report += "bye on the wire after=${byeMs}ms"
+    if ($Case -eq 'healthy') { $report += "bye on the wire after=${byeMs}ms" }
     $report += "service STOPPED ${stoppedMs}ms after quit"
     if ($heard.Count) { $report += "heard: $(($heard | Select-Object -First 8) -join ' | ')" }
 
@@ -239,7 +243,13 @@ try {
         }
     }
     else {
-        $ok_unread = ($byeMs -lt 0)
+        # "The hang exists" is a precondition, not a conclusion: every assertion
+        # below only means something if the host's writer was parked inside
+        # WriteFile with the bye still queued. The previous instrument "proved"
+        # that by comparing $byeMs, which this branch never assigns - a line that
+        # could not come out False (measured 2026-09-03).
+        $ok_full = ($availAtQuit -ge 4000)
+        $ok_nodrain = ($availAfterQuit -ge $availAtQuit)
         $ok_named = ($unconfirmed.Count -ge 1)
         # The lower bound is the point of the leg: a gate that returned early would
         # mean the wait never actually waited. The upper bound is the same claim
@@ -248,7 +258,8 @@ try {
         # reconnecting (2026-09-03 10:47). What is not loose is the deadline to
         # hand-over, measured off the host's own log below.
         $ok_settled = ($stoppedMs -ge 2500 -and $stoppedMs -le 10000)
-        $report += "ASSERT this client never read the bye (that is the hang) -> $ok_unread (${byeMs}ms)"
+        $report += "ASSERT the buffer was full at quit, so the writer was parked -> $ok_full (${availAtQuit}/4096)"
+        $report += "ASSERT nothing drained this connection while the gate waited -> $ok_nodrain ($availAtQuit -> $availAfterQuit)"
         $report += "ASSERT the gate named a session ('bye unconfirmed') -> $ok_named"
         $report += "ASSERT the quit-to-stopped wait spent the deadline and stayed bounded -> $ok_settled (${stoppedMs}ms)"
         $delta = -1
@@ -268,7 +279,7 @@ try {
         }
         $ok_immediate = ($delta -ge 0 -and $delta -le 200)
         $report += "ASSERT the hand-over followed the deadline within 200ms -> $ok_immediate (${delta}ms)"
-        foreach ($p in @($ok_unread, $ok_named, $ok_settled, $ok_immediate)) {
+        foreach ($p in @($ok_full, $ok_nodrain, $ok_named, $ok_settled, $ok_immediate)) {
             if (-not $p) { $script:failures += 'assertion failed' }
         }
     }
