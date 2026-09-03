@@ -265,9 +265,15 @@ try {
         $delta = -1
         $warn_at = $null
         foreach ($l in $tail) {
-            if ($l -notmatch '\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\]') { continue }
-            $ts = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss.fff',
-                                         [Globalization.CultureInfo]::InvariantCulture)
+            # log.cpp:41-42 pads the millisecond field with a single zero at most,
+            # so it is 2 or 3 digits and holds the millisecond count as written
+            # (.83 = 83ms). A .fff format throws on every 2-digit line - which is
+            # what happened on both runs of 2026-09-03 16:19, silently skipping the
+            # measurement below.
+            if ($l -notmatch '\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\.(\d{2,3})\]') { continue }
+            $ts = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss',
+                                         [Globalization.CultureInfo]::InvariantCulture
+                    ).AddMilliseconds([int]$Matches[2])
             if ($null -eq $warn_at) {
                 if ($l -match 'bye unconfirmed') { $warn_at = $ts }
                 continue

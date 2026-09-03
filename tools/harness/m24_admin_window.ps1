@@ -60,6 +60,14 @@ function Wait-State([string] $name, [string] $want, [int] $timeoutMs) {
     return $false
 }
 
+# Not a -replace with '$1' in it: that pattern has no group to fill, and the
+# reading came out of the window as the literal "$12   AUTO_START".
+function Start-Type([string] $name) {
+    $q = & sc.exe qc $name 2>&1 | Out-String
+    if ($q -match 'START_TYPE\s+:\s+(\d+)\s+(\w+)') { return "$($Matches[1]) $($Matches[2])" }
+    return 'unknown'
+}
+
 "phase=$Phase"
 
 if ($Phase -eq 'final') {
@@ -114,7 +122,7 @@ if ($Phase -eq 'final') {
 
     "=== final summary ==="
     "  service state: $(State $Service)"
-    "  start type: $((& sc.exe qc $Service 2>&1 | Out-String) -replace '(?s).*START_TYPE\s+:\s+', '$1' -replace '\r?\n.*', '')"
+    "  start type: $(Start-Type $Service)"
     "  installed FileVersion: $((Get-Item -LiteralPath $InstalledExe).VersionInfo.FileVersion)"
     "  install dir: $((Get-ChildItem -LiteralPath (Split-Path -Parent $InstalledExe) -Filter '*.exe' | ForEach-Object { $_.Name }) -join ', ')"
     foreach ($k in ($script:exits.Keys | Sort-Object)) { "  $k exit=$($script:exits[$k])" }
@@ -136,7 +144,7 @@ if ($Phase -eq 'restore') {
     # The installed image goes back, byte-for-byte, and the service goes up on it.
     Run-Step 'restore' 'm24_swap.ps1' @('-Repo', $Repo, '-Mode', 'restore')
     "  service state: $(State $Service)"
-    "  start type: $((& sc.exe qc $Service 2>&1 | Out-String) -replace '(?s).*START_TYPE\s+:\s+', '$1' -replace '\r?\n.*', '')"
+    "  start type: $(Start-Type $Service)"
     "  installed FileVersion: $((Get-Item -LiteralPath $InstalledExe).VersionInfo.FileVersion)"
     Stop-Transcript | Out-Null
     $bad = @($script:exits.Keys | Where-Object { $script:exits[$_] -ne 0 })
