@@ -454,9 +454,21 @@ try {
             Start-Sleep -Milliseconds 200
         }
         $lines += "waited $($sw.ElapsedMilliseconds)ms for the click, service_after=$svc_after noticed=$noticed"
-        Start-Sleep -Milliseconds 400
+        # Two things settle later than the loop lets go: the instance writes its
+        # verdict line up to a second after the SCM moves (it polls at 200ms
+        # itself), and the SCM reports START_PENDING before it reports RUNNING. So
+        # the expected line is waited for, and the state is re-read afterwards.
+        $expect = if ($Click -eq 'decline') { 'declined at the consent prompt' } else { 'background service is running' }
+        $sw2 = [Diagnostics.Stopwatch]::StartNew()
+        $fresh = ''
+        while ($sw2.ElapsedMilliseconds -lt 10000) {
+            $fresh = (Tail-From $log $logAt) -join "`n"
+            $svc_after = Get-AgentServiceState
+            if (($fresh -match $expect) -and ($svc_after -eq 'RUNNING' -or $svc_after -eq 'STOPPED')) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        $lines += "waited a further $($sw2.ElapsedMilliseconds)ms, service_after=$svc_after"
         foreach ($l in (Tail-From $log $logAt)) { $lines += "new-log: $(Fold $l)" }
-        $fresh = (Tail-From $log $logAt) -join "`n"
         if ($Click -eq 'decline') {
             $ok_log = ($fresh -match 'declined at the consent prompt')
             $ok_state = ($svc_after -eq $svc_before)

@@ -7,12 +7,15 @@
 #
 #   powershell -File tools/harness/m24_admin_window.ps1 -Phase measure
 #   ... the F5 human legs run in between, with the service deliberately stopped
-#   powershell -File tools/harness/m24_admin_window.ps1 -Phase restore
+#   powershell -File tools/harness/m24_admin_window.ps1 -Phase restore -RerunHung
 #
 # Two phases rather than one because the legs disagree about the service: F4 has
 # to quit a running 1.0.7, and F5's menu item only appears while it is stopped.
+# -RerunHung belongs to the restore phase because the hung leg is the last thing
+# that can only be measured while the swapped-in 1.0.7 owns the service's path.
 param(
     [ValidateSet('measure', 'restore')] [string] $Phase = 'measure',
+    [switch] $RerunHung,
     [string] $Repo = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
     [string] $Service = 'MyRemoteAgent',
     [string] $InstalledExe = 'C:\MyRemote\Agent\agent.exe'
@@ -52,13 +55,23 @@ function Wait-State([string] $name, [string] $want, [int] $timeoutMs) {
 "phase=$Phase"
 
 if ($Phase -eq 'restore') {
+    # The hung leg can only be measured while the swapped-in 1.0.7 owns the path
+    # the service points at, and what follows takes that away. So it goes first.
+    if ($RerunHung) {
+        if ((State $Service) -ne 'RUNNING') {
+            [void](& sc.exe start $Service 2>&1 | Out-String)
+            [void](Wait-State $Service 'RUNNING' 20000)
+        }
+        Run-Step 'f4-hung' 'm24_f4.ps1' @('-Repo', $Repo, '-Case', 'hung')
+    }
     # The installed image goes back, byte-for-byte, and the service goes up on it.
     Run-Step 'restore' 'm24_swap.ps1' @('-Repo', $Repo, '-Mode', 'restore')
     "  service state: $(State $Service)"
     "  start type: $((& sc.exe qc $Service 2>&1 | Out-String) -replace '(?s).*START_TYPE\s+:\s+', '$1' -replace '\r?\n.*', '')"
     "  installed FileVersion: $((Get-Item -LiteralPath $InstalledExe).VersionInfo.FileVersion)"
     Stop-Transcript | Out-Null
-    if ($script:exits['restore'] -ne 0) { exit 1 }
+    $bad = @($script:exits.Keys | Where-Object { $script:exits[$_] -ne 0 })
+    if ($bad.Count) { "  failed steps: $($bad -join ', ')"; exit 1 }
     exit 0
 }
 
