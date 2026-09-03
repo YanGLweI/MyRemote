@@ -52,6 +52,7 @@
 | F6 | `sc start`/`sc stop` 往返×3，≤10s 落定且 `service.log` 有后续行 | 起 9/10/11ms、停 10/12/11ms，每轮 stop 后多写 5 行直到 `MyRemote agent service stopped`，`failures=0`，结束恢复 RUNNING/Auto | ✅ PASS（**装在的是 1.0.6**） |
 | 交付链 | 判据用的 exe == 包里的 exe | sha256 `85fb3396a6530eb6…` 三处一致（zip 内 / `build/bin/Release` / 探针副本） | ✅ PASS |
 | 探针会说谎吗 | 同一串针打在旧镜像上应当全 False | 装机 1.0.6：`F5_suffix`/`F5_cancel`/`Tray menu built`/`item wording`/`bye unconfirmed`/`last state`/`ACCESS_DENIED` 全 False（`F5_label`/`service stopped` 是历史串，True 才对） | ✅ 对照通过 |
+| 不变量 | M24 不把外部面变大 | `agent.exe` 三个 pid 拥有 **TCP 监听 0 个**（全系统 52），唯一服务端是管道 `MyRemoteAgent_TrayProxy_v1`；`config.hpp` 对基线 `d2aa7d8` 零改动；管道无新动词（`build/m24_invariants.ps1`） | ✅ PASS |
 | F1 四岔 | `sc sdset` 摘掉读取权 → 首行 `ACCESS_DENIED (...)` 且 `console session:`/`stations:`/`host:` 照打 | 未跑（要改真服务 DACL，需点头） | ⬜ |
 | F4 两腿 | `host said bye` + 门不再固定 ≥1100ms；挂起代理 ≤2500ms 且点名 warn | 未跑（要 1.0.7 当宿主；装在的是 1.0.6） | ⬜ |
 | 人在机器前 | 同意一次 / 拒绝一次 | 未跑 | ⬜ |

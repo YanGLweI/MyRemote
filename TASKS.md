@@ -141,6 +141,7 @@
   - **F5 两枚文案 PASS**：`-Case limited` → `wording: needs-administrator` + `service item present`，且同一 pid 的日志自报 `Elevation: no`；`-Case elevated` → `wording: plain`（逐字节旧文案）+ `present`，日志自报 `Elevation: yes`。两跑都是 6 项 / 114px 高，宽度 417 vs 333。
   - **形状无回归的现场读数**：`build/m24_menu_live.ps1` 弹出并量了**装机版 1.0.6 那个活的会话代理**的菜单（`C:\MyRemote\Agent\agent.exe`，按构造永远不带那一项）：**309x93**。与探针的 114px 相差 21px = 恰好一个行高，所以"多一项"付的是**一行高 + 文案宽**，不是别的。M21-4 那对 239/195px 是 TEST-WIN 那台机器的 DPI 下量的，本机 (`applied_dpi=144`) 复现不了绝对值，只复现了它的**关系**——这一处按实测更正说法，不硬凑数字。
   - **交付链闭合**：`build\package\dist\` 四包在 00:28 重出（`8045fc0` 之后），从 zip 里取出的 `agent.exe` 与判据脚本用的那个 `build/bin/Release/agent.exe` **sha256 逐字节相同**（`85fb3396…`）——菜单那两条判据判的就是包里的东西。九条针在 1.0.7 里 `True`、在装机 1.0.6 里除两条历史串外全 `False`。
+  - **不变量（leg 7）**：`build/m24_invariants.ps1` 实测 `agent.exe` 三个 pid（服务 / 宿主 / 代理）**拥有的 TCP 监听 = 0**（全系统 52 个监听没有一个属于它），它唯一的服务端面是命名管道 `MyRemoteAgent_TrayProxy_v1`；`config.hpp` 相对基线 `d2aa7d8`（M24 之前最后一笔）**零改动**（无新键）、管道协议**无新动词**；`git diff --stat d2aa7d8..HEAD` 只落在 6 个代码文件（`service.hpp`/`tray_icon.hpp` + `main`/`service`/`tray_icon`/`tray_proxies`.cpp）+ 4 个文档 + `CMakeLists.txt` + `common.iss`。M24 没有把外部面变大。
 - **现场判据还差**：① `sc sdset` 诱发的 `ACCESS_DENIED` 首行与"拿不到句柄也照打三行"（**要临时改服务安全描述符，跑前要点头**）；② F4 的两腿（健康腿 `host said bye` + 门不再固定 ≥1100ms；挂起代理腿 ≤2500ms 且点名 warn）——**这两腿要 1.0.7 当宿主**，装机的是 1.0.6，所以得先把 dev 构建放进服务指向的那份（改名让位、跑完还原）；③ 人在机器前的同意/拒绝各一次。**"服务 RUNNING 时那一项自己消失"这条判据在本机走不通**，原因不是没实现，而是会话级单例锁：见 HANDOFF §6 那条新增的 `--force` 分析。
 - 刻意没做：M23 徽章那三条（软硬不分、页眉跳动、断开后留字）另开一票；`service.cpp` 内部英文 `why` 串的中文本地化；主循环 13s 采样轮的结构重设计。
 
