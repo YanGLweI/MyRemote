@@ -199,15 +199,19 @@ try {
         Start-Sleep -Milliseconds 300
         $sw = [Diagnostics.Stopwatch]::StartNew()
         [void]$w.WriteLine('quit')
-        # Stay alive and keep answering for the length of the gate - a dead pid or
-        # a shut door would settle it early for the wrong reason.
-        $hold = $sw.ElapsedMilliseconds + 4200
-        while ($sw.ElapsedMilliseconds -lt $hold) {
-            $tick++
-            try { $w.WriteLine("pong tray=$tick") } catch { break }
-            Start-Sleep -Milliseconds 250
+        # One clock for the whole leg: keep answering pings (a dead pid or a shut
+        # door would settle the gate early for the wrong reason) and watch the
+        # service from the same stopwatch that started at quit. Measuring the wait
+        # afterwards would time the poll instead of the gate - that bug read
+        # "stopped 1ms after quit" on a run where the warn fired at 2500ms.
+        while ($sw.ElapsedMilliseconds -lt $StopTimeoutMs) {
+            if ((Get-AgentState) -eq 'Stopped') {
+                $stoppedMs = $sw.ElapsedMilliseconds
+                break
+            }
+            try { $tick++; $w.WriteLine("pong tray=$tick") } catch { }
+            Start-Sleep -Milliseconds 50
         }
-        $stoppedMs = Wait-Agent 'Stopped' $StopTimeoutMs
     }
 
     $report += "bye on the wire after=${byeMs}ms"
@@ -235,11 +239,36 @@ try {
         }
     }
     else {
+        $ok_unread = ($byeMs -lt 0)
         $ok_named = ($unconfirmed.Count -ge 1)
-        $ok_bound = ($stoppedMs -ge 2400 -and $stoppedMs -le 5000)
+        # The lower bound is the point of the leg: a gate that returned early would
+        # mean the wait never actually waited. The upper bound is the same claim
+        # from the other side, kept loose because the main loop has to notice the
+        # quit before the gate starts - measured 1.3s on a run where it was
+        # reconnecting (2026-09-03 10:47). What is not loose is the deadline to
+        # hand-over, measured off the host's own log below.
+        $ok_settled = ($stoppedMs -ge 2500 -and $stoppedMs -le 10000)
+        $report += "ASSERT this client never read the bye (that is the hang) -> $ok_unread (${byeMs}ms)"
         $report += "ASSERT the gate named a session ('bye unconfirmed') -> $ok_named"
-        $report += "ASSERT the wait was bounded by the 2500ms deadline -> $ok_bound (${stoppedMs}ms)"
-        foreach ($p in @($ok_named, $ok_bound)) {
+        $report += "ASSERT the quit-to-stopped wait spent the deadline and stayed bounded -> $ok_settled (${stoppedMs}ms)"
+        $delta = -1
+        $warn_at = $null
+        foreach ($l in $tail) {
+            if ($l -notmatch '\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\]') { continue }
+            $ts = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss.fff',
+                                         [Globalization.CultureInfo]::InvariantCulture)
+            if ($null -eq $warn_at) {
+                if ($l -match 'bye unconfirmed') { $warn_at = $ts }
+                continue
+            }
+            if ($l -match 'cutting the pipe') {
+                $delta = [int]($ts - $warn_at).TotalMilliseconds
+                break
+            }
+        }
+        $ok_immediate = ($delta -ge 0 -and $delta -le 200)
+        $report += "ASSERT the hand-over followed the deadline within 200ms -> $ok_immediate (${delta}ms)"
+        foreach ($p in @($ok_unread, $ok_named, $ok_settled, $ok_immediate)) {
             if (-not $p) { $script:failures += 'assertion failed' }
         }
     }

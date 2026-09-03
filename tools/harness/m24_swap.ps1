@@ -99,7 +99,20 @@ try {
     if (-not (Test-Path -LiteralPath $aside)) { throw "FAIL: nothing to restore - $aside is absent" }
     $want = (Get-Content -LiteralPath (Join-Path $work 'installed.sha256') -Raw).Trim()
     Stop-AgentService $Service
-    Remove-Item -LiteralPath $installed -Force
+    # Move the swapped-in image aside rather than deleting it. A Remove-Item that
+    # hits a lock (measured 2026-09-03, access denied on a path an elevated window
+    # had renamed freely 40 minutes earlier) used to leave this script with no
+    # installed exe at all; renaming in the same directory cannot, because the
+    # original is still in hand the whole time.
+    if (Test-Path -LiteralPath $installed) {
+        $out = Join-Path $InstallDir (
+            'agent-swapped-' +
+            ((Get-Item -LiteralPath $installed).VersionInfo.FileVersion -replace '[^\w.]', '') +
+            '.exe')
+        if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+        Move-Item -LiteralPath $installed -Destination $out
+        Say "restore moved the swapped-in image out to $out"
+    }
     Move-Item -LiteralPath $aside -Destination $installed
     $now = Sha $installed
     $ok = ($now -eq $want)

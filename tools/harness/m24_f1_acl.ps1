@@ -54,16 +54,23 @@ try {
     # aliases; removing the whole grant is not.
     $reducedSd = ($original -replace '\(A;[^;]*;[^;]*;;;IU\)', '')
     if ($reducedSd -eq $original) {
-        throw "FAIL: no (…;;;IU) ACE found, so this leg cannot make OpenService refuse"
+        throw "FAIL: no (;;;;IU) ACE found, so this leg cannot make OpenService refuse"
     }
     $applied = & sc.exe sdset $Service $reducedSd 2>&1 | Out-String
     $report += "sdset reduced: $($applied.Trim())"
-    if ($applied -notmatch '120|SUCCESS') {
-        # 0 = success; 120 = "service paused/pending" is fine too. Anything else
-        # and the DACL never changed, so the leg would prove nothing.
-        throw "FAIL: sc sdset did not take: $applied"
+    # Read the effect, not sc's prose: on a localized Windows the very same
+    # successful call prints "[SC] SetServiceObjectSecurity <localized success word>", which a match on
+    # "SUCCESS" false-fails (measured 2026-09-03). Whether the DACL moved is a
+    # fact sdshow can settle.
+    Start-Sleep -Milliseconds 300
+    $now = Get-Sd
+    if ($now -eq $original) {
+        throw "FAIL: sdshow still reports the original descriptor - sc sdset did not take"
     }
-    $report += "reduced: $reducedSd"
+    if ($now -match '\(A;[^;]*;[^;]*;;;IU\)') {
+        throw "FAIL: the interactive-user ACE came back on the reduced descriptor: $now"
+    }
+    $report += "reduced (read back): $now"
     'reduced; run the limited CLI now' | Set-Content -LiteralPath $reduced -Encoding ASCII
 
     $deadline = (Get-Date).AddSeconds($WaitSeconds)
