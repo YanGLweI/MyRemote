@@ -1,21 +1,21 @@
-# 开发交接文档（2026-09-03，M24 代码五笔已进 main，v1.0.7 包已重出，**F6 与 F5 已判账，余三条现场腿**）
+# 开发交接文档（2026-09-03，M24 代码已进 main、判据脚本已跟踪，1.0.7 包 10:21 重出，**F1/F4健康/F5两向/F6 已判账；欠一条挂起腿复测 + 一次装机还原**）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
 > 本文只写**状态、边界、下一步**。
 
-## 1. 发布与交付现状（2026-09-03 00:30 实测）
+## 1. 发布与交付现状（2026-09-03 15:0x 实测）
 
 | 事项 | 状态 |
 | --- | --- |
 | GitHub Release | **只有 v1.0.0 / v1.0.4 / v1.0.5 三个**，`latest` = **v1.0.5**（`gh release list` 当场读数）。**v1.0.6 没有 release**——只有 tag。本笔之前这里写的是"v1.0.6 已发布并给出链接"，那句是假账，已按实测更正；写它的时候那个 release 并不存在 |
 | tag | `v1.0.0 v1.0.4 v1.0.5 v1.0.6` 四个都在。**v1.0.7 未打**：现场判据没跑完不打 tag（沿用了 1.0.6 那次的教训——tag 比 release 跑得快的结果就是文档没法说清"到底发了什么"） |
-| 代码 | `main` = `origin/main` = **`8045fc0`**。M24 五笔：`7f4a792` F1 尾（错误码一路带话）、`6d91ba5` F5（文案自带可供性 + 真弹 UAC）、`3f44e18` F4（bye 等到送达）、`14648ef` 抬版本 + 撤三处假账、`8045fc0` 判据仪器（菜单自报它画了什么） |
-| 交付物 | `build\package\dist\` = **1.0.7 四包 + LF `SHA256SUMS.txt`**，00:28 随 `8045fc0` 重出（`stage exit=0`）。从 zip 里取出的 `agent.exe` 与跑判据用的 `build/bin/Release/agent.exe` **sha256 相同**（`85fb3396a6530eb6…`）：判据判的就是包里的东西。**`D:\IT-share\MyRemote-v1.0.7\` 还没放**，等现场三条腿 |
+| 代码 | `main` = `origin/main` = **`a96653e`**（`git ls-remote` 当场读数）。M24 到现在十笔：`7f4a792` F1 尾（错误码一路带话）、`6d91ba5` F5（文案自带可供性 + 真弹 UAC）、`3f44e18` F4（bye 等到送达）、`14648ef` 抬版本 + 撤三处假账、`8045fc0` 判据仪器（菜单自报它画了什么）、`8c2c4f7` F6/F5 判账 + 撤四处磁盘不支持的说法、`2ab4a77` 不变量（agent 不占 TCP 监听）、`ba0c4e4` 判据脚本挪进 `tools/harness/` + 修截图仪器、**`08d1490` bye 等到"代理读到了"而不是"缓冲区满了"**（`Death` 枚举 + 断开前 flush）、`b96c59a`→`a96653e` 需要令牌的那几腿仪器 + 三件不会失败的仪器修好 + 人要点的两条腿跑通 |
+| 交付物 | `build\package\dist\` = **1.0.7 四包 + LF `SHA256SUMS.txt`**（实测 `CR=0 LF=4`），**10:20–10:21 随 flush 修复重出**。从 `MyRemote-Agent-v1.0.7-portable.zip` 里取出的 `agent.exe`（5493760B）、`build/bin/Release/agent.exe`、此刻装在 `C:\MyRemote\Agent\agent.exe` 的那份 **sha256 三处一致 = `846E52EE3AB891FE…`**；`MyRemote-Agent-v1.0.7-setup.exe` 的 `FileVersion` 实测 **1.0.7** → **判据判的就是包里那份，且包里那份带 flush 修复**。**`D:\IT-share\MyRemote-v1.0.7\` 还没放**，等最后那条复测腿 |
 | 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.7** |
-| 本机现场 | 装的是 **1.0.6**（`C:\MyRemote\Agent\agent.exe`，服务 binPath 指着它）。服务 **`4 RUNNING`、start type=Auto**——F6 那一跑结束时的恢复态。之前卡了 1 小时 `STOP_PENDING` 的 pid 4936 已经不在，而且**查清了它是谁**：`build\bin\Release\agent-1.0.5-running.exe`，文件名说是 1.0.5，`FileVersion` 实测 **1.0.7**，一个未提交构建的产物 |
+| 本机现场 | **装机路径上此刻跑的是 dev 构建的 1.0.7**：`C:\MyRemote\Agent\agent.exe` = `846E52EE…`（`FileVersion` 1.0.7），服务 **`4 RUNNING` / Auto**。原装机 1.0.6 **没删**，改名躺在同目录 `agent-installed-1.0.6.exe`（`D0279D07733DA71A…`）。这是 `tools/harness/m24_admin_window.ps1 -Phase measure`（10:45）换进去的，**还没还原**——`-Phase restore` 需要一枚提权框，那枚框被取消了。顺带留档：之前卡 1 小时 `STOP_PENDING` 的 pid 4936 查清了是谁——`build\bin\Release\agent-1.0.5-running.exe`，文件名说 1.0.5、`FileVersion` 实测 1.0.7，一个未提交构建的产物 |
 
-**现在的现场条件与判据的关系**：① 服务 RUNNING，会话 1 里有活的宿主（pid 23976）与它的托盘代理（pid 28204），**这两个进程让"再起一个前台探针实例"这条路只能读"有那一项"以外的形状**——见 §6 的 `--force` 那条；② 也正因为宿主活着，F4 的两腿有地方跑了，但**跑的是 1.0.6 的宿主**，量不到新那道门，要跑得先把 dev 构建放进服务指向的那份（改名让位，跑完还原）；③ `sc sdset` 那条一跑就会暂时改掉真服务的 DACL，**跑之前要点头**。
+**现在的现场条件与判据的关系**：① 装机路径上就是 1.0.7，**F4 的新门与"停一次 1.0.7"由此有东西可量**——健康腿 10:47 已跑完并 PASS；② **挂起腿的读数还没进账**：`build/scratch/m24_f4/f4-hung.txt`（同一时刻）是**修断言之前的脚本写的**，里面的 `ASSERT ... -> False` 与 `-1ms` 是那件坏仪器的输出，不是产品的读数；产品那两行 warn 此刻仍能在活的 `C:\ProgramData\MyRemote\agent.log` 里读到（10:47:51.369，见 §3），但"总耗时被 2500ms 门限框住"这一条要复测才算数；③ F1 的 `sc sdset` 那一跑**已完成、描述符逐字节还原**，不再需要点头；④ **托盘腿必须在人看着的那个会话里跑**：这台机器的 console 槽是空的 session 3，人在 RDP session 1，此刻宿主 pid 28068 恰恰落在 session 3，而它照样给 session 1 生了代理 pid 5604——详见 §6 新增那条与 §7 快照。
 
 
 ## 2. M21 是什么问题、怎么修的
@@ -40,22 +40,23 @@
 4. **M21-5**：伪造 `host.status` 里的 pid → 打 `STALE`；服务 RUNNING → 打真值。本轮还顺手抓到一个活案例：dev 构建把 8 月 30 日的记录当现值打了出来。
 5. **M21-6 CLI**：`build/m21_set_server.ps1` 17 项全绿（新建、只改 `--ip` 其余六项原样保住、坏文件拒绝且 sha256 不变、空参数返回 2、不起实例、带空格的 `--key` 完整存活）；`ISCC` 编译 `agent.iss` 通过（删掉的 `JsonEsc`/`AppConfig`/`ProgramDataConfig` 确无残留引用）。
 
-### M24 本机判账（2026-09-03 00:0x–00:3x，YEUNG）
+### M24 本机判账（2026-09-03 00:0x 起、至 15:0x，YEUNG）
 
-判据脚本这一轮重造：`tools/harness/m24_menu.ps1`（F5 两枚文案，`-Case limited|elevated`）、`tools/harness/m24_menu_live.ps1`（弹活的装机代理的菜单并量它的 rect）、`tools/harness/m24_f6.ps1`（服务 start/stop 往返 + `service.log` 是否继续写）。产物在 `build/scratch/`，结果文件都是 UTF-8 带 BOM、中文原样。
+判据脚本全部在 **`tools/harness/`**（受版本跟踪）：`m24_menu.ps1`（F5 文案 + `-Click approve|decline` 那条人要点的腿）、`m24_menu_live.ps1`（弹活的装机代理的菜单并量它的 rect）、`m24_shot.ps1`（另起进程截屏、现场量 DPI 比例）、`m24_f6.ps1`（服务 start/stop 往返 + `service.log` 是否继续写）、`m24_f4.ps1`（自己当一枚代理客户端，健康腿与挂起腿）、`m24_f1_acl.ps1`（提权半：改 DACL 并回读）+ `m24_f1_caller.ps1`（非提权半：等信号后跑 `--service-state`）、`m24_swap.ps1`（把 dev 构建换进装机路径 / 原名还原）、`m24_invariants.ps1`（外部面）。**需要令牌的那几跑收在 `m24_admin_window.ps1` 的两段里**：`-Phase measure`（换镜像→起服务→f4-healthy→f4-hung→f1-acl→故意留服务停着给 F5 腿）、`-Phase restore -RerunHung`（复测挂起腿→还原 1.0.6）。产物在 `build/scratch/`，结果文件都是 UTF-8 带 BOM、中文原样。
 
 | 条 | 判据 | 读数 | 状态 |
 |---|------|------|-----|
-| F5 受限 | 该项带「需管理员批准」，且同 pid 日志 `Elevation: no` | `wording: needs-administrator` + `service item present`，弹窗 417x114。**判据读的是目标自报的那行日志，不是屏幕上的字**——`-Shot` 像素腿待补 | ✅ PASS（待像素腿加固） |
-| F5 提权 | 该项逐字节旧文案、无后缀 | `wording: plain` + `present`，弹窗 333x114。同上 | ✅ PASS（待像素腿加固） |
-| 形状 | "多一项"只多一行高 + 文案宽 | **旧的 93px / Δ21px 一条已撤回**（读不出来了，且当时的截图裁剪比例写错）。换成可复现的那枚：活的装机 1.0.6 代理在钉住锚点下 **317x105**，截图 `build/scratch/m24_menu/live-menu.png` 上 4 项 + 1 分隔线逐项可读、**没有那一项**；宽 417−333=84px = 多出的 7 个汉字 | ✅ 读数成立，但主体是 1.0.6 |
+| F5 受限 | 该项带「需管理员批准」，且同 pid 日志 `Elevation: no` | 日志：`Tray menu service item wording: needs-administrator (clicking it asks UAC)` + `Tray menu built: 6 entries, service item present`，同 pid 首行 `Elevation: no`。**像素腿已补**：`build/scratch/m24_menu/menu-limited-approve.png`（钉住锚点 1200,400）上逐项可读 `打开配置 / 停止远程控制（本机不再被远控） / — / 启用后台服务（当前：前台运行，开机不自启；需管理员批准） / 隐藏托盘图标 / 退出`——**后缀是屏幕上读出来的，不是自报的**。弹窗 rect 三跑三种读数（417x114 / 425x128 / 412x107，同一枚 exe、同一锚点）——**原因是这台机器的会话 DPI 按连接变（144→192），不是噪声**，见 §6；所以承重的读数是那张照片，不是几何 | ✅ PASS |
+| F5 提权 | 该项逐字节旧文案、无后缀 | 只有自报那行 `wording: plain` + `present`（00:03，旧镜像），**这一枚没有照片**。受限那侧已经证明"自报会说谎的可能"由像素排除掉了，提权侧要同样处理才算账 | ⬜ 待像素腿（`-Case elevated -Shot`） |
+| 形状 | "多一项"只多一行高 + 文案宽 | **旧的 93px / Δ21px 一条已撤回**（读不出来了，且当时的截图裁剪比例写错）。换成可复现的那枚：活的装机 1.0.6 代理在钉住锚点下 **317x105**，截图 `build/scratch/m24_menu/live-menu.png` 上 4 项 + 1 分隔线逐项可读、**没有那一项**。**"417−333=84px 恰是 7 个汉字"那句算术一并撤回**——同一枚受限菜单三跑的 rect 是 417/425/412，差值本身就比要量的东西大，形状判据只能靠"两张照片上逐项可读 + 一张有那一项一张没有" | ✅ 读数成立，但主体是 1.0.6 |
 | F6 | `sc start`/`sc stop` 往返×3，≤10s 落定且 `service.log` 有后续行 | 起 9/10/11ms、停 10/12/11ms，每轮 stop 后多写 5 行直到 `MyRemote agent service stopped`，`failures=0`，结束恢复 RUNNING/Auto | ✅ PASS（**装在的是 1.0.6**） |
-| 交付链 | 判据用的 exe == 包里的 exe | sha256 `85fb3396a6530eb6…` 三处一致（zip 内 / `build/bin/Release` / 探针副本） | ✅ PASS |
+| 交付链 | 判据用的 exe == 包里的 exe | **15:0x 复算：sha256 `846E52EE3AB891FE…` 三处一致**（`MyRemote-Agent-v1.0.7-portable.zip` 里取出的一份 / `build/bin/Release/agent.exe` / 装机路径 `C:\MyRemote\Agent\agent.exe`）。包是 10:21 重出的 → **这条链上的镜像带 flush 修复**；凌晨那组 `85fb3396…` 的读数作废（那是修复前的构建） | ✅ PASS |
 | 探针会说谎吗 | 同一串针打在旧镜像上应当全 False | 装机 1.0.6：`F5_suffix`/`F5_cancel`/`Tray menu built`/`item wording`/`bye unconfirmed`/`last state`/`ACCESS_DENIED` 全 False（`F5_label`/`service stopped` 是历史串，True 才对） | ✅ 对照通过 |
 | 不变量 | M24 不把外部面变大 | `agent.exe` 三个 pid 拥有 **TCP 监听 0 个**（全系统 52），唯一服务端是管道 `MyRemoteAgent_TrayProxy_v1`；`config.hpp` 对基线 `d2aa7d8` 零改动；管道无新动词（`tools/harness/m24_invariants.ps1`） | ✅ PASS |
-| F1 四岔 | `sc sdset` 摘掉读取权 → 首行 `ACCESS_DENIED (...)` 且 `console session:`/`stations:`/`host:` 照打 | 未跑（要改真服务 DACL，需点头） | ⬜ |
-| F4 两腿 | `host said bye` + 门不再固定 ≥1100ms；挂起代理 ≤2500ms 且点名 warn | 未跑（要 1.0.7 当宿主；装在的是 1.0.6） | ⬜ |
-| 人在机器前 | 同意一次 / 拒绝一次 | 未跑 | ⬜ |
+| F1 四岔 | `sc sdset` 摘掉读取权 → 首行 `ACCESS_DENIED (...)` 且 `console session:`/`stations:`/`host:` 照打 | 原 DACL 含 `(A;;CCLCSWLOCRRC;;;IU)`；`sdset` 后**回读**该 IU ACE 已消失（断言读的是 `sc sdshow` 的回读，不读 `sc` 那句话——本机中文系统打的是「成功」，认 `SUCCESS` 会假红）；受限 token 跑 `--service-state` 打 `MyRemoteAgent: ACCESS_DENIED (the service may be installed; this token cannot read it)`，而 `console session: 1 (console station)`、`stations: 0 Services(4); 1 Console(0); 65536 RDP-Tcp(6)`、`host: STALE(...)` **三行照打**；跑完描述符**逐字节还原 = True**。反面基线（完整 DACL 时同一条命令打 `MyRemoteAgent: STOPPED` + binPath + start type）也已跑，否则这条判据是空转 | ✅ PASS |
+| F4 健康腿 | `host said bye` + 门不再固定 ≥1100ms | 仪器自己当一枚代理客户端连上真宿主（1.0.7）：`bye` 到线上 **201ms**、SCM `STOPPED` 在 `quit` 后 **166ms**、真代理 `tray-1.log` 打 `Tray proxy: host said bye; exiting`，四条断言全 True，收尾服务 0ms 回 Running | ✅ PASS |
+| F4 挂起腿 | 挂住的代理 ≤2500ms 且 warn 点名哪个会话 | **产品那两行在，仪器的读数不在**：活的 `agent.log` 里 10:47:51.369 `session 1 bye unconfirmed at 2500ms (write failed); its tray log will read "host pipe closed"`，同一毫秒 `cutting the pipe`——把对端缓冲区灌到 `avail=4139/4096`（27 次 pause/resume / 12688ms）之后才逼出来的这条岔口确实存在且**点名了死因**。但 `f4-hung.txt` 里那句 `ASSERT ... -> False (-1ms)` 是**修断言之前的脚本**写的（它测的是轮询而不是那道门），所以**总耗时被 2500ms 框住这一条还没入账** | ⬜ 待复测（仪器已修，等一枚提权框） |
+| 人在机器前 | 同意一次 / 拒绝一次 | **拒绝**：11:06 那一跑他点了「否」→ 同 pid 新增 `Service enable declined at the consent prompt; nothing changed`、SCM 全程 `STOPPED`、且屏幕上真出现了 `已取消，后台服务没有启动。` 那枚框（340x187，`notice-decline.png` 里逐字可读）。**同意**：14:50 那一跑 → +5667ms `START_PENDING`、再 +262ms `RUNNING`，同 pid 打 `The background service is running; this instance is handing the machine over`，**不弹框**。两跑之间：14:34 那次他按了「否」而腿判 `FAIL: the menu item was there but did not do what it says (click=approve)`——**这条 FAIL 是对的**，那枚腿就是要在"点了否却没办成"时变红；更早还有一跑 `waited 180188ms … noticed=False`，因为人当时不在机器前 | ✅ PASS（两向都有像素） |
 
 **顺手抓到的一条 F4 反面证据（不用跑就有）**：`C:\ProgramData\MyRemote\tray-1.log` 同一枚代理、两种死法——22:17:29.953 用户点「退出」那次是 `host said bye; exiting`，00:18:36.883 本轮 `sc stop` 那次是 `host pipe closed; exiting`。所以"外部停服务没有 bye 可说"不是推测，是现场读得出来的两行字。
 
@@ -122,24 +123,34 @@
 
 ## 5. 下一步工作（按顺序）
 
-1. **M22 未完工，欠的已由 M24 补上代码；F6 与 F5 已判账（见 §3 的 M24 表），还剩三条现场腿**。1.0.7 四包已随 `8045fc0` 重出且与判据用的 exe sha256 一致；未发版、未打 tag、未放 `D:\IT-share`。**按顺序差的**：
-   1. ~~清场~~ **已做**：pid 27124 与卡住的 pid 4936 都不在了，服务现在 `4 RUNNING`/Auto（F6 那一跑的恢复态）。
-   2. ~~F6 实测~~ **已做**：1.0.6 三趟往返全部 ≤12ms 落定且日志有后续行——**那 23 分钟不是产品缺陷**，见 TASKS 的 M24-1。剩下的对照（1.0.7 停一次）与第 4 条共用同一个前置。
-   3. ~~F5 两枚文案 + 形状~~ **已做**（`tools/harness/m24_menu.ps1`、`tools/harness/m24_menu_live.ps1`）。**唯一没做成的判据**是"服务 RUNNING 时这一项自己消失"：会话级单例锁 + `--force` 的组合让前台探针实例在服务运行时根本起不了托盘，见 §6 最后一条。M21-4 当年在 TEST-WIN 上用"同一实例活着时把服务起起来"绕过去了（菜单 239→195px），那条路在这台机器上要走得连着点两次 UAC。
-   4. **前置（挡住第 5、6 两条）**：把 dev 构建放进服务指向的那份——`C:\MyRemote\Agent\agent.exe` 改名让位（**别删**，跑完原名放回），拷入 1.0.7 的 `agent.exe`，`sc start`。这样 1.0.7 才真的当宿主，F4 的新门与"停一次 1.0.7"才有东西可量。**这一条会改掉本机在装的那份二进制，跑之前要点头。**
-   5. **F1 四岔**：`sc sdshow` 存原 DACL → `sc sdset` 摘掉读取权 → `--service-state` 必须打 `ACCESS_DENIED (...)` 且 `console session:` / `stations:` / `host:` 三行仍在 → 还原并逐字节比对。**这一条会临时改服务安全描述符，跑之前必须跟用户点头。**
-   6. **F4 两腿**：健康腿看 `tray-<会话>.log` 记 `host said bye` 且退出耗时不再是固定 ≥1100ms；挂起腿手动起第二代理、`NtSuspendProcess` 住它再退宿主，判据是总耗时 ≤2500ms、warn 点名那个 session、F3 不破。**触发优雅退场只有两条路**：托盘点「退出」，或让代理往管道写 `quit`（`main.cpp:1709` 的 `sink.quit` → `g_quit_requested` → `main.cpp:1863` 的 `trayproxies::stop()`）。`sc stop` 走的是 `shutdown_host()` 的 `TerminateProcess`，永远量不到这道门——已在 §3 用现场日志实证。
-   7. 人在机器前两次：同意一次（服务 RUNNING、下一枚菜单里这一项自己消失）、拒绝一次（弹的是「已取消」而不是「需要管理员权限」，事后 2s 内右键仍能弹菜单）。**注意本机 2026-09-01 实测过 `Start-Process -Verb RunAs` 能静默过**，"拒绝"这一腿可能根本没有框可点——先做 §计划里的 R1 探针确认这台机器的行为，别把"没弹框"当成产品缺陷。
-   8. 全绿之后再抬交付：`D:\IT-share\MyRemote-v1.0.7\` + 目标端复算哈希；GitHub release 仍等真机通过。
+1. **M22 未完工的代码已由 M24 补上；现场腿只差一条复测 + 一枚提权框**。1.0.7 四包已随 flush 修复重出且与判据用的 exe sha256 一致（见 §1/§3）。**按顺序差的**：
+   1. ~~清场~~ **已做**：卡住的 pid 4936 与 27124 都不在了。
+   2. ~~F6 实测~~ **已做**：1.0.6 三趟往返全部 ≤12ms 落定且日志有后续行——**那 23 分钟不是产品缺陷**，见 TASKS 的 M24-1。**1.0.7 的对照没单独跑 `sc stop`**，但 F4 健康腿实际上就是"让 1.0.7 宿主退场"，166ms 落定。
+   3. ~~F5 两枚文案 + 形状~~ **受限那侧已判账到像素**（`tools/harness/m24_menu.ps1 -Shot`，截图上那串字逐字可读）；**提权那侧仍只有自报日志**——补法：`-Case elevated -Shot build/scratch/m24_menu/menu-elevated.png`（跑这个得先有一个提权 token 的探针实例）。**"服务 RUNNING 时这一项自己消失"这一判据本机依旧没做成**：会话级单例锁 + `--force` 的组合让前台探针在服务运行时起不了托盘，见 §6 那条。
+   4. ~~前置：把 dev 构建放进服务指向的那份~~ **已做且此刻仍是这个状态**：`tools/harness/m24_swap.ps1 -Mode swap`，1.0.6 改名 `agent-installed-1.0.6.exe` 留在原位（**没删**）。**还没还原**——还原与第 6 条共用同一枚提权框。
+   5. ~~F1 四岔~~ **已做**（`m24_f1_acl.ps1` + 非提权那半 `m24_f1_caller.ps1`），描述符已逐字节还原，不用再点头。
+   6. **F4 挂起腿复测（只差这一条，需要一枚提权框）**：`powershell -File tools/harness/m24_admin_window.ps1 -Phase restore -RerunHung`。这一跑按顺序做三件事：用修好的断言重跑挂起腿 → `m24_swap -Mode restore` 把装机那份还原成逐字节的 1.0.6（1.0.7 挪成 `agent-swapped-*.exe`）→ 把服务恢复 `RUNNING`/Auto 并打印 state/start-type/FileVersion。**为什么要连着做**：挂起腿要一个"活着的 1.0.7 宿主"，而那正是还原之前唯一的窗口。
+   7. ~~人在机器前两次~~ **已做**：同意一次（`START_PENDING`→`RUNNING` + 交接那行日志）、拒绝一次（「已取消」框有照片 + `declined at the consent prompt` + SCM 全程 STOPPED）。判据现在会在"点了否却没办成"时真变红（14:34 那一跑就是）。
+   8. 上面全绿之后再抬交付：`D:\IT-share\MyRemote-v1.0.7\` + 目标端复算哈希（**这一步要再确认一次才动手**）；GitHub release 仍等真机通过。
 2. 修完 F3 之后才轮到那两条没跑的注入：① 只连不读的宿主 + ④ 挂住代理托盘线程。脚本已经写好并推到 `C:\M20test\tw.ps1`（`-Test t2` 那段现在写的是"先别跑"，F3 修完改掉那句）。④ 还需要一个挂线程的注入形态，目前没有。
 3. 发版之后的既有决定：tag 只打在真正交付过的版本上（v1.0.0、v1.0.4），1.0.1~1.0.3 不再补 tag。
 4. 收尾清理**已做**：dev 路径那枚 `HKCU\Control Panel\NotifyIconSettings\2890237777820566933`（`…\build\bin\Release\agent.exe`）的 `IsPromoted` 已删，回读 `<absent>`；`C:\MyRemote\Agent\agent.exe` 那枚**留着**——那是装机版该有的状态，删了图标会掉进折叠区。
 
 ## 6. 环境与工具备忘（会杀时间的坑）
 
+**2026-09-03 白天这一轮（需要令牌的那几腿）新增，每一条都真咬过一次：**
+
+- **后台任务可能几小时之后才开始跑**：一支 `run_in_background` 的判据实际启动时刻比投出去晚了 **~3.4 小时**。凡是"要人在机器前点一下"的腿，**一律前台跑**——不然你喊他看屏幕、框三小时后才弹。
+- **会话拓扑决定托盘腿能不能量**：这台机器人在 **RDP session 1**，**console 槽是一个空的 session 3**，宿主此刻就落在 session 3（pid 28068）而它照样给 session 1 生代理（pid 5604）。agent 自己就把这句打在首行：`Session 1; console runs session 3 - this agent is not in it`。**"看不见图标"先查会话，别查产品**。
+- **bash 管道会吞掉 PowerShell 的退出码**：`powershell ... | tr -d '\r'` 让一支抛了 `throw` 的腿报 `exit=0`——**假绿**。判据跑完要么读它自己写的结果文件，要么把 `$LASTEXITCODE` 落进文件再看。
+- **断言必须能真的失败，这一条本轮抓出两处**：① `m24_f4` 挂起腿先"按住"再"等"，于是量的是**自己的轮询**而不是那道门，读数 `stopped 1ms after quit`（而 warn 实际在 2500ms 才响）——改成**一把秒表从 `quit` 走到 `STOPPED`**，并把"花完 deadline"与"deadline 后 ≤200ms 交接"拆成两条、后者从宿主日志时间戳算；② `m24_f1_acl` 认 `sc` 打印的 `SUCCESS|120`，中文系统打的是「成功」→ **改判效果**：`sc sdshow` 回读那条 IU ACE 是否真没了。
+- **还原动作不许删掉"原主"的替身**：`m24_swap -Mode restore` 第一版对装机路径那份直接 `Remove-Item`，而它正被服务当镜像开着 → `访问被拒绝`，整跑中止、机器留在"装着 1.0.7"的状态。现在是 **move-aside**：把换进来的那份改名挪走（同名先挪），再把原主放回原名。**删不是还原，挪才是。**
+- **UAC 同意框在安全桌面上：别的进程看不见、拍不到、按不动**。所以"人在机器前"那条腿**不能判框**，只能：把菜单留着 → 等 → 判**后果**。后果要读两样：目标自己那份日志**新增的字节**（记下 `log_bytes` 偏移再 `Tail-From`，别整个文件重扫——历史行会让任何断言恒真），以及 SCM **落定后**的状态（`START_PENDING` 不是答案：第一版把"不再是 STOPPED"当成成功，会在服务还没起来时就报绿）。
+- **这台机器的 DPI 会按连接变，于是"逻辑像素"跨跑不可比**：同一枚受限菜单、同一锚点、同一 exe，三跑 rect = 417x114 / 425x128 / 412x107。原因查出来了——截图仪器每次现场量的比例不一样：11:0x 两跑是 `sysdpi=144 phys=3840 logical=2560 scale 1.5`，14:34 那跑是 `sysdpi=192 phys=3400 logical=1700 scale 2`，而 `HKCU\Control Panel\Desktop\WindowMetrics\AppliedDPI` 至今仍读 **144**。**RDP 会话的 DPI 是按连接协商的，不读注册表那一枚**。结论：① 任何"宽差 = 几个字"这类跨跑算术都不许进判据；② 裁剪比例**必须每跑现场量**（`m24_shot.ps1` 已经这么做了，这就是为什么照片一直是对的）；③ 文案这种判据只有**照片**够格承重。
+
 **2026-09-03 M24 判据这一轮新增，共同点：坑在仪器本身，不在脚本逻辑。判据脚本这一轮从 `build/`（不在版本控制里）挪进了 **`tools/harness/`**，以下条目的脚本名都指那里。**
 
-- **`#32768` 弹出菜单在这台机器上跨进程读不出内容**（Windows 11 24H2 / 10.0.26200，装机版 1.0.6 的活代理 pid 28204、菜单 hwnd 10750298、`visible=True rect=309x93`）：UIA `FromHandle` 给 `children=0 subtree=1 rawwalk=0`；MSAA `AccessibleObjectFromWindow` 对 `OBJID_WINDOW(0)`、`OBJID_CLIENT(-4)`、`OBJID_MENU(-3)` 全部 `hr != 0`；`SendMessage(hwnd, MN_GETHMENU=0x01B1)` 返回 0。**窗口存在、看得见、量得出 rect，就是读不出里面有什么。** 所以判"菜单画了什么"只能让**画它的那段代码自报**（`TrayIcon::ShowMenu` 与 `start_service_label()` 各写一行 ASCII 日志）。自报不等于自证：**必须同时留一枚独立读数**——最好的那枚是**把弹窗那块屏幕截下来**（`-Shot`，见下下条），几何 rect 只是它的弱替代品（417 vs 333，84px 恰是 7 个汉字）。别再拿 UIA 试第二次。
+- **`#32768` 弹出菜单在这台机器上跨进程读不出内容**（Windows 11 24H2 / 10.0.26200，装机版 1.0.6 的活代理 pid 28204、菜单 hwnd 10750298、`visible=True rect=309x93`）：UIA `FromHandle` 给 `children=0 subtree=1 rawwalk=0`；MSAA `AccessibleObjectFromWindow` 对 `OBJID_WINDOW(0)`、`OBJID_CLIENT(-4)`、`OBJID_MENU(-3)` 全部 `hr != 0`；`SendMessage(hwnd, MN_GETHMENU=0x01B1)` 返回 0。**窗口存在、看得见、量得出 rect，就是读不出里面有什么。** 所以判"菜单画了什么"只能让**画它的那段代码自报**（`TrayIcon::ShowMenu` 与 `start_service_label()` 各写一行 ASCII 日志）。自报不等于自证：**必须同时留一枚独立读数**，而这台机器上唯一够格的独立读数就是**把弹窗那块屏幕截下来**（`-Shot`，见下下条）。当时把"几何 rect"当弱替代品用（"417 vs 333，84px 恰是 7 个汉字"），**那句已撤回**——同一枚菜单三跑三种 rect，几何根本不复现，别再拿它当读数。也别再拿 UIA 试第二次。
 - **截图裁剪比例不许写死**：`m24_shot.ps1` 早期硬编码 `scale 2`（那台面板在 200%），这台是 144/96=**1.5**，于是"菜单的截图"实际截的是偏了 33% 的另一块屏幕——里面满是别的窗口的字。因为图片照样"满而不空"，这个错**看起来像菜单没画出来**，直接把像素判据错怪成了仪器不成立。**现在每次跑都现场量**：声明 DPI 感知**之前**读 `Screen::PrimaryScreen.Bounds`（2560，虚拟化值）、之后读 `GetSystemMetrics(SM_CXSCREEN)`（3840，物理值），比值即比例，并把 `phys=/logical=/sysdpi=` 一起打出来。
 - **截图辅助脚本必须另起进程**：`m24_shot.ps1` 会 `SetProcessDPIAware()`。用 `&` 在同一个 powershell 里调它，**持有坐标的那个进程当场变成 DPI 感知**，之后每一枚 `GetWindowRect`/`SetCursorPos` 都换了一套坐标系。判据脚本一律 `powershell.exe -File ...` 起子进程调它，并检查 `$LASTEXITCODE`。
 - **弹窗跟着真光标，锚点必须钉**：`tray_icon.cpp:349-352` 是 `GetCursorPos` 然后在那个点 `TrackPopupMenuEx`。不 `SetCursorPos` 就没法复现同一个 rect（同一份菜单读到过 93 与 105 两种高度），而 Windows 还会把工作区边缘的弹窗往里挤。判据脚本先 `SetCursorPos($AnchorX,$AnchorY)` 再 `PostMessage`，并把锚点写进结果文件。
@@ -190,10 +201,10 @@
 - 关键脚本：`build/tw_m20.ps1`（**现场判账那一支**，`-Test t0/t1/t3/t4/t5`，推到目标机改名 `C:\M20test\tw.ps1`；`-AppDir` 默认 `C:\MyRemote\Agent`）、`build/m21_cli_regression.ps1`、`build/m21_probe_config.ps1`、`build/m21_hide_probe.ps1`、`build/m21_menu_shape.ps1`、`build/m21_window.ps1`（把需要停服务的那几跑收进一个提权窗口）、`build/m21_set_server.ps1`、`build/scratch/m21_pipe_smoke.ps1`（不碰产品、只练管道读法）、`build/scratch/m21_cleanup.ps1`（提权收残留）。**这一批 2026-09-03 逐个 `[ -f ]` 实测：一个都不在**，`tw_m20.ps1` 也没了；`build/*.ps1` 只剩 `m23_run_stage.ps1`、`probe_binary.ps1` 与本轮新写的 `m24_*.ps1`。这些名字留着只为说明"当年那批判据查过什么"，**别去找它们跑**——要跑得照本节那些坑重造。这就是 `build/` 不在版本控制里的代价（见 §7 的 git 条）。取证文件两个根都要扫，规则见上一条。
 - 远端取证走 `\\10.60.254.153\c$\...`，**ADMIN$ 是可写的**：脚本推过去、转录与截图从同一处拉回来，比来回截图快一个量级。bash 命令层拒绝内联 UNC——写进 `.ps1` 再执行。TEST-WIN 两份配置在 2026-09-01 现场判账之后实测都还是 `10.60.1.188`，权威那份是 `%ProgramData%\MyRemote\config.json`（`tray_icon=true`，mtime 停在装机那晚的 22:59:29，整晚没被写过）。
 
-## 7. 机器快照（2026-09-03 00:30，本会话结束时）
+## 7. 机器快照（2026-09-03 15:1x，本会话结束时）
 
-- **YEUNG（本机）**：装的是 **1.0.6**，服务 **`4 RUNNING` / start type=Auto**，binPath=`"C:\MyRemote\Agent\agent.exe" --service`。会话 1 里三个进程：服务 pid 7572（session 0）、宿主 pid 23976、托盘代理 pid 28204（`"C:\MyRemote\Agent\agent.exe" --tray-proxy --no-elevate --config "C:\ProgramData\MyRemote\config.json"`）。**取证根这台机器是 `C:\ProgramData\MyRemote\`**（`agent.log`/`service.log`/`tray-1.log`/`host.status`/`worker.log` 都在这一处，`C:\MyRemote\Agent\*.log` 不存在）。控制端 `10.60.1.188:7500`  reachable，宿主日志 `Registered with server`。桌面 `3840x2160`，编码 1920x1080，`No GPU input format negotiated; hardware encoder disabled` → OpenH264 软编。
-- **本机桌面上留了什么**：探针的三枚实例（`build\scratch\m24_menu\agent-{limited,elevated}.exe`）都已随脚本结束退出；两次弹过的 `#32768` 都已实测关闭（`menu_closed=True`）。`build\bin\Release\` 里有两枚**来历要认清**的旧文件：`agent-1.0.5-running.exe`（**FileVersion 实测 1.0.7**，就是卡 23 分钟那个未提交构建，删不删等 §5 第 4 条跑完再定）与 `agent.exe.old`（1.0.6 装机前的备份，不是本轮产物）。
+- **YEUNG（本机）**：**装机路径上是 dev 构建的 1.0.7**（`C:\MyRemote\Agent\agent.exe`，sha256 `846E52EE…`），服务 **`4 RUNNING` / Auto**，binPath=`"C:\MyRemote\Agent\agent.exe" --service`；原装机 1.0.6 改名躺在同目录 `agent-installed-1.0.6.exe`（`D0279D07…`），**还没放回原名**。进程树当场读数：服务 **pid 11956（session 0）** → 会话宿主 **pid 28068（session 3 = 那个空的 console 槽）** → 托盘代理 **pid 5604（session 1 = 人此刻在的 RDP 会话）**。`query session`：`services 0 断开`、`rdp-tcp#0 YLW 1 活动`、`console 3 活动`（里面没人）、`rdp-tcp 65536 监听`。**取证根仍是 `C:\ProgramData\MyRemote\`**（`agent.log`/`service.log`/`tray-<会话>.log`/`host.status` 都在这一处）。控制端 `10.60.1.188:7500` 可达。**面板缩放按连接协商**：本轮实测同一台机器上出现过 `sysdpi=144`（物理 3840x2160）与 `sysdpi=192`（物理 3400x?）两种，详见 §6。
+- **本机桌面上留了什么**：探针的两份副本（`build\scratch\m24_menu\agent-{limited,elevated}.exe`）都随脚本结束退出；本轮弹过的 `#32768` 菜单与「已取消」框都被脚本自己关掉并回读过（`menu_closed=True`）。`build\bin\Release\` 里那两枚来历不明的旧文件仍在：`agent-1.0.5-running.exe`（FileVersion 实测 1.0.7）与 `agent.exe.old`（1.0.6 装机前的备份），**都不是本轮产物，删不删等还原之后再说**。
 - **TEST-WIN**（`\\10.60.254.153\c$`，只有被控端）：最后一次实测是 2026-09-01 覆盖安装 **1.0.5**，服务 Running/Automatic；M22 现场判账（F1/F2/F4/菜单形状）日志齐全。`C:\M20test\tw.ps1`、证据与 portable 仍保留便于追溯。**这两天的状态本机未复核**。
-- **构建产物**：`build/bin/Release` = **1.0.7** 全量（`agent.exe` sha256 `85fb3396a6530eb6…`）；`build/package/dist` = **1.0.7 四包 + LF `SHA256SUMS.txt`**（00:28 重出），1.0.6 四包同目录并存。**`D:\IT-share\MyRemote-v1.0.7\` 仍空**，等 §5 剩下三条腿。
-- **git**：`main` = `origin/main` = `8045fc0`。`build/` 整体在 `.gitignore` 里，**这一轮重造的判据脚本（`m24_menu.ps1`、`m24_menu_live.ps1`、`m24_menu_probe.ps1`、`m24_f6.ps1`、`m24_shot.ps1`、`m24_windows.ps1`）都不在版本控制里**——换一台机器或清一次 `build/` 就全没了。要么挪进受跟踪的 `tools/harness/`，要么接受每轮重造（M21/M22 的脚本就是这么丢的）。
+- **构建产物**：`build/bin/Release/agent.exe` = **1.0.7**，sha256 `846E52EE3AB891FE…`；`build/package/dist` = **1.0.7 四包（Agent/Server × portable/setup）+ LF `SHA256SUMS.txt`**，10:20–10:21 重出，1.0.6 四包同目录并存。**`D:\IT-share\MyRemote-v1.0.7\` 仍空**，等 §5 第 6 条那一跑。
+- **git**：`main` = `origin/main` = **`a96653e`**。**判据脚本已经挪进受跟踪的 `tools/harness/`**（`ba0c4e4` 那一笔），所以上一节末尾那句"`build/` 不在版本控制里的代价"这一轮已经还掉了；`build/scratch/` 下的产物（报告、截图、探针副本）仍按 `.gitignore` 不跟踪——**要留证据就往 `tools/harness/` 旁边放，或者直接引用日志里的时间戳**。
