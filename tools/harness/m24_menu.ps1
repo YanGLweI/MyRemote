@@ -277,9 +277,14 @@ function Finish([string[]] $lines) {
 }
 
 try {
-    if ($Click -and (Get-AgentServiceState) -ne 'STOPPED') {
-        throw "FAIL: click=$Click needs the service stopped first (sc.exe stop $Service) - " +
-              "the item only exists while it is down, and STOPPED to RUNNING is the verdict"
+    $svcAtStart = Get-AgentServiceState
+    # The item this leg reads only exists while the background service is down, so
+    # a RUNNING service made "service item present -> False" a reading about the
+    # setup rather than the product. Say what the setup owes, and say it first.
+    if ($svcAtStart -ne 'STOPPED') {
+        throw "FAIL: $Service is $svcAtStart, not STOPPED - the menu item this leg reads only exists " +
+              "while the background service is down (sc.exe stop $Service first; click=$Click needs " +
+              "STOPPED to RUNNING as its verdict)"
     }
     # Fresh log or no log: reading "Elevation: no" only proves anything if the
     # file cannot be holding last run's verdict.
@@ -383,6 +388,7 @@ try {
 
     $lines = @()
     $lines += "case=$Case pid=$childPid tray_hwnd=$([long]$tray)"
+    $lines += "service_state_at_start=$svcAtStart"
     $lines += "exe=$exe"
     $lines += "popup=$($box.Right - $box.Left)x$($box.Bottom - $box.Top) at $($box.Left),$($box.Top)"
     $lines += "anchor=$AnchorX,$AnchorY"
