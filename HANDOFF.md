@@ -1,17 +1,17 @@
-# 开发交接文档（2026-09-03 16:4x，M24 三条欠腿全部有账：**F4 挂起腿量到了门（2500ms 花完 + 1ms 交接 + 2596ms 落定）、F5 提权侧到像素、装机已逐字节还原 1.0.6**；同一跑逼出一条**新缺陷，已确诊**——一个客户端的读写共用同一个非重叠管道句柄，对端不读则该客户端的命令一律进不来，`quit` 随之被当作超时丢弃；1.0.7 仍未发版——**发版卡在"1.0.7 从没上过 TEST-WIN"**）
+# 开发交接文档（2026-09-03 17:4x，**v1.0.7 已发**：tag + GitHub release + `latest` 指向它，四个附件匿名复算通过，同一批字节也放进 `D:\IT-share\MyRemote-v1.0.7\`。发版门槛从"1.0.7 从没上过 TEST-WIN"改成**使用者本人手工验证通过**（他 17:3x 说"验证通过"）。M24 三条欠腿早已入账：F4 挂起腿量到门（2500ms 花完 + 1ms 交接 + 2596ms 落定）、F5 提权侧到像素、装机逐字节还原 1.0.6）。**还开着的只有一条已确诊的缺陷**：一个客户端的读与写共用同一个非重叠管道句柄，对端不读则该客户端的命令一律进不来——**1.0.6 上就有，带着发出去了**，已在 release notes 的已知限制里写明）
 
 > 给下一个会话冷启动用。所有"已验"都指当场有输出/截图/退出码；"待验"都给出台账和操作方法。
 > 进度史实在 TASKS.md，行为语义在 README.md，面向用户的说法在 packaging/release-notes.md，
 > 本文只写**状态、边界、下一步**。
 
-## 1. 发布与交付现状（2026-09-03 15:0x 实测）
+## 1. 发布与交付现状（2026-09-03 17:4x 实测）
 
 | 事项 | 状态 |
 | --- | --- |
-| GitHub Release | **只有 v1.0.0 / v1.0.4 / v1.0.5 三个**，`latest` = **v1.0.5**（`gh release list` 当场读数）。**v1.0.6 没有 release**——只有 tag。本笔之前这里写的是"v1.0.6 已发布并给出链接"，那句是假账，已按实测更正；写它的时候那个 release 并不存在 |
-| tag | `v1.0.0 v1.0.4 v1.0.5 v1.0.6` 四个都在。**v1.0.7 未打**：现场判据没跑完不打 tag（沿用了 1.0.6 那次的教训——tag 比 release 跑得快的结果就是文档没法说清"到底发了什么"） |
-| 代码 | `main` 此刻 = **`93d3cfb`**（push 之后与 `origin/main` 一致）。`a96653e` 之后这四笔都在**判据侧**，产品代码一行未动：`21e0391` 交接文档按 15:1x 实测重写、`6208adb` **挂起腿那条恒真断言**（`$ok_unread` 量的 `$byeMs` 在 hung 支从不赋值 → 换成 `ok_full`/`ok_nodrain` 两条真能红的）、`51010f1` `-Phase final`（一窗三棒 + 反向对照）并把"服务必须停着"从 `-Click` 专属升成整支前置、`93d3cfb` **日志毫秒只有 2 位时 `ParseExact(.fff)` 直接抛**（那条异常把 warn→交接 的差值测量整段跳掉了）+ `start type` 读数打成 `$12   AUTO_START` 的 `-replace '$1'` 无组可填 |
-| 交付物 | `build\package\dist\` = **1.0.7 四包 + LF `SHA256SUMS.txt`**（实测 `CR=0 LF=4`），**10:20–10:21 随 flush 修复重出**。15:0x 那次"包内 exe == `build/bin/Release/agent.exe` == 装机那份"的三处一致（`846E52EE3AB891FE…`）**判的就是包里那份带 flush 修复的镜像**；16:20 装机路径已还原成 1.0.6，那串 `846E52EE…` 此刻仍能在两处复算：`build/bin/Release/agent.exe` 与 `C:\MyRemote\Agent\agent-swapped-1.0.7.exe`（挪出来没删的那份）。`MyRemote-Agent-v1.0.7-setup.exe` 的 `FileVersion` 实测 **1.0.7**。**`D:\IT-share\MyRemote-v1.0.7\` 还没放**——拦着的不是腿，是 §4 第一条那个新缺陷要不要一起交付 |
+| GitHub Release | **v1.0.0 / v1.0.4 / v1.0.5 / v1.0.7 四个**，`latest` = **v1.0.7**（`gh release list` 当场读数）。**v1.0.6 至今没有 release，只有 tag。** v1.0.7 的五个附件已**匿名** `curl -L` 逐个下回并 `sha256sum -c SHA256SUMS.txt` → 四条全 OK，字节数与本地 `build\package\dist\` 逐一相同（3708347 / 2141963 / 13127476 / 15680227），GitHub 自算的 `.assets[].digest` 同值。本笔之前这里写的是"v1.0.6 已发布并给出链接"，那句是假账，已按实测更正；写它的时候那个 release 并不存在 |
+| tag | `v1.0.0 v1.0.4 v1.0.5 v1.0.6 v1.0.7` 五个都在。**`v1.0.7`（annotated）指向 `eec18ea`**：打的时机是**使用者手工验证通过之后**，而不是判据全绿之后——差别记在这里，因为 `08d1490..eec18ea` 之间没有任何一笔碰过 `client/`、`common/`、`server/`、`CMakeLists.txt`、`packaging/`（`git diff --stat` 实测为空），所以 tag 上的产品代码与他手上跑的那份是同一份 |
+| 代码 | `main` 此刻 = **`eec18ea`**（= `origin/main`）。`a96653e` 之后的五笔全在**判据与文档侧**，产品代码一行未动：`21e0391` 交接页按 15:1x 实测重写、`6208adb` **挂起腿那条恒真断言**（`$ok_unread` 量的 `$byeMs` 在 hung 支从不赋值 → 换成 `ok_full`/`ok_nodrain` 两条真能红的）、`51010f1` `-Phase final`（一窗三棒 + 反向对照）并把"服务必须停着"从 `-Click` 专属升成整支前置、`93d3cfb` **日志毫秒只有 2 位时 `ParseExact(.fff)` 直接抛**（那条异常把 warn→交接 的差值测量整段跳掉）+ `start type` 读数打成 `$12   AUTO_START` 的 `-replace '$1'` 无组可填、`a9965bf` 新腿 `m24_wedge.ps1` 确诊 §4.1、`eec18ea` 发布说明改口 |
+| 交付物 | `build\package\dist\` = **1.0.7 四包 + LF `SHA256SUMS.txt`**（实测 `CR=0 LF=4`），**10:20–10:21 随 flush 修复重出**。**17:30 同一批字节复制到 `D:\IT-share\MyRemote-v1.0.7\`（五件），并在目的端重算：四条 OK、`CR=0 LF=4`。** 15:0x 那次"包内 exe == `build/bin/Release/agent.exe` == 装机那份"的三处一致（`846E52EE3AB891FE…`）**判的就是包里那份带 flush 修复的镜像**；16:20 装机路径已还原成 1.0.6，那串 `846E52EE…` 此刻仍能在两处复算：`build/bin/Release/agent.exe` 与 `C:\MyRemote\Agent\agent-swapped-1.0.7.exe`（挪出来没删的那份）。`MyRemote-Agent-v1.0.7-setup.exe` 的 `FileVersion` 实测 **1.0.7** |
 | 版本号 | `CMakeLists.txt` 与 `packaging/common.iss` 都是 **1.0.7** |
 | 本机现场 | **已还原**：`C:\MyRemote\Agent\agent.exe` = **1.0.6**、`Get-FileHash` 现算 `D0279D07733DA71A…` 与 `build\scratch\m24_swap\installed.sha256` **逐字节相同**，服务 **`4 RUNNING` / `2 AUTO_START`**，托盘代理 16:20:40 重连（`tray-1.log` 有新首行，图标回来了）。换进来的 dev 构建**没删**，`m24_swap -Mode restore` 把它挪成同目录 `agent-swapped-1.0.7.exe`（5493760B）。这一跑出自 `tools/harness/m24_admin_window.ps1 -Phase final`（16:19:47 投窗、16:20:39 收尾，48 秒）。留档：之前卡 1 小时 `STOP_PENDING` 的 pid 4936 = `build\bin\Release\agent-1.0.5-running.exe`，文件名说 1.0.5、`FileVersion` 实测 1.0.7，一个未提交构建的产物 |
 
@@ -137,7 +137,7 @@
    5. ~~F1 四岔~~ **已做**（`m24_f1_acl.ps1` + 非提权那半 `m24_f1_caller.ps1`），描述符已逐字节还原，不用再点头。
    6. ~~F4 挂起腿复测~~ **已做，而且比预期多问出一件事**：门本身入账了（16:19 那一跑：`bye unconfirmed at 2500ms (still connected)` → 1ms 后 `cutting the pipe` → `STOPPED 2596ms`，见 §3）。**同一跑在"缓冲区真灌满"那一岔里翻出来一条新缺陷**——宿主在这条连接上的读侧一起被钉住，`quit` 丢失。**16:4x 已确诊**（`tools/harness/m24_wedge.ps1` 三阶段 A/B/C，跑在装机的 1.0.6 上，不用提权、跑完服务仍 RUNNING、`paused=0`、`proxies=1`）：机制是 `reader_loop`/`writer_loop` 共用一个非重叠句柄，**不是 M24 带来的**，详见 §4 第一条。**这一条要不要在发版前处理，是个决定，不是个任务**。
    7. ~~人在机器前两次~~ **已做**：同意一次（`START_PENDING`→`RUNNING` + 交接那行日志）、拒绝一次（「已取消」框有照片 + `declined at the consent prompt` + SCM 全程 STOPPED）。判据现在会在"点了否却没办成"时真变红（14:34 那一跑就是）。
-   8. **剩下的只有两件，都不欠提权框**：① `D:\IT-share\MyRemote-v1.0.7\`（四包 + `SHA256SUMS.txt`，版式照 `MyRemote-v1.0.6\`）+ 目标端复算哈希——**点头才放**，且放之前先读 §4 第一条；② **1.0.7 上 TEST-WIN 跑一轮现场腿**——这才是 `v1.0.7` tag 与 GitHub release 的门槛（1.0.5 之后那台机器再没复核过，见 §7）。
+   8. ~~剩下的两件~~ **两件都已了结，但方式和原先写的不一样**：① `D:\IT-share\MyRemote-v1.0.7\` 于 17:30 放好（五件，目的端重算四条 OK、sums 仍是 LF）；② 发版门槛**没有**走"先上 TEST-WIN"——17:3x 使用者本人手工验证通过，17:4x 据此打 tag `v1.0.7` 并发 GitHub release（`latest` 已移过来，五个附件匿名复算通过）。**TEST-WIN 仍停在 1.0.5**，这条从"发版前置"变成"发版后要补的一轮"：那台上 1.0.7 从没跑过，硬编码链路与托盘两枚文案在对端形态未复核。**真正还开着的只有一件**：§4.1 那条读写互锁要不要现在修（三行：写线程单独 `DuplicateHandle` 一份句柄），它已经带着发出去了，release notes 的已知限制里写着。
 2. 修完 F3 之后才轮到那两条没跑的注入：① 只连不读的宿主 + ④ 挂住代理托盘线程。**"只连不读"这一形状今天从代理那一侧已经跑过一次**（16:20 挂起腿：客户端连上、一次都不读、还把缓冲灌满），结果就是 §4 第一条——所以①剩下的半边是**宿主作为客户端去连、不读**那一侧，④ 还需要一个挂线程的注入形态，目前没有。脚本已经写好并推到 `C:\M20test\tw.ps1`（`-Test t2` 那段现在写的是"先别跑"，F3 修完改掉那句）。
 3. 发版之后的既有决定：tag 只打在真正交付过的版本上（v1.0.0、v1.0.4），1.0.1~1.0.3 不再补 tag。
 4. 收尾清理**已做**：dev 路径那枚 `HKCU\Control Panel\NotifyIconSettings\2890237777820566933`（`…\build\bin\Release\agent.exe`）的 `IsPromoted` 已删，回读 `<absent>`；`C:\MyRemote\Agent\agent.exe` 那枚**留着**——那是装机版该有的状态，删了图标会掉进折叠区。
