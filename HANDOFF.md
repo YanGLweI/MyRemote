@@ -42,17 +42,17 @@
 
 ### M24 本机判账（2026-09-03 00:0x–00:3x，YEUNG）
 
-判据脚本这一轮重造：`build/m24_menu.ps1`（F5 两枚文案，`-Case limited|elevated`）、`build/m24_menu_live.ps1`（弹活的装机代理的菜单并量它的 rect）、`build/m24_f6.ps1`（服务 start/stop 往返 + `service.log` 是否继续写）。产物在 `build/scratch/`，结果文件都是 UTF-8 带 BOM、中文原样。
+判据脚本这一轮重造：`tools/harness/m24_menu.ps1`（F5 两枚文案，`-Case limited|elevated`）、`tools/harness/m24_menu_live.ps1`（弹活的装机代理的菜单并量它的 rect）、`tools/harness/m24_f6.ps1`（服务 start/stop 往返 + `service.log` 是否继续写）。产物在 `build/scratch/`，结果文件都是 UTF-8 带 BOM、中文原样。
 
 | 条 | 判据 | 读数 | 状态 |
 |---|------|------|-----|
-| F5 受限 | 该项带「需管理员批准」，且同 pid 日志 `Elevation: no` | `wording: needs-administrator` + `service item present`，弹窗 417x114 | ✅ PASS |
-| F5 提权 | 该项逐字节旧文案、无后缀 | `wording: plain` + `present`，弹窗 333x114 | ✅ PASS |
-| 形状 | "多一项"只多一行高 + 文案宽 | 探针 114px（自报 6 项）vs 活的装机代理 93px（按构造无该项）：Δ21px = 一个行高；宽 417−333=84px = 多出的 7 个汉字 | ✅ PASS |
+| F5 受限 | 该项带「需管理员批准」，且同 pid 日志 `Elevation: no` | `wording: needs-administrator` + `service item present`，弹窗 417x114。**判据读的是目标自报的那行日志，不是屏幕上的字**——`-Shot` 像素腿待补 | ✅ PASS（待像素腿加固） |
+| F5 提权 | 该项逐字节旧文案、无后缀 | `wording: plain` + `present`，弹窗 333x114。同上 | ✅ PASS（待像素腿加固） |
+| 形状 | "多一项"只多一行高 + 文案宽 | **旧的 93px / Δ21px 一条已撤回**（读不出来了，且当时的截图裁剪比例写错）。换成可复现的那枚：活的装机 1.0.6 代理在钉住锚点下 **317x105**，截图 `build/scratch/m24_menu/live-menu.png` 上 4 项 + 1 分隔线逐项可读、**没有那一项**；宽 417−333=84px = 多出的 7 个汉字 | ✅ 读数成立，但主体是 1.0.6 |
 | F6 | `sc start`/`sc stop` 往返×3，≤10s 落定且 `service.log` 有后续行 | 起 9/10/11ms、停 10/12/11ms，每轮 stop 后多写 5 行直到 `MyRemote agent service stopped`，`failures=0`，结束恢复 RUNNING/Auto | ✅ PASS（**装在的是 1.0.6**） |
 | 交付链 | 判据用的 exe == 包里的 exe | sha256 `85fb3396a6530eb6…` 三处一致（zip 内 / `build/bin/Release` / 探针副本） | ✅ PASS |
 | 探针会说谎吗 | 同一串针打在旧镜像上应当全 False | 装机 1.0.6：`F5_suffix`/`F5_cancel`/`Tray menu built`/`item wording`/`bye unconfirmed`/`last state`/`ACCESS_DENIED` 全 False（`F5_label`/`service stopped` 是历史串，True 才对） | ✅ 对照通过 |
-| 不变量 | M24 不把外部面变大 | `agent.exe` 三个 pid 拥有 **TCP 监听 0 个**（全系统 52），唯一服务端是管道 `MyRemoteAgent_TrayProxy_v1`；`config.hpp` 对基线 `d2aa7d8` 零改动；管道无新动词（`build/m24_invariants.ps1`） | ✅ PASS |
+| 不变量 | M24 不把外部面变大 | `agent.exe` 三个 pid 拥有 **TCP 监听 0 个**（全系统 52），唯一服务端是管道 `MyRemoteAgent_TrayProxy_v1`；`config.hpp` 对基线 `d2aa7d8` 零改动；管道无新动词（`tools/harness/m24_invariants.ps1`） | ✅ PASS |
 | F1 四岔 | `sc sdset` 摘掉读取权 → 首行 `ACCESS_DENIED (...)` 且 `console session:`/`stations:`/`host:` 照打 | 未跑（要改真服务 DACL，需点头） | ⬜ |
 | F4 两腿 | `host said bye` + 门不再固定 ≥1100ms；挂起代理 ≤2500ms 且点名 warn | 未跑（要 1.0.7 当宿主；装在的是 1.0.6） | ⬜ |
 | 人在机器前 | 同意一次 / 拒绝一次 | 未跑 | ⬜ |
@@ -125,7 +125,7 @@
 1. **M22 未完工，欠的已由 M24 补上代码；F6 与 F5 已判账（见 §3 的 M24 表），还剩三条现场腿**。1.0.7 四包已随 `8045fc0` 重出且与判据用的 exe sha256 一致；未发版、未打 tag、未放 `D:\IT-share`。**按顺序差的**：
    1. ~~清场~~ **已做**：pid 27124 与卡住的 pid 4936 都不在了，服务现在 `4 RUNNING`/Auto（F6 那一跑的恢复态）。
    2. ~~F6 实测~~ **已做**：1.0.6 三趟往返全部 ≤12ms 落定且日志有后续行——**那 23 分钟不是产品缺陷**，见 TASKS 的 M24-1。剩下的对照（1.0.7 停一次）与第 4 条共用同一个前置。
-   3. ~~F5 两枚文案 + 形状~~ **已做**（`build/m24_menu.ps1`、`build/m24_menu_live.ps1`）。**唯一没做成的判据**是"服务 RUNNING 时这一项自己消失"：会话级单例锁 + `--force` 的组合让前台探针实例在服务运行时根本起不了托盘，见 §6 最后一条。M21-4 当年在 TEST-WIN 上用"同一实例活着时把服务起起来"绕过去了（菜单 239→195px），那条路在这台机器上要走得连着点两次 UAC。
+   3. ~~F5 两枚文案 + 形状~~ **已做**（`tools/harness/m24_menu.ps1`、`tools/harness/m24_menu_live.ps1`）。**唯一没做成的判据**是"服务 RUNNING 时这一项自己消失"：会话级单例锁 + `--force` 的组合让前台探针实例在服务运行时根本起不了托盘，见 §6 最后一条。M21-4 当年在 TEST-WIN 上用"同一实例活着时把服务起起来"绕过去了（菜单 239→195px），那条路在这台机器上要走得连着点两次 UAC。
    4. **前置（挡住第 5、6 两条）**：把 dev 构建放进服务指向的那份——`C:\MyRemote\Agent\agent.exe` 改名让位（**别删**，跑完原名放回），拷入 1.0.7 的 `agent.exe`，`sc start`。这样 1.0.7 才真的当宿主，F4 的新门与"停一次 1.0.7"才有东西可量。**这一条会改掉本机在装的那份二进制，跑之前要点头。**
    5. **F1 四岔**：`sc sdshow` 存原 DACL → `sc sdset` 摘掉读取权 → `--service-state` 必须打 `ACCESS_DENIED (...)` 且 `console session:` / `stations:` / `host:` 三行仍在 → 还原并逐字节比对。**这一条会临时改服务安全描述符，跑之前必须跟用户点头。**
    6. **F4 两腿**：健康腿看 `tray-<会话>.log` 记 `host said bye` 且退出耗时不再是固定 ≥1100ms；挂起腿手动起第二代理、`NtSuspendProcess` 住它再退宿主，判据是总耗时 ≤2500ms、warn 点名那个 session、F3 不破。**触发优雅退场只有两条路**：托盘点「退出」，或让代理往管道写 `quit`（`main.cpp:1709` 的 `sink.quit` → `g_quit_requested` → `main.cpp:1863` 的 `trayproxies::stop()`）。`sc stop` 走的是 `shutdown_host()` 的 `TerminateProcess`，永远量不到这道门——已在 §3 用现场日志实证。
@@ -137,11 +137,14 @@
 
 ## 6. 环境与工具备忘（会杀时间的坑）
 
-**2026-09-03 M24 判据这一轮新增，两条都是"仪器本身不成立"，不是脚本写错：**
+**2026-09-03 M24 判据这一轮新增，共同点：坑在仪器本身，不在脚本逻辑。判据脚本这一轮从 `build/`（不在版本控制里）挪进了 **`tools/harness/`**，以下条目的脚本名都指那里。**
 
-- **`#32768` 弹出菜单在这台机器上跨进程读不出内容**（Windows 11 24H2 / 10.0.26200，装机版 1.0.6 的活代理 pid 28204、菜单 hwnd 10750298、`visible=True rect=309x93`）：UIA `FromHandle` 给 `children=0 subtree=1 rawwalk=0`；MSAA `AccessibleObjectFromWindow` 对 `OBJID_WINDOW(0)`、`OBJID_CLIENT(-4)`、`OBJID_MENU(-3)` 全部 `hr != 0`；`SendMessage(hwnd, MN_GETHMENU=0x01B1)` 返回 0。**窗口存在、看得见、量得出 rect，就是读不出里面有什么。** 所以判"菜单画了什么"只能让**画它的那段代码自报**（`TrayIcon::ShowMenu` 与 `start_service_label()` 各写一行 ASCII 日志）。自报不等于自证：**必须同时留一枚独立读数**，这一轮留的是弹窗 rect 的宽高（417 vs 333，84px 恰是 7 个汉字）。别再拿 UIA 试第二次。
+- **`#32768` 弹出菜单在这台机器上跨进程读不出内容**（Windows 11 24H2 / 10.0.26200，装机版 1.0.6 的活代理 pid 28204、菜单 hwnd 10750298、`visible=True rect=309x93`）：UIA `FromHandle` 给 `children=0 subtree=1 rawwalk=0`；MSAA `AccessibleObjectFromWindow` 对 `OBJID_WINDOW(0)`、`OBJID_CLIENT(-4)`、`OBJID_MENU(-3)` 全部 `hr != 0`；`SendMessage(hwnd, MN_GETHMENU=0x01B1)` 返回 0。**窗口存在、看得见、量得出 rect，就是读不出里面有什么。** 所以判"菜单画了什么"只能让**画它的那段代码自报**（`TrayIcon::ShowMenu` 与 `start_service_label()` 各写一行 ASCII 日志）。自报不等于自证：**必须同时留一枚独立读数**——最好的那枚是**把弹窗那块屏幕截下来**（`-Shot`，见下下条），几何 rect 只是它的弱替代品（417 vs 333，84px 恰是 7 个汉字）。别再拿 UIA 试第二次。
+- **截图裁剪比例不许写死**：`m24_shot.ps1` 早期硬编码 `scale 2`（那台面板在 200%），这台是 144/96=**1.5**，于是"菜单的截图"实际截的是偏了 33% 的另一块屏幕——里面满是别的窗口的字。因为图片照样"满而不空"，这个错**看起来像菜单没画出来**，直接把像素判据错怪成了仪器不成立。**现在每次跑都现场量**：声明 DPI 感知**之前**读 `Screen::PrimaryScreen.Bounds`（2560，虚拟化值）、之后读 `GetSystemMetrics(SM_CXSCREEN)`（3840，物理值），比值即比例，并把 `phys=/logical=/sysdpi=` 一起打出来。
+- **截图辅助脚本必须另起进程**：`m24_shot.ps1` 会 `SetProcessDPIAware()`。用 `&` 在同一个 powershell 里调它，**持有坐标的那个进程当场变成 DPI 感知**，之后每一枚 `GetWindowRect`/`SetCursorPos` 都换了一套坐标系。判据脚本一律 `powershell.exe -File ...` 起子进程调它，并检查 `$LASTEXITCODE`。
+- **弹窗跟着真光标，锚点必须钉**：`tray_icon.cpp:349-352` 是 `GetCursorPos` 然后在那个点 `TrackPopupMenuEx`。不 `SetCursorPos` 就没法复现同一个 rect（同一份菜单读到过 93 与 105 两种高度），而 Windows 还会把工作区边缘的弹窗往里挤。判据脚本先 `SetCursorPos($AnchorX,$AnchorY)` 再 `PostMessage`，并把锚点写进结果文件。
 - **上一条差点是假的**：第一次跑 `m24_menu_probe.ps1` 时 `MN_GETHMENU` 传的是 `0x03B1`（真值 `0x01B1`，那条消息没有任何窗口会答）、`OBJID_WINDOW` 传的是 `-1`（那是 `OBJID_SYSMENU`，`OBJID_WINDOW` 是 `0`）。**两个针脚都错，而错的针脚答起来和"OS 拒绝"一模一样**。修好常量重跑才是上面那组读数。教训：**"三个读法都失败"要先证明三个读法都被正确地调用过**——拿一个已知能读到的目标（同进程内的菜单、或一个普通窗口的 MSAA）当阳性对照，比多写一条注释便宜。
-- **服务 RUNNING 时，前台实例没有任何办法带着托盘起起来——`--force` 也不行**：`main.cpp:1503` 那支的判据是 `host_owns_machine = !g_session_host && !args.force && !args.background && installed && running`，**`--force` 恰好把它否成 false**，于是走"给别人的托盘 `PostMessage(WM_SHOW_CONFIG)` 然后 `return 0`"那条，且这一支在 `mlog::init` 之前——现象还是那个熟悉的"秒退、code 0、一行日志都不写"。`--force` 真正能过的只有 `:1589` 那支让位，而那支要在**锁是空的**时候才轮得到。结论：**"服务在跑 → 那一项消失"这类判据不能靠新起一个前台实例来读**；要么用 M21-4 那条路（同一实例活着时把服务起起来），要么直接读活的会话代理（`build/m24_menu_live.ps1`，它的菜单按构造永远不带那一项）。顺带：`:1592` 那句 `Use --force to override.` 在宿主持锁时是一句办不成的承诺——**本轮没改它**，先记在这里。
+- **服务 RUNNING 时，前台实例没有任何办法带着托盘起起来——`--force` 也不行**：`main.cpp:1503` 那支的判据是 `host_owns_machine = !g_session_host && !args.force && !args.background && installed && running`，**`--force` 恰好把它否成 false**，于是走"给别人的托盘 `PostMessage(WM_SHOW_CONFIG)` 然后 `return 0`"那条，且这一支在 `mlog::init` 之前——现象还是那个熟悉的"秒退、code 0、一行日志都不写"。`--force` 真正能过的只有 `:1589` 那支让位，而那支要在**锁是空的**时候才轮得到。结论：**"服务在跑 → 那一项消失"这类判据不能靠新起一个前台实例来读**；要么用 M21-4 那条路（同一实例活着时把服务起起来），要么直接读活的会话代理（`tools/harness/m24_menu_live.ps1`，它的菜单按构造永远不带那一项）。顺带：`:1592` 那句 `Use --force to override.` 在宿主持锁时是一句办不成的承诺——**本轮没改它**，先记在这里。
 - **`finally` 会制造假绿**：`m24_f6.ps1` 第一版在 `try` 开头就抛（`Get-Item 'C'` 那种把单元素管道当数组的错），跳到 `finally` 打印 `failures=0`，**看起来像全绿**。凡是"跑完汇报失败数"的判据脚本，`catch` 必须先把中止原因记进同一个列表再 `throw`，`finally` 只负责恢复现场。同理：**恢复动作（把服务重新起起来）放 `finally`，判定放 `try`**。
 
 **2026-09-02 出 1.0.7 判据脚本这一轮新增，同样每一条都真咬过一次：**
@@ -183,7 +186,7 @@
 - **bash 里没有 cmake**：绝对路径 `C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe`；`build.bat` 依赖 PATH 里的 cmake。**ISCC 在** `C:\Users\YLW\AppData\Local\Programs\Inno Setup 6\ISCC.exe`。
 - **测试脚本一律纯 ASCII**（PS 5.1 按 ANSI 解码无 BOM UTF-8，中文字面量匹配必挂）；窗口识别走类名（`MyRemoteAgentTray`/`MyRemoteConfigWnd`/`#32768`），中文按钮文案在 C# 侧用 `(char)0x4FDD` 拼；`EnumWindows` 回调整体放 C# 侧；PS 单结果管道要 `@()` 包；`$w` 会撞 `$W`。
 - 截图脚本必须先 `SetProcessDPIAware()`。**本机的缩放按实测读，别按记忆乘**：`HKCU\Control Panel\Desktop\WindowMetrics\AppliedDPI = 144`（=150%），物理 `3840x2160`，逻辑 `2194x1234`；换算系数取 `GetDpiForSystem()/96`。上一轮这里写的是"200%/3400 宽"，照着它截出来的框偏了一整档。
-- 取证文件的根**这台机器已经换了**：M21-6 把服务配置落到 `%ProgramData%\MyRemote\` 之后，YEUNG 上 `agent.log`/`service.log`/`tray-<会话>.log`/`host.status` **全部在 `C:\ProgramData\MyRemote\`**，`C:\MyRemote\Agent\*.log` 实测不存在（2026-09-03 00:20 当场 `ls` 过）。但两 root 都扫的规则**不要撤**——装过老版本、或用便携形态跑的机器仍会把日志写在 exe 旁边；判据脚本要按"两处都在、取 mtime 最新的那枚"来选（`build/m24_f6.ps1` 就是这么写的）。
+- 取证文件的根**这台机器已经换了**：M21-6 把服务配置落到 `%ProgramData%\MyRemote\` 之后，YEUNG 上 `agent.log`/`service.log`/`tray-<会话>.log`/`host.status` **全部在 `C:\ProgramData\MyRemote\`**，`C:\MyRemote\Agent\*.log` 实测不存在（2026-09-03 00:20 当场 `ls` 过）。但两 root 都扫的规则**不要撤**——装过老版本、或用便携形态跑的机器仍会把日志写在 exe 旁边；判据脚本要按"两处都在、取 mtime 最新的那枚"来选（`tools/harness/m24_f6.ps1` 就是这么写的）。
 - 关键脚本：`build/tw_m20.ps1`（**现场判账那一支**，`-Test t0/t1/t3/t4/t5`，推到目标机改名 `C:\M20test\tw.ps1`；`-AppDir` 默认 `C:\MyRemote\Agent`）、`build/m21_cli_regression.ps1`、`build/m21_probe_config.ps1`、`build/m21_hide_probe.ps1`、`build/m21_menu_shape.ps1`、`build/m21_window.ps1`（把需要停服务的那几跑收进一个提权窗口）、`build/m21_set_server.ps1`、`build/scratch/m21_pipe_smoke.ps1`（不碰产品、只练管道读法）、`build/scratch/m21_cleanup.ps1`（提权收残留）。**这一批 2026-09-03 逐个 `[ -f ]` 实测：一个都不在**，`tw_m20.ps1` 也没了；`build/*.ps1` 只剩 `m23_run_stage.ps1`、`probe_binary.ps1` 与本轮新写的 `m24_*.ps1`。这些名字留着只为说明"当年那批判据查过什么"，**别去找它们跑**——要跑得照本节那些坑重造。这就是 `build/` 不在版本控制里的代价（见 §7 的 git 条）。取证文件两个根都要扫，规则见上一条。
 - 远端取证走 `\\10.60.254.153\c$\...`，**ADMIN$ 是可写的**：脚本推过去、转录与截图从同一处拉回来，比来回截图快一个量级。bash 命令层拒绝内联 UNC——写进 `.ps1` 再执行。TEST-WIN 两份配置在 2026-09-01 现场判账之后实测都还是 `10.60.1.188`，权威那份是 `%ProgramData%\MyRemote\config.json`（`tray_icon=true`，mtime 停在装机那晚的 22:59:29，整晚没被写过）。
 
