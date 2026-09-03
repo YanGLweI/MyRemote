@@ -68,7 +68,7 @@ struct Client {
     // cleared `alive`, so the one field the field has to read could not tell
     // "we cut this proxy" from "the proxy left by itself" - and those are the
     // two stories anybody debugging a missing icon needs to keep apart.
-    enum Death : int { Living = 0, QueueOverflow, WriteFailed, PipeGone, WeCutIt };
+    enum Death : int { Living = 0, QueueOverflow, WriteFailed, FlushFailed, PipeGone, WeCutIt };
     std::atomic<int> death{Living};
     std::thread reader;
     std::thread writer;
@@ -90,6 +90,12 @@ struct Client {
     // is still inside a blocking WriteFile.
     std::atomic<unsigned long long> words_said{0};
     std::atomic<unsigned long long> words_written{0};
+    // Asked for only by stop(). Writing a line puts it in the pipe's buffer; the
+    // disconnect that follows can discard that buffer before the proxy's reader
+    // gets to it. A flush is what "the peer read it" actually means, and it is
+    // issued on the writer thread so the same CancelSynchronousIo teardown that
+    // releases a parked WriteFile releases it too.
+    std::atomic<bool> flush_after_write{false};
     std::atomic<DWORD> since{0};             // when we accepted it
     std::atomic<DWORD> last_pong_tick{0};
     std::atomic<unsigned long long> last_pong_liveness{0};
@@ -100,6 +106,7 @@ const char* death_name(int d) {
     switch (d) {
         case Client::QueueOverflow: return "queue overflow";
         case Client::WriteFailed: return "write failed";
+        case Client::FlushFailed: return "peer never read it";
         case Client::PipeGone: return "pipe gone";
         case Client::WeCutIt: return "we cut it";
         default: return "still connected";
@@ -197,6 +204,13 @@ void writer_loop(Client* c) {
         }
         if (!raw_write(c->pipe, line)) {
             mark_death(c, Client::WriteFailed);
+            c->alive.store(false);
+            break;
+        }
+        // "Written" has to mean the peer read it, or the gate below is measuring
+        // the buffer rather than the proxy.
+        if (c->flush_after_write.load() && !FlushFileBuffers(c->pipe)) {
+            mark_death(c, Client::FlushFailed);
             c->alive.store(false);
             break;
         }
@@ -648,6 +662,11 @@ void stop() {
         g_retiring.clear();
     }
     for (Client* c : clients) {
+        // Ask before speaking: the bye below is the word whose delivery this gate
+        // exists to prove. Measured 2026-09-03 with the flush absent - the client
+        // on the other end read "bye" in 108ms while the real proxy still logged
+        // "host pipe closed", because WriteFile only promises the buffer.
+        c->flush_after_write.store(true);
         queue_line(c, "bye");
     }
     // The words have to reach the wire before the pipe is cut. A proxy that
